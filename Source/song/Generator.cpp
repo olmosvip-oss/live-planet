@@ -60,25 +60,54 @@ namespace
     }
 }
 
+Target chooseTarget (const Profile& ref, const lp::Weather& sky, const Options& o)
+{
+    Rng rng (o.seed);
+    Target t {};
+    if (ref.valid)
+    {
+        t.bpm = std::round (ref.bpm * (1.0 + (rng.f() - 0.5) * 0.08));
+        static const int shifts[] = { -2, -1, 1, 2, 3, -3 };
+        t.key = (ref.key + (o.shiftKey ? shifts[rng.i (6)] : 0) + 12) % 12;
+        t.minor = ref.minor;
+    }
+    else
+    {
+        t.bpm = std::round (70.0 + sky.windNorm() * 24.0 + rng.f() * 10.0);
+        t.key = rng.i (12);
+        t.minor = sky.mood() < 0.45f;
+    }
+    if (o.style >= 0)
+        t.style = (Style) juce::jlimit (0, kNumStyles - 1, o.style);
+    else
+    {
+        // the groove that fits the reference's tempo and how busy it is
+        const float d = ref.valid ? ref.density : 0.35f;
+        const double b = t.bpm;
+        if (d > 0.5f && (b >= 128.0 || b <= 80.0))      t.style = Style::Trap;
+        else if (b >= 116.0 && b < 132.0 && d > 0.35f)  t.style = Style::House;
+        else if (b >= 84.0 && b < 104.0 && d > 0.35f)   t.style = Style::BoomBap;
+        else if (d < 0.25f)                              t.style = t.minor ? Style::Brushes : Style::Dusty;
+        else if (b >= 104.0)                             t.style = Style::Electronic;
+        else                                             t.style = Style::Dusty;
+    }
+    if (t.style == Style::Trap && t.bpm < 100.0) t.bpm *= 2.0; // trap counts in double time
+    if (t.style == Style::House) t.bpm = juce::jlimit (116.0, 128.0, t.bpm);
+    return t;
+}
+
 Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
 {
     Rng rng (o.seed);
     Song song;
 
-    // ---- tempo, key, mood
-    if (ref.valid)
-    {
-        song.bpm = std::round (ref.bpm * (1.0 + (rng.f() - 0.5) * 0.08));
-        static const int shifts[] = { -2, -1, 1, 2, 3, -3 };
-        song.key = (ref.key + (o.shiftKey ? shifts[rng.i (6)] : 0) + 12) % 12;
-        song.minor = ref.minor;
-    }
-    else
-    {
-        song.bpm = std::round (70.0 + sky.windNorm() * 24.0 + rng.f() * 10.0);
-        song.key = rng.i (12);
-        song.minor = sky.mood() < 0.45f;
-    }
+    // ---- tempo, key, mood, groove
+    const auto target = chooseTarget (ref, sky, o);
+    rng.f(); rng.f(); rng.f(); // keep the rest of the song independent of the target's dice
+    song.bpm = o.forceBpm > 0.0 ? o.forceBpm : target.bpm;
+    song.key = o.forceKey >= 0 ? o.forceKey : target.key;
+    song.minor = o.forceKey >= 0 ? o.forceMinor : target.minor;
+    song.style = target.style;
     const float bright = ref.valid ? ref.brightness : sky.warmthNorm();
     const auto scaleId = song.minor ? (bright > 0.55f ? lp::ScaleId::Dorian : lp::ScaleId::Minor)
                                     : (bright > 0.7f ? lp::ScaleId::Lydian : lp::ScaleId::Major);
@@ -175,6 +204,9 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
     Part pad { "pad", PartKind::Pad, padSound, -9.0f, {} };
     Part bass { "bass", PartKind::Bass, lp::SoundId::Glass, -3.0f, {} };
     Part drums { "drums", PartKind::Drums, lp::SoundId::Glass, -4.0f, {} };
+    drums.variant = (int) song.style;
+    bass.variant = song.style == Style::Trap ? 1 : 0;
+    if (bass.variant == 1) bass.name = "808";
 
     // one melody idea per kind of section (2 bars on an 8th-note grid), reused with variations
     struct Motif { std::vector<int> slots; std::vector<int> steps; };
@@ -263,7 +295,18 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
 
             // bass
             const int bassNote = 36 + ((song.key + rootSemis) % 12);
-            if (! isIntro || e > 0.4f)
+            if (song.style == Style::Trap && (! isIntro || e > 0.4f))
+            {
+                const int n808 = bassNote - 12 + (bassNote - 12 < 29 ? 12 : 0); // deep but audible
+                bass.notes.push_back ({ t0, 0.7, n808, 0.9f * fade });
+                bass.notes.push_back ({ t0 + 2.5, 1.4, n808, 0.85f * fade });
+                if (e > 0.6f && rng.chance (0.5f)) bass.notes.push_back ({ t0 + 3.5, 0.45, n808 + 12, 0.7f });
+            }
+            else if (song.style == Style::House && (! isIntro || e > 0.4f))
+            {
+                for (int k = 0; k < 4; ++k) bass.notes.push_back ({ t0 + k + 0.5, 0.4, bassNote, 0.8f * fade }); // off-beat house bass
+            }
+            else if (! isIntro || e > 0.4f)
             {
                 if (density < 0.35f || isOutro)
                     bass.notes.push_back ({ t0, 3.5, bassNote, 0.75f * fade });
@@ -313,30 +356,79 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
                 for (int k = 0; k < 8; ++k)
                     counter.notes.push_back ({ t0 + k * 0.5, 0.45, voicing[(size_t) (k % (int) voicing.size())] + 24, k % 2 == 0 ? 0.5f : 0.38f });
 
-            // drums
-            const bool halfTime = song.bpm >= 125.0;
+            // drums: each style has its own groove
             const bool lastBar = b == sec.bars - 1;
+            auto hit = [&] (double at, int note, float vel) { drums.notes.push_back ({ t0 + at, 0.1, note, juce::jlimit (0.05f, 1.0f, vel * fade) }); };
+            const double swing = song.style == Style::BoomBap ? 0.09 : (song.style == Style::Dusty || song.style == Style::Brushes ? 0.06 : 0.0);
+            auto sw = [swing] (double h) { return std::fmod (h, 1.0) == 0.5 ? h + swing : h; };
             if (isIntro && e < 0.35f)
             {
                 if (b >= sec.bars / 2)
-                    for (int k = 0; k < 4; ++k) drums.notes.push_back ({ t0 + k, 0.1, 42, 0.3f });
+                    for (int k = 0; k < 4; ++k) hit (k, song.style == Style::Brushes ? 46 : 42, 0.3f);
             }
             else
             {
-                drums.notes.push_back ({ t0, 0.2, 36, 0.95f * fade });
-                if (e > 0.45f || ! halfTime) drums.notes.push_back ({ t0 + (density > 0.5f ? 2.5 : 2.0), 0.2, 36, 0.75f * fade });
-                if (e > 0.7f && density > 0.45f) drums.notes.push_back ({ t0 + 1.75, 0.2, 36, 0.6f });
-                for (double sn : halfTime ? std::vector<double> { 2.0 } : std::vector<double> { 1.0, 3.0 })
-                    drums.notes.push_back ({ t0 + sn, 0.2, e > 0.6f ? 39 : 38, 0.85f * fade });
-                const double hatStep = e > 0.7f && density > 0.55f ? 0.25 : 0.5;
-                for (double h = 0; h < 4.0; h += hatStep)
+                const bool big = e > 0.6f;
+                switch (song.style)
                 {
-                    const bool open = e > 0.6f && std::fmod (h, 4.0) == 2.5;
-                    drums.notes.push_back ({ t0 + h, 0.1, open ? 46 : 42, (std::fmod (h, 1.0) == 0.0 ? 0.55f : 0.35f) * fade });
+                    case Style::Trap:
+                    {
+                        // half-time snare, syncopated kicks, rolling hats
+                        hit (0.0, 36, 1.0f);
+                        if (rng.chance (0.6f)) hit (0.75, 36, 0.8f);
+                        hit (2.5, 36, 0.85f);
+                        if (big && rng.chance (0.5f)) hit (3.25, 36, 0.7f);
+                        hit (2.0, 39, 0.95f);
+                        for (double h = 0; h < 4.0; h += 0.5) hit (h, 42, std::fmod (h, 1.0) == 0.0 ? 0.6f : 0.4f);
+                        // a hat roll somewhere in the bar
+                        const double rollAt = (1 + rng.i (3)) + 0.5;
+                        const double step = rng.chance (0.5f) ? 0.125 : 1.0 / 6.0;
+                        for (double r = rollAt; r < rollAt + 0.5 - 1e-6; r += step) hit (r, 42, 0.35f + (float) (r - rollAt));
+                        if (big && b % 2 == 1) hit (3.5, 46, 0.5f);
+                        break;
+                    }
+                    case Style::House:
+                        for (int k = 0; k < 4; ++k) hit (k, 36, 0.95f);
+                        hit (1.0, 39, 0.8f); hit (3.0, 39, 0.8f);
+                        for (int k = 0; k < 4; ++k) hit (k + 0.5, 46, big ? 0.55f : 0.4f);
+                        if (big) for (double h = 0.25; h < 4.0; h += 0.5) hit (h, 42, 0.25f);
+                        if (e > 0.45f) for (double h = 0; h < 4.0; h += 0.25) hit (h, 70, 0.18f + (std::fmod (h, 0.5) == 0.25 ? 0.08f : 0.0f));
+                        break;
+                    case Style::Brushes:
+                        // soft kick, brushed snare sweeps, a ride pattern
+                        hit (0.0, 36, 0.55f);
+                        if (rng.chance (0.5f)) hit (2.5, 36, 0.4f);
+                        hit (1.0, 38, 0.55f); hit (3.0, 38, 0.55f);
+                        for (double h : { 0.0, 1.0, 1.0 + 2.0 / 3.0, 2.0, 3.0, 3.0 + 2.0 / 3.0 }) hit (h, 46, 0.35f);
+                        break;
+                    case Style::Electronic:
+                        hit (0.0, 36, 0.95f); hit (2.5, 36, 0.8f);
+                        if (big) hit (1.75, 36, 0.6f);
+                        hit (1.0, 38, 0.85f); hit (3.0, 38, 0.85f);
+                        for (double h = 0; h < 4.0; h += 0.25) hit (h, 42, std::fmod (h, 1.0) == 0.0 ? 0.5f : 0.28f);
+                        if (rng.chance (0.4f)) hit (3.75, 37, 0.4f);
+                        if (rng.chance (0.3f)) hit (1.5, 37, 0.35f);
+                        break;
+                    case Style::BoomBap:
+                        hit (0.0, 36, 1.0f); hit (1.75, 36, 0.7f); hit (2.5, 36, 0.85f);
+                        hit (1.0, 38, 0.95f); hit (3.0, 38, 0.95f);
+                        for (double h = 0; h < 4.0; h += 0.5) hit (sw (h), 42, std::fmod (h, 1.0) == 0.0 ? 0.55f : 0.35f);
+                        if (big && rng.chance (0.4f)) hit (3.75, 38, 0.3f);
+                        break;
+                    case Style::Dusty:
+                    default:
+                        hit (0.0, 36, 0.9f);
+                        if (e > 0.45f) hit (density > 0.5f ? 2.5 : 2.0, 36, 0.75f);
+                        if (big && density > 0.45f) hit (1.75, 36, 0.55f);
+                        hit (1.0, big ? 39 : 38, 0.85f); hit (3.0, big ? 39 : 38, 0.85f);
+                        for (double h = 0; h < 4.0; h += 0.5) hit (sw (h), 42, std::fmod (h, 1.0) == 0.0 ? 0.5f : 0.32f);
+                        if (big) hit (2.5, 46, 0.4f);
+                        if (e > 0.4f) hit (sw (3.5), 70, 0.3f);
+                        break;
                 }
                 if (lastBar && ! lastSection && nextE > e) // a fill into a bigger section
                     for (int k = 0; k < 4; ++k)
-                        drums.notes.push_back ({ t0 + 3.0 + k * 0.25, 0.1, k < 2 ? 38 : 45, 0.6f + k * 0.08f });
+                        hit (3.0 + k * 0.25, k < 2 ? 38 : 45, 0.6f + k * 0.08f);
             }
             if (b == 0 && label == "chorus")
                 drums.notes.push_back ({ t0, 0.5, 46, 0.7f });

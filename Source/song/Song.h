@@ -2,6 +2,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <string>
 #include <vector>
+#include <map>
 #include "../engine/Weather.h"
 #include "../engine/Sources.h"
 
@@ -40,7 +41,16 @@ Profile analyse (const float* mono, int numSamples, double sampleRate);
 
 // ---------- the new song
 
-enum class PartKind { Chords, Melody, Counter, Pad, Bass, Drums };
+enum class PartKind { Chords, Melody, Counter, Pad, Bass, Drums, Loop };
+
+// The groove of a song: which drum kit, which patterns, which bass.
+enum class Style { Dusty, BoomBap, Trap, House, Brushes, Electronic };
+constexpr int kNumStyles = 6;
+inline const char* styleName (Style s)
+{
+    static const char* n[] = { "dusty", "boom bap", "trap", "house", "brushes", "electronic" };
+    return n[juce::jlimit (0, kNumStyles - 1, (int) s)];
+}
 
 struct Note
 {
@@ -57,6 +67,10 @@ struct Part
     lp::SoundId sound = lp::SoundId::Glass; // instrument for tonal parts
     float gainDb = 0.0f;
     std::vector<Note> notes;
+    int variant = 0;                 // drums: the kit (Style); bass: 1 = 808
+    juce::String samplePath;         // Loop parts: the audio file to repeat
+    int loopBars = 0;                // Loop parts: how many bars the file lasts
+    std::vector<int> loopStartBars;  // Loop parts: where it plays
 };
 
 struct Section
@@ -72,8 +86,10 @@ struct Song
     double bpm = 90.0;
     int key = 0;
     bool minor = false;
+    Style style = Style::Dusty;
     std::vector<Section> sections;
     std::vector<Part> parts;
+    std::map<int, juce::String> drumSamples; // drum note -> one-shot file from your library (empty = coded kit)
     int totalBars() const { return sections.empty() ? 0 : sections.back().startBar + sections.back().bars; }
     double lengthSeconds() const { return totalBars() * 4.0 * 60.0 / bpm; }
 };
@@ -84,7 +100,15 @@ struct Options
     bool full = true;             // full length, or a short ~1 minute sketch
     lp::SoundId mainSound = lp::SoundId::Auto; // the plugin's chosen instrument (Auto = let the weather pick)
     uint32_t seed = 1;            // a different seed = a different song from the same reference
+    int style = -1;               // -1 = pick from the reference / weather, else a Style
+    double forceBpm = 0.0;        // set when a loop from your library decides the tempo
+    int forceKey = -1;            // ...and the key
+    bool forceMinor = false;
 };
+
+// The tempo / key / groove a song would get before any sample choices
+struct Target { double bpm; int key; bool minor; Style style; };
+Target chooseTarget (const Profile& ref, const lp::Weather& sky, const Options& options);
 
 // Writes a song. With an invalid profile it uses the weather and a classic song shape instead.
 Song generate (const Profile& ref, const lp::Weather& sky, const Options& options);
@@ -101,6 +125,7 @@ struct Rendered
 {
     juce::File folder, midiFile, mixFile, planFile;
     juce::Array<juce::File> stems;
+    std::shared_ptr<juce::AudioBuffer<float>> mixAudio; // the finished song, for playing it inside the plugin
 };
 
 // Renders every part to its own WAV file plus a full mix, and writes a multi-track MIDI file

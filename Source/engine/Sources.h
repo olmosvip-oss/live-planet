@@ -18,8 +18,9 @@ struct SourceSound
     float foldSemis = 0.0f;    // >0: keep notes within this many semitones of the sound's own pitch
 };
 
-enum class SoundId { Glass, Choir, FeltPiano, MusicBox, Nylon, Strings, Vapor, Rhodes, Kalimba, Vibes, Ocarina, UserSample, Auto };
-constexpr int kNumBuiltIns = 11;
+enum class SoundId { Glass, Choir, FeltPiano, MusicBox, Nylon, Strings, Vapor, Rhodes, Kalimba, Vibes, Ocarina,
+                     Celesta, Harp, Marimba, Melodica, Organ, Cello, UserSample, Auto };
+constexpr int kNumBuiltIns = 17;
 
 namespace sources
 {
@@ -336,6 +337,98 @@ namespace sources
         return s;
     }
 
+    // A plucked string model, shared by the guitar and the harp.
+    inline SourceSound pluckedString (const juce::String& name, double root, float softness, float sustain, float bodyMix, uint32_t seed)
+    {
+        auto s = make (name, 4.5, root);
+        const int period = (int) std::round (kRate / root - 0.5);
+        s.rootHz = kRate / (period + 0.5);
+        std::vector<float> line ((size_t) period);
+        dsp::Noise nz;
+        nz.s ^= seed;
+        dsp::SVF soft;
+        soft.setup (softness, 0.6f, (float) kRate);
+        for (int i = 0; i < period * 4; ++i) { soft.tick (nz.next()); line[(size_t) (i % period)] = soft.lp; }
+        dsp::SVF body;
+        body.setup (200.0f, 1.5f, (float) kRate);
+        int idx = 0;
+        for (auto& out : s.data)
+        {
+            const int next = (idx + 1) % period;
+            const float y = line[(size_t) idx];
+            line[(size_t) idx] = sustain * 0.5f * (y + line[(size_t) next]);
+            idx = next;
+            body.tick (y);
+            out = y + body.bp * bodyMix;
+        }
+        normalise (s.data);
+        return s;
+    }
+
+    // Celesta: soft hammers on small metal plates, like a music box in a church
+    inline SourceSound celesta()
+    {
+        auto s = make ("Celesta", 3.5, 523.2511);
+        addPartials (s, { { 1.0, 1.0, 3.2 }, { 2.0, 0.18, 1.2 }, { 3.0, 0.06, 0.6 }, { 4.0, 0.12, 0.5 }, { 6.9, 0.05, 0.2 } }, 0.0, 0.0, 121);
+        for (int i = 0; i < 64; ++i) s.data[(size_t) i] *= (float) i / 64.0f;
+        normalise (s.data);
+        return s;
+    }
+
+    inline SourceSound harp() { return pluckedString ("Harp", kC4, 5200.0f, 0.9985f, 0.15f, 131); }
+
+    // Marimba: wooden bars over tube resonators
+    inline SourceSound marimba()
+    {
+        auto s = make ("Marimba", 2.5, kC4);
+        addPartials (s, { { 1.0, 1.0, 1.3 }, { 4.0, 0.35, 0.25 }, { 9.9, 0.08, 0.08 }, { 2.0, 0.04, 0.4 } }, 0.0, 0.0, 141);
+        dsp::SVF thump;
+        thump.setup (600.0f, 0.7f, (float) kRate);
+        dsp::Noise nz;
+        for (int i = 0; i < (int) (0.012 * kRate); ++i) { thump.tick (nz.next()); s.data[(size_t) i] += thump.lp * 0.6f; }
+        for (int i = 0; i < 48; ++i) s.data[(size_t) i] *= (float) i / 48.0f;
+        normalise (s.data);
+        return s;
+    }
+
+    // Melodica: a breathy reed, like a little toy accordion
+    inline SourceSound melodica()
+    {
+        auto s = make ("Melodica", 3.0, kC4);
+        std::vector<Partial> p;
+        for (int k = 1; k <= 20; ++k) p.push_back ({ (double) k, std::pow ((double) k, -1.15) * (k % 2 ? 1.0 : 0.6), 0 });
+        addPartials (s, p, 0.003, 0.2, 151);
+        dsp::SVF breath;
+        breath.setup (1500.0f, 1.0f, (float) kRate);
+        dsp::Noise nz;
+        float peak = 0;
+        for (auto v : s.data) peak = std::max (peak, std::abs (v));
+        for (auto& v : s.data) { breath.tick (nz.next()); v += breath.bp * peak * 0.15f; }
+        lowpass (s, 4500.0f, 0.7f);
+        normalise (s.data);
+        return s;
+    }
+
+    // Organ: soft drawbars with a gentle rotating-speaker shimmer
+    inline SourceSound organ()
+    {
+        auto s = make ("Organ", 3.0, kC4);
+        addPartials (s, { { 0.5, 0.6, 0 }, { 1.0, 1.0, 0 }, { 2.0, 0.7, 0 }, { 3.0, 0.4, 0 }, { 4.0, 0.35, 0 }, { 1.003, 0.3, 0 } }, 0.0025, 0.1, 161);
+        normalise (s.data);
+        return s;
+    }
+
+    // Cello: a bowed low string with warm vibrato
+    inline SourceSound cello()
+    {
+        auto s = make ("Cello", 3.0, 130.8128);
+        addSaws (s, { -4.0, 0.0, 4.0 }, 40, 5.5, 0.004, 171);
+        lowpass (s, 1800.0f, 0.9f);
+        lowpass (s, 2600.0f, 0.7f);
+        normalise (s.data);
+        return s;
+    }
+
     // Finds the musical pitch of a recording (YIN method) from its loudest moments.
     // Returns 0 when the sound has no clear pitch (drums, noise, chords).
     inline double detectPitch (const std::vector<float>& d, double sampleRate)
@@ -407,6 +500,12 @@ namespace sources
             v.push_back (kalimba());
             v.push_back (vibes());
             v.push_back (ocarina());
+            v.push_back (celesta());
+            v.push_back (harp());
+            v.push_back (marimba());
+            v.push_back (melodica());
+            v.push_back (organ());
+            v.push_back (cello());
             return v;
         }();
         return lib;

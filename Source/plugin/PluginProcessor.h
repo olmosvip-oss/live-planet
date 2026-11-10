@@ -52,6 +52,16 @@ public:
     // song mode
     SongJob songJob;
     void makeSong (bool full, bool newKey);
+    juce::Array<juce::File> libraryFolders() const;
+    void addLibraryFolder (const juce::File& f);
+    void rescanLibrary() { songJob.scanLibrary (libraryFolders()); }
+    bool songIsPlaying() const { return songPlaying.load(); }
+
+    // the finished song plays from bar 1 whenever the DAW plays
+    std::deque<std::shared_ptr<juce::AudioBuffer<float>>> songBuffers; // kept alive here
+    std::atomic<juce::AudioBuffer<float>*> songAudio { nullptr };
+    std::atomic<double> songBpm { 90.0 };
+    std::atomic<bool> songPlaying { false };
     juce::String getSampleName() const { return sampleName; }
 
     struct SkyStatus
@@ -66,8 +76,9 @@ public:
 
     static juce::StringArray soundNames() { return { "Auto (weather picks)", "Glass", "Choir", "Felt Piano", "Music Box",
                                                      "Nylon Guitar", "Tape Strings", "Vapor Synth", "Rhodes", "Kalimba",
-                                                     "Vibes", "Ocarina", "Your Sample" }; }
-    static constexpr int kSampleChoice = 12;
+                                                     "Vibes", "Ocarina", "Celesta", "Harp", "Marimba", "Melodica",
+                                                     "Organ", "Cello", "Your Sample" }; }
+    static constexpr int kSampleChoice = 18;
     std::atomic<bool> hostPlaying { false };
     juce::String getSampleInfo() const { return sampleInfo; }
 

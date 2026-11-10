@@ -9,10 +9,33 @@ namespace
     constexpr float kTwoPi = 6.2831853f;
     inline float mtof (float n) { return 440.0f * std::pow (2.0f, (n - 69.0f) / 12.0f); }
 
-    // ---------- drums, made from math (no samples)
+    // ---------- drums, made from math (no samples): six kits, one per style
+    struct KitSpec
+    {
+        float kickHi, kickLo, kickSweep, kickDecay, kickClick, kickDrive;
+        float snareTone, snareBand, snareDecay, snareNoise, snareToneMix;
+        float hatFreq, hatDecay, openDecay, hatLevel;
+        float clapBand, swish;   // swish > 0: brushes (slow-attack noise instead of a crack)
+        float warmth;            // 0..1 darker, rounder
+    };
+
+    const KitSpec& kitFor (int style)
+    {
+        static const KitSpec kits[] = {
+            //  kick hi/lo/sweep/decay/click/drive    snare tone/band/decay/noise/tone      hat f/dec/open/lvl     clap  swish warm
+            { 120, 46, 26, 6.5f, 0.10f, 1.2f,   170, 1300, 14, 1.3f, 0.5f,   6000, 60, 6,  0.45f,   1100, 0,    0.6f },  // dusty
+            { 150, 50, 32, 8.0f, 0.25f, 1.6f,   190, 2200, 18, 1.8f, 0.45f,  8000, 65, 7,  0.55f,   1300, 0,    0.3f },  // boom bap
+            { 180, 40, 40, 9.5f, 0.35f, 1.4f,   210, 2600, 22, 1.6f, 0.3f,   9500, 90, 8,  0.6f,    1700, 0,    0.0f },  // trap
+            { 130, 48, 28, 9.0f, 0.20f, 1.3f,   200, 2400, 20, 1.5f, 0.35f,  9000, 70, 9,  0.55f,   1500, 0,    0.15f }, // house
+            { 100, 44, 20, 9.0f, 0.02f, 1.0f,   180, 3500, 5,  0.9f, 0.1f,   5200, 30, 3,  0.4f,    1200, 0.02f,0.5f },  // brushes
+            { 160, 45, 45, 10.f, 0.40f, 2.2f,   240, 3000, 26, 2.0f, 0.4f,   10500,95, 10, 0.5f,    2000, 0,    0.0f },  // electronic
+        };
+        return kits[juce::jlimit (0, 5, style)];
+    }
+
     struct DrumVoice
     {
-        int type = 0; // 0 kick, 1 snare, 2 closed hat, 3 open hat, 4 clap, 5 tom
+        int type = 0; // 0 kick, 1 snare, 2 closed hat, 3 open hat, 4 clap, 5 tom, 6 rim, 7 shaker
         int age = 0;
         float vel = 1, phase = 0;
         bool active = false;
@@ -21,22 +44,26 @@ namespace
     struct DrumKit
     {
         double sr = 48000;
-        std::array<DrumVoice, 32> voices {};
+        KitSpec k {};
+        std::array<DrumVoice, 48> voices {};
         lp::dsp::Noise noise;
-        lp::dsp::SVF snareBand, hatHigh, clapBand;
-        float lp = 0;
+        lp::dsp::SVF snareBand, hatHigh, clapBand, shakerBand, rimBand;
+        float tone = 0;
 
-        void prepare (double rate)
+        void prepare (double rate, int style)
         {
             sr = rate;
-            snareBand.setup (1800.0f, 0.8f, (float) sr);
-            hatHigh.setup (7500.0f, 0.7f, (float) sr);
-            clapBand.setup (1200.0f, 1.2f, (float) sr);
+            k = kitFor (style);
+            snareBand.setup (k.snareBand, 0.8f, (float) sr);
+            hatHigh.setup (k.hatFreq, 0.7f, (float) sr);
+            clapBand.setup (k.clapBand, 1.2f, (float) sr);
+            shakerBand.setup (6500.0f, 1.5f, (float) sr);
+            rimBand.setup (1700.0f, 6.0f, (float) sr);
         }
 
         void hit (int note, float vel)
         {
-            int type = note == 36 ? 0 : note == 38 ? 1 : note == 42 ? 2 : note == 46 ? 3 : note == 39 ? 4 : 5;
+            int type = note == 36 ? 0 : note == 38 ? 1 : note == 42 ? 2 : note == 46 ? 3 : note == 39 ? 4 : note == 37 ? 6 : note == 70 ? 7 : 5;
             if (type == 2 || type == 3) // a closed hat chokes the open one
                 for (auto& v : voices) if (v.active && v.type == 3) v.active = false;
             for (auto& v : voices)
@@ -52,6 +79,8 @@ namespace
                 snareBand.tick (nz);
                 hatHigh.tick (nz);
                 clapBand.tick (nz);
+                shakerBand.tick (nz);
+                rimBand.tick (nz);
                 float outL = 0, outR = 0;
                 for (auto& v : voices)
                 {
@@ -60,26 +89,30 @@ namespace
                     float s = 0, pan = 0;
                     switch (v.type)
                     {
-                        case 0: { // kick: a falling sine with a soft click
-                            const float f = 48.0f + 110.0f * std::exp (-t * 30.0f);
+                        case 0: {
+                            const float f = k.kickLo + (k.kickHi - k.kickLo) * std::exp (-t * k.kickSweep);
                             v.phase += kTwoPi * f / fsr;
-                            s = std::sin (v.phase) * std::exp (-t * 7.0f) * 1.1f + nz * std::exp (-t * 400.0f) * 0.15f;
+                            s = std::tanh (std::sin (v.phase) * k.kickDrive) * std::exp (-t * k.kickDecay) * 1.1f
+                              + nz * std::exp (-t * 400.0f) * k.kickClick;
+                            if (t > 0.9f) v.active = false;
+                            break; }
+                        case 1: {
+                            v.phase += kTwoPi * k.snareTone / fsr;
+                            const float env = k.swish > 0 ? std::min (1.0f, t / 0.02f) * std::exp (-t * k.snareDecay) : std::exp (-t * k.snareDecay);
+                            s = std::sin (v.phase) * std::exp (-t * 30.0f) * k.snareToneMix + snareBand.bp * env * k.snareNoise;
                             if (t > 0.6f) v.active = false;
                             break; }
-                        case 1: { // snare: tone plus filtered noise
-                            v.phase += kTwoPi * 185.0f / fsr;
-                            s = std::sin (v.phase) * std::exp (-t * 30.0f) * 0.45f + snareBand.bp * std::exp (-t * 16.0f) * 1.6f;
-                            if (t > 0.35f) v.active = false;
-                            break; }
-                        case 2: s = hatHigh.hp * std::exp (-t * 70.0f) * 0.55f; pan = 0.3f; if (t > 0.1f) v.active = false; break;
-                        case 3: s = hatHigh.hp * std::exp (-t * 7.0f) * 0.4f; pan = 0.3f; if (t > 0.6f) v.active = false; break;
-                        case 4: { // clap: three quick bursts and a tail
+                        case 2: s = hatHigh.hp * std::exp (-t * k.hatDecay) * k.hatLevel; pan = 0.3f; if (t > 0.15f) v.active = false; break;
+                        case 3: s = hatHigh.hp * std::exp (-t * k.openDecay) * k.hatLevel * 0.75f; pan = 0.3f; if (t > 0.8f) v.active = false; break;
+                        case 4: {
                             const float bursts = (t < 0.01f || (t > 0.012f && t < 0.02f) || (t > 0.023f && t < 0.031f)) ? 1.0f : 0.0f;
-                            s = clapBand.bp * (bursts * 1.6f + std::exp (-t * 14.0f) * 1.1f) * (t > 0.023f ? 1.0f : 0.8f);
+                            s = clapBand.bp * (bursts * 1.6f + std::exp (-t * 14.0f) * 1.1f);
                             pan = -0.1f;
                             if (t > 0.4f) v.active = false;
                             break; }
-                        default: { // tom
+                        case 6: s = rimBand.bp * std::exp (-t * 60.0f) * 3.0f; pan = -0.3f; if (t > 0.1f) v.active = false; break;
+                        case 7: s = shakerBand.bp * std::min (1.0f, t / 0.008f) * std::exp (-t * 40.0f) * 1.2f; pan = 0.45f; if (t > 0.15f) v.active = false; break;
+                        default: {
                             const float f = 110.0f + 60.0f * std::exp (-t * 20.0f);
                             v.phase += kTwoPi * f / fsr;
                             s = std::sin (v.phase) * std::exp (-t * 9.0f) * 0.8f;
@@ -92,10 +125,12 @@ namespace
                     outR += s * (1.0f + pan);
                     ++v.age;
                 }
-                // a touch of warmth
-                lp += 0.6f * (outL - lp);
-                L[i] = std::tanh (outL * 0.8f);
-                R[i] = std::tanh (outR * 0.8f);
+                // darker kits roll off the top a little
+                tone += (1.0f - 0.8f * k.warmth) * (outL + outR - tone) * 0.5f;
+                const float darkL = outL * (1.0f - k.warmth * 0.5f) + tone * 0.5f * k.warmth * 0.5f;
+                const float darkR = outR * (1.0f - k.warmth * 0.5f) + tone * 0.5f * k.warmth * 0.5f;
+                L[i] = std::tanh (darkL * 0.8f);
+                R[i] = std::tanh (darkR * 0.8f);
             }
         }
     };
@@ -108,6 +143,9 @@ namespace
         std::array<V, 4> voices {};
         float lowpass = 0;
 
+        bool is808 = false;
+        double lastFreq = 0.0;
+
         void noteOn (int note, float vel)
         {
             for (auto& v : voices) if (v.active && v.on) v.on = false; // one note at a time
@@ -118,7 +156,7 @@ namespace
         void render (float* L, float* R, int n)
         {
             const float atk = 1.0f - std::exp (-1.0f / (0.006f * (float) sr));
-            const float rel = std::exp (-1.0f / (0.07f * (float) sr));
+            const float rel = std::exp (-1.0f / ((is808 ? 0.25f : 0.07f) * (float) sr));
             for (int i = 0; i < n; ++i)
             {
                 float s = 0;
@@ -127,12 +165,89 @@ namespace
                     if (! v.active) continue;
                     v.env = v.on ? v.env + (1.0f - v.env) * atk : v.env * rel;
                     if (! v.on && v.env < 0.0005f) { v.active = false; continue; }
-                    v.phase += 2.0 * juce::MathConstants<double>::pi * mtof ((float) v.note) / sr;
+                    double f = mtof ((float) v.note);
+                    if (is808)
+                    {
+                        // an 808: a punchy pitch drop at the start, a long round tail, a little grit
+                        const double age = v.phase / (2.0 * juce::MathConstants<double>::pi * f);
+                        f *= 1.0 + 1.5 * std::exp (-age * 40.0);
+                    }
+                    v.phase += 2.0 * juce::MathConstants<double>::pi * f / sr;
                     const float ph = (float) v.phase;
-                    s += (std::sin (ph) + 0.25f * std::sin (2.0f * ph) + 0.08f * std::sin (3.0f * ph)) * v.env * v.vel;
+                    if (is808)
+                        s += std::tanh (std::sin (ph) * 1.8f) * v.env * v.vel * 0.8f;
+                    else
+                        s += (std::sin (ph) + 0.25f * std::sin (2.0f * ph) + 0.08f * std::sin (3.0f * ph)) * v.env * v.vel;
                 }
                 lowpass += 0.25f * (s - lowpass);
                 L[i] = R[i] = std::tanh (lowpass * 0.9f);
+            }
+        }
+    };
+
+    // ---------- audio files from your library
+    juce::AudioBuffer<float> loadAudio (const juce::String& path, double targetRate, double stretch = 1.0)
+    {
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (path)));
+        if (rd == nullptr || rd->lengthInSamples <= 0) return {};
+        const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 60.0));
+        juce::AudioBuffer<float> raw (2, len);
+        rd->read (&raw, 0, len, 0, true, rd->numChannels > 1);
+        if (rd->numChannels == 1) raw.copyFrom (1, 0, raw, 0, 0, len);
+        // resample (and gently fit to the bar length) with linear interpolation
+        const double step = rd->sampleRate / targetRate / stretch;
+        const int outLen = (int) ((len - 1) / step);
+        juce::AudioBuffer<float> out (2, std::max (1, outLen));
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float* src = raw.getReadPointer (ch);
+            float* dst = out.getWritePointer (ch);
+            for (int i = 0; i < outLen; ++i)
+            {
+                const double pos = i * step;
+                const int i0 = (int) pos;
+                const float f = (float) (pos - i0);
+                dst[i] = src[i0] + (src[std::min (i0 + 1, len - 1)] - src[i0]) * f;
+            }
+        }
+        return out;
+    }
+
+    // plays your drum one-shots
+    struct SampleKit
+    {
+        std::map<int, juce::AudioBuffer<float>> sounds;
+        struct V { const juce::AudioBuffer<float>* buf = nullptr; int pos = 0; float vel = 1; int note = 0; bool active = false; };
+        std::array<V, 48> voices {};
+
+        void hit (int note, float vel)
+        {
+            auto it = sounds.find (note);
+            if (it == sounds.end()) return;
+            if (note == 42) for (auto& v : voices) if (v.active && v.note == 46) v.active = false; // choke the open hat
+            for (auto& v : voices)
+                if (! v.active) { v = { &it->second, 0, vel, note, true }; return; }
+        }
+
+        void render (float* L, float* R, int n)
+        {
+            for (int i = 0; i < n; ++i) { L[i] = 0; R[i] = 0; }
+            for (auto& v : voices)
+            {
+                if (! v.active) continue;
+                const int len = v.buf->getNumSamples();
+                const float* a = v.buf->getReadPointer (0);
+                const float* b = v.buf->getReadPointer (1);
+                for (int i = 0; i < n; ++i)
+                {
+                    if (v.pos >= len) { v.active = false; break; }
+                    const float g = v.vel * (v.pos > len - 64 ? (float) (len - v.pos) / 64.0f : 1.0f);
+                    L[i] += a[v.pos] * g;
+                    R[i] += b[v.pos] * g;
+                    ++v.pos;
+                }
             }
         }
     };
@@ -233,10 +348,54 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
         auto* L = buf.getWritePointer (0);
         auto* R = buf.getWritePointer (1);
 
-        if (part.kind == PartKind::Drums)
+        if (part.kind == PartKind::Loop)
+        {
+            // your loop, fitted exactly to its bars and placed at each start
+            const double barSamples = 4.0 * spb;
+            auto probe = loadAudio (part.samplePath, sr);
+            if (probe.getNumSamples() > 0 && part.loopBars > 0)
+            {
+                const double stretch = (double) probe.getNumSamples() / (part.loopBars * barSamples);
+                auto loop = loadAudio (part.samplePath, sr, stretch);
+                const int ln = loop.getNumSamples();
+                for (int startBar : part.loopStartBars)
+                {
+                    const int at = (int) (startBar * barSamples);
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < ln && at + i < total; ++i)
+                        {
+                            const float fade = std::min ({ 1.0f, (float) i / 240.0f, (float) (ln - i) / 240.0f });
+                            buf.getWritePointer (ch)[at + i] += loop.getSample (ch, i) * fade;
+                        }
+                }
+            }
+        }
+        else if (part.kind == PartKind::Drums && ! song.drumSamples.empty())
+        {
+            SampleKit kit;
+            for (auto& [note, path] : song.drumSamples)
+            {
+                auto a = loadAudio (path, sr);
+                if (a.getNumSamples() > 0) kit.sounds[note] = std::move (a);
+            }
+            for (int pos = 0; pos < total; pos += block)
+            {
+                const int n = std::min (block, total - pos);
+                int done = 0;
+                while (next < events.size() && events[next].sample < pos + n)
+                {
+                    const int at = (int) std::max<long> (0, events[next].sample - pos);
+                    if (at > done) { kit.render (L + pos + done, R + pos + done, at - done); done = at; }
+                    if (events[next].on) kit.hit (events[next].note, events[next].vel);
+                    ++next;
+                }
+                kit.render (L + pos + done, R + pos + done, n - done);
+            }
+        }
+        else if (part.kind == PartKind::Drums)
         {
             DrumKit kit;
-            kit.prepare (sr);
+            kit.prepare (sr, part.variant);
             for (int pos = 0; pos < total; pos += block)
             {
                 const int n = std::min (block, total - pos);
@@ -255,6 +414,7 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
         {
             BassSynth bass;
             bass.sr = sr;
+            bass.is808 = part.variant == 1;
             for (int pos = 0; pos < total; pos += block)
             {
                 const int n = std::min (block, total - pos);
@@ -326,6 +486,7 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
                 case PartKind::Pad:     targetDb = -24.0f; break;
                 case PartKind::Bass:    targetDb = -16.0f; break;
                 case PartKind::Drums:   targetDb = -17.0f; break;
+                case PartKind::Loop:    targetDb = -21.0f; break;
             }
             if (rms > 1e-6)
             {
@@ -357,6 +518,7 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
     if (peak > 0.0f) mix.applyGain (0.89f / peak);
     out.mixFile = folder.getChildFile (song.title + " - full mix.wav");
     if (! writeWav (out.mixFile, mix, sr)) return false;
+    out.mixAudio = std::make_shared<juce::AudioBuffer<float>> (std::move (mix));
 
     out.midiFile = folder.getChildFile (song.title + ".mid");
     writeMidi (song, out.midiFile);

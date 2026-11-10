@@ -23,6 +23,7 @@ set(LP_ENGINE_SOURCES
     Source/song/Analysis.cpp
     Source/song/Generator.cpp
     Source/song/Render.cpp
+    Source/song/Library.cpp
 )
 
 option(LP_BUILD_PLUGIN "Build the plugin" ON)

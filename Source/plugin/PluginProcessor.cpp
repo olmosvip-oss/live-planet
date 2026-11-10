@@ -36,6 +36,11 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "live", 1 }, "Live Weather", true));
     // plays without the DAW running (the play button on the screen)
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "play", 1 }, "Play", false));
+    // song mode
+    l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "songstyle", 1 }, "Song Style",
+        juce::StringArray { "auto", "dusty", "boom bap", "trap", "house", "brushes", "electronic" }, 0));
+    l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "usesamples", 1 }, "Use My Samples", true));
+    l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "songplay", 1 }, "Play Song With DAW", true));
     // your MIDI keyboard: "play" = notes play the instrument directly, "chord" = your keys set the chord the weather plays
     l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "keymode", 1 }, "Keyboard",
                                                           juce::StringArray { "play", "chord" }, 0));
@@ -221,6 +226,10 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     hostPlaying = t.hostPlaying;
     // only make sound when the song is playing, the play button is on, or you hold keys
     t.shouldPlay = t.hostPlaying || params.getRawParameterValue ("play")->load() > 0.5f || (chordMode && held.any());
+    auto* song = songAudio.load();
+    const bool playSong = song != nullptr && t.hostPlaying && params.getRawParameterValue ("songplay")->load() > 0.5f;
+    songPlaying = playSong;
+    if (playSong) t.shouldPlay = false;
     t.keys = keyEvents.data();
     t.numKeys = (int) keyEvents.size();
     static const std::bitset<128> none;
@@ -247,6 +256,26 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         }
     }
 
+    if (playSong)
+    {
+        // read the finished song at the DAW's position (bar 1 = the start of the song)
+        const double sbpm = songBpm.load();
+        const double hostBpm = t.bpm > 0.0 ? t.bpm : sbpm;
+        double pos = std::max (0.0, t.ppq) * 60.0 / sbpm * 48000.0;
+        const double inc = 48000.0 / getSampleRate() * (hostBpm / sbpm);
+        const int len = song->getNumSamples();
+        const float* a = song->getReadPointer (0);
+        const float* b = song->getReadPointer (1);
+        for (int i = 0; i < n; ++i, pos += inc)
+        {
+            const int i0 = (int) pos;
+            if (i0 + 1 >= len) break;
+            const float f = (float) (pos - i0);
+            L[i] += a[i0] + (a[i0 + 1] - a[i0]) * f;
+            R[i] += b[i0] + (b[i0 + 1] - b[i0]) * f;
+        }
+    }
+
     // Send the notes out so they can play any other instrument too
     for (int i = 0; i < midiOut.count; ++i)
     {
@@ -268,6 +297,22 @@ void LivePlanetProcessor::searchCity (const juce::String& name)
 
 void LivePlanetProcessor::timerCallback()
 {
+    {
+        double bpm = 90.0;
+        if (auto mix = songJob.takeFinishedMix (bpm))
+        {
+            songBpm = bpm;
+            songBuffers.push_back (mix);
+            songAudio = mix.get();
+            while (songBuffers.size() > 3) songBuffers.pop_front(); // the audio thread only ever reads the newest
+        }
+        static bool scannedOnce = false;
+        if (! scannedOnce && ! SongJob::libraryCache().existsAsFile())
+        {
+            scannedOnce = true;
+            rescanLibrary(); // first time: look for Splice and any sample folders
+        }
+    }
     // for testing: LP_EXPORT_TEST=1 writes the recorded notes to a MIDI file once 10 seconds have played
     if (std::getenv ("LP_EXPORT_TEST") != nullptr && ! exportTested && recordedOnCount.load() > 0 && ++exportTicks > 20)
     {
@@ -560,6 +605,7 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
     o.full = full;
     o.shiftKey = newKey;
     o.seed = (uint32_t) juce::Random::getSystemRandom().nextInt (1 << 30);
+    o.style = (int) params.getRawParameterValue ("songstyle")->load() - 1;
     const int soundIdx = (int) params.getRawParameterValue ("sound")->load();
     o.mainSound = (soundIdx <= 0 || soundIdx >= kSampleChoice) ? lp::SoundId::Auto : (lp::SoundId) (soundIdx - 1);
 
@@ -569,5 +615,25 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
     rs.warmth = params.getRawParameterValue ("warmth")->load();
     rs.echo = params.getRawParameterValue ("echo")->load();
     rs.sampleRate = 48000.0;
-    songJob.makeSong (o, rs, engine.getTargetWeather());
+    songJob.makeSong (o, rs, engine.getTargetWeather(), params.getRawParameterValue ("usesamples")->load() > 0.5f);
+}
+
+juce::Array<juce::File> LivePlanetProcessor::libraryFolders() const
+{
+    auto folders = lp::song::Library::defaultFolders();
+    const auto list = juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("sample-folders.txt");
+    juce::StringArray lines;
+    lines.addLines (list.loadFileAsString());
+    for (auto& l : lines)
+        if (juce::File::isAbsolutePath (l.trim()) && juce::File (l.trim()).isDirectory())
+            folders.addIfNotAlreadyThere (juce::File (l.trim()));
+    return folders;
+}
+
+void LivePlanetProcessor::addLibraryFolder (const juce::File& f)
+{
+    const auto list = juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("sample-folders.txt");
+    list.getParentDirectory().createDirectory();
+    list.appendText (f.getFullPathName() + "\n");
+    rescanLibrary();
 }

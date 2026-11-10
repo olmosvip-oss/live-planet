@@ -34,13 +34,40 @@ function readText (p)
 
 function first (v) { return (v instanceof Array) ? v[0] : v; }
 
-function bang()
+function readPlan()
 {
     var txt = null;
     for (var i = 0; i < PATHS.length && ! txt; i++) txt = readText (PATHS[i]);
-    if (! txt) { outlet (0, "set", "no song yet: make one in Live Planet first"); return; }
+    if (! txt) { outlet (0, "set", "no song yet: make one in Live Planet first"); return null; }
+    return JSON.parse (txt);
+}
 
-    var plan = JSON.parse (txt);
+// one audio track per part, each clip starting at bar 1 (needs Live 12)
+function build()
+{
+    var plan = readPlan();
+    if (! plan) return;
+    var major = first (new LiveAPI ("live_app").call ("get_major_version"));
+    if (major < 12) { outlet (0, "set", "building tracks needs Live 12. drag the stems in instead (hold cmd)."); return; }
+    var song = new LiveAPI ("live_set");
+    song.set ("tempo", plan.bpm);
+    for (var i = 0; i < plan.stems.length; i++)
+    {
+        song.call ("create_audio_track", -1);
+        var count = song.getcount ("tracks");
+        var track = new LiveAPI ("live_set tracks " + (count - 1));
+        var file = plan.stems[i];
+        track.set ("name", file.split ("/").pop().replace (/\.wav$/, "").replace (/^\d+ /, ""));
+        track.call ("create_audio_clip", file, 0);
+    }
+    bang();
+    outlet (0, "set", plan.stems.length + " tracks + locators for '" + plan.title + "'. turn off 'play with my song' in live planet.");
+}
+
+function bang()
+{
+    var plan = readPlan();
+    if (! plan) return;
     var song = new LiveAPI ("live_set");
     song.set ("tempo", plan.bpm);
 
@@ -95,14 +122,27 @@ inline juce::String helperPatcher()
               "outlettype": [ "bang", "" ], "patching_rect": [ 20.0, 60.0, 50.0, 22.0 ] } },
    { "box": { "id": "obj-2", "maxclass": "newobj", "text": "js lp_helper.js", "numinlets": 1, "numoutlets": 1,
               "outlettype": [ "" ], "patching_rect": [ 20.0, 95.0, 120.0, 22.0 ] } },
+   { "box": { "id": "obj-5", "maxclass": "live.text", "numinlets": 1, "numoutlets": 2, "outlettype": [ "", "" ],
+              "parameter_enable": 1, "mode": 0, "text": "build song tracks", "texton": "build song tracks",
+              "patching_rect": [ 200.0, 20.0, 160.0, 30.0 ], "presentation": 1, "presentation_rect": [ 196.0, 8.0, 160.0, 34.0 ],
+              "varname": "build",
+              "saved_attribute_attributes": { "valueof": { "parameter_longname": "build", "parameter_shortname": "build",
+                                                           "parameter_type": 2, "parameter_mmax": 1, "parameter_enum": [ "val1", "val2" ] } } } },
+   { "box": { "id": "obj-6", "maxclass": "newobj", "text": "sel 1", "numinlets": 2, "numoutlets": 2,
+              "outlettype": [ "bang", "" ], "patching_rect": [ 200.0, 60.0, 50.0, 22.0 ] } },
+   { "box": { "id": "obj-7", "maxclass": "message", "text": "build", "numinlets": 2, "numoutlets": 1,
+              "outlettype": [ "" ], "patching_rect": [ 200.0, 95.0, 50.0, 22.0 ] } },
    { "box": { "id": "obj-3", "maxclass": "message", "text": "make a song in Live Planet, then press", "numinlets": 2, "numoutlets": 1,
               "outlettype": [ "" ], "patching_rect": [ 20.0, 130.0, 330.0, 22.0 ],
-              "presentation": 1, "presentation_rect": [ 8.0, 48.0, 330.0, 22.0 ] } }
+              "presentation": 1, "presentation_rect": [ 8.0, 48.0, 348.0, 22.0 ] } }
   ],
   "lines": [
    { "patchline": { "source": [ "obj-1", 0 ], "destination": [ "obj-4", 0 ] } },
    { "patchline": { "source": [ "obj-4", 0 ], "destination": [ "obj-2", 0 ] } },
-   { "patchline": { "source": [ "obj-2", 0 ], "destination": [ "obj-3", 0 ] } }
+   { "patchline": { "source": [ "obj-2", 0 ], "destination": [ "obj-3", 0 ] } },
+   { "patchline": { "source": [ "obj-5", 0 ], "destination": [ "obj-6", 0 ] } },
+   { "patchline": { "source": [ "obj-6", 0 ], "destination": [ "obj-7", 0 ] } },
+   { "patchline": { "source": [ "obj-7", 0 ], "destination": [ "obj-2", 0 ] } }
   ],
   "dependency_cache": [ { "name": "lp_helper.js", "type": "TEXT", "implicit": 1 } ],
   "latency": 0,

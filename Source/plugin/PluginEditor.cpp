@@ -294,23 +294,27 @@ SoundKeys::SoundKeys (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
 
 float SoundKeys::hueFor (int i)
 {
-    static const float hues[] = { 0.0f, 0.5f, 0.74f, 0.07f, 0.9f, 0.15f, 0.99f, 0.6f, 0.04f, 0.11f, 0.55f, 0.28f };
-    return hues[jlimit (0, 11, i)];
+    static const float hues[] = { 0.0f, 0.5f, 0.74f, 0.07f, 0.9f, 0.15f, 0.99f, 0.6f, 0.04f, 0.11f, 0.55f, 0.28f,
+                                  0.82f, 0.45f, 0.09f, 0.34f, 0.66f, 0.02f };
+    return hues[jlimit (0, 17, i)];
 }
 
 String SoundKeys::nameFor (int i)
 {
     static const char* names[] = { "auto", "glass", "choir", "piano", "music box", "guitar", "strings", "vapor",
-                                   "rhodes", "kalimba", "vibes", "ocarina" };
-    return names[jlimit (0, 11, i)];
+                                   "rhodes", "kalimba", "vibes", "ocarina", "celesta", "harp", "marimba", "melodica",
+                                   "organ", "cello" };
+    return names[jlimit (0, 17, i)];
 }
 
 Rectangle<float> SoundKeys::keyBounds (int i) const
 {
     const float gap = 8.0f;
-    const float kw = ((float) getWidth() - gap * 3.0f) / 4.0f;
-    const float kh = ((float) getHeight() - gap * 2.0f - 3.0f) / 3.0f;
-    return { (float) (i % 4) * (kw + gap), (float) (i / 4) * (kh + gap), kw, kh };
+    constexpr int cols = 5, rows = 4;
+    const float g2 = 5.0f;
+    const float kw = ((float) getWidth() - g2 * (cols - 1)) / (float) cols;
+    const float kh = ((float) getHeight() - g2 * (rows - 1) - 3.0f) / (float) rows;
+    return { (float) (i % cols) * (kw + g2), (float) (i / cols) * (kh + g2), kw, kh };
 }
 
 void SoundKeys::paint (Graphics& g)
@@ -318,7 +322,7 @@ void SoundKeys::paint (Graphics& g)
     const int selected = (int) proc.params.getRawParameterValue ("sound")->load();
     const int autoPick = proc.engine.uiSound.load() + 1;
     const float t = (float) (Time::getMillisecondCounterHiRes() * 0.001);
-    for (int i = 0; i < 12; ++i)
+    for (int i = 0; i < 18; ++i)
     {
         auto r = keyBounds (i);
         const bool lit = i == selected;
@@ -326,16 +330,16 @@ void SoundKeys::paint (Graphics& g)
         hardwareKey (g, r, lit, th->dark);
         const auto col = i == 0 ? hsvCol (t * 0.08f, 0.65f, 1.0f) : hsvCol (hueFor (i), 0.7f, 1.0f);
         const float glow = lit ? 1.0f : (picked ? 0.6f + 0.4f * std::sin (t * 4.0f) : 0.0f);
-        led (g, { r.getX() + 12.0f, r.getCentreY() }, glow > 0.0f ? col : col.withMultipliedBrightness (0.35f), 5.0f, glow);
-        g.setFont (font (12.5f));
+        led (g, { r.getX() + 9.0f, r.getCentreY() }, glow > 0.0f ? col : col.withMultipliedBrightness (0.35f), 4.0f, glow);
+        g.setFont (font (11.0f));
         g.setColour (Colour (0xffeeebe4).withAlpha (lit || picked ? 1.0f : 0.7f));
-        g.drawFittedText (nameFor (i), r.withTrimmedLeft (20.0f).withTrimmedRight (4.0f).toNearestInt(), Justification::centred, 1, 0.8f);
+        g.drawFittedText (nameFor (i), r.withTrimmedLeft (15.0f).withTrimmedRight (2.0f).toNearestInt(), Justification::centred, 1, 0.75f);
     }
 }
 
 void SoundKeys::mouseUp (const MouseEvent& e)
 {
-    for (int i = 0; i < 12; ++i)
+    for (int i = 0; i < 18; ++i)
         if (keyBounds (i).contains (e.position))
             if (auto* p = proc.params.getParameter ("sound"))
             {
@@ -600,6 +604,12 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     newKey.setToggleState (true, dontSendNotification);
     addAndMakeVisible (newKey);
     addAndMakeVisible (length);
+    style = std::make_unique<Stepper> (*p.params.getParameter ("songstyle"), theme);
+    addAndMakeVisible (*style);
+    addAndMakeVisible (useSamples);
+    addAndMakeVisible (playWith);
+    useSamplesAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "usesamples", useSamples);
+    playWithAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "songplay", playWith);
     write.onClick = [this] { proc.makeSong (full, newKey.getToggleState()); repaint(); };
     addAndMakeVisible (write);
 }
@@ -607,12 +617,20 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
 void SongPanel::resized()
 {
     auto r = getLocalBounds();
-    r.removeFromTop (64);
-    auto row = r.removeFromTop (30);
-    newKey.setBounds (row.removeFromLeft (118));
-    length.setBounds (row.removeFromRight (160));
-    r.removeFromTop (8);
-    write.setBounds (r.removeFromTop (32));
+    r.removeFromTop (56);
+    auto row1 = r.removeFromTop (28);
+    newKey.setBounds (row1.removeFromLeft (104));
+    row1.removeFromLeft (8);
+    style->setBounds (row1);
+    r.removeFromTop (6);
+    auto row2 = r.removeFromTop (28);
+    useSamples.setBounds (row2.removeFromLeft (124));
+    row2.removeFromLeft (8);
+    length.setBounds (row2);
+    r.removeFromTop (6);
+    playWith.setBounds (r.removeFromTop (26));
+    r.removeFromTop (6);
+    write.setBounds (r.removeFromTop (30));
 }
 
 void SongPanel::paint (Graphics& g)
@@ -669,9 +687,27 @@ void SongPanel::paint (Graphics& g)
         g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * st.progress), 2.0f);
         status.removeFromTop (2.0f);
     }
+    auto msgLine = status.removeFromTop (16.0f);
     g.setFont (font (12.0f));
     g.setColour (st.stage == SongJob::Stage::Failed ? Colour (0xffb5482b) : th->inkDim);
-    g.drawText (st.message.toLowerCase(), status, Justification::centredLeft, true);
+    String msg = st.message.toLowerCase();
+    if (st.stage == SongJob::Stage::Done && st.usedSamples.isNotEmpty()) msg = st.usedSamples.toLowerCase();
+    g.drawText (msg, msgLine, Justification::centredLeft, true);
+
+    // your sample library
+    auto lib = status.removeFromTop (16.0f);
+    const String count = st.scanning ? String ("looking through your samples...")
+                       : st.librarySounds > 0 ? String (st.librarySounds) + " samples, " + String (st.libraryLoops) + " loops"
+                                              : String ("no sample library found yet");
+    g.setColour (th->inkDim);
+    const float cw = GlyphArrangement::getStringWidth (font (12.0f), count);
+    g.drawText (count, lib.removeFromLeft (cw + 10.0f), Justification::centredLeft, false);
+    g.setColour (th->ink);
+    g.setFont (font (12.0f, lp::ui::Medium));
+    scanLink = lib.removeFromLeft (40.0f);
+    g.drawText ("scan", scanLink, Justification::centredLeft, false);
+    folderLink = lib.removeFromLeft (80.0f);
+    g.drawText ("add folder", folderLink, Justification::centredLeft, false);
 }
 
 void SongPanel::refresh()
@@ -686,6 +722,14 @@ void SongPanel::refresh()
 
 void SongPanel::mouseUp (const MouseEvent& e)
 {
+    if (scanLink.contains (e.position)) { proc.rescanLibrary(); repaint(); return; }
+    if (folderLink.contains (e.position))
+    {
+        chooser = std::make_unique<FileChooser> ("Add a sample folder (Splice, packs, your own sounds)", File());
+        chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
+                              [this] (const FileChooser& fc) { if (fc.getResult().isDirectory()) proc.addLibraryFolder (fc.getResult()); });
+        return;
+    }
     if (! dropZone().contains (e.getPosition())) return;
     const auto st = proc.songJob.getStatus();
     if (st.haveReference && e.position.x > (float) getWidth() - 30.0f && e.position.y < 30.0f)
@@ -1008,6 +1052,9 @@ void LivePlanetEditor::setPage (int p)
     thunderToggle.setVisible (p == 1);
     // song mode: its own panel, and the screen shows the song instead of the step lane
     songPanel.setVisible (p == 2);
+    keyStepper->setVisible (p != 2);
+    scaleStepper->setVisible (p != 2);
+    keySwitch.setVisible (p != 2);
     songView.setVisible (p == 2);
     for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         pill->setVisible (p == 2);
@@ -1336,7 +1383,7 @@ void LivePlanetEditor::paint (Graphics& g)
 
     // instrument / sky well inside the right slab
     {
-        auto r = pageCard.toFloat();
+        auto r = (page == 2 ? pageCard.withBottom (474) : pageCard).toFloat();
         recess (g, r, 14.0f, th);
         if (page == 2) {}
         else if (page == 0)
@@ -1368,8 +1415,11 @@ void LivePlanetEditor::paint (Graphics& g)
 
     g.setFont (font (12.5f));
     g.setColour (th.inkDim);
+    if (page != 2)
     g.drawText ("key", keyStepper->getBounds().translated (0, -19).withHeight (16), Justification::centredLeft, false);
+    if (page != 2)
     g.drawText ("scale", scaleStepper->getBounds().translated (0, -19).withHeight (16), Justification::centredLeft, false);
+    if (page != 2)
     g.drawText ("keyboard", keySwitch.getBounds().translated (0, -19).withHeight (16), Justification::centredLeft, false);
     g.drawText (String ("season  ") + th.name, themeDots.getBounds().translated (themeDots.getWidth() + 6, 0).withWidth (140),
                 Justification::centredLeft, false);
@@ -1538,7 +1588,7 @@ void LivePlanetEditor::resized()
     dragNotes.setBounds (screen.getRight() - 18 - 210, screen.getBottom() - 112 - 50, 210, 34);
     sampleView.setBounds (screen.getX(), screen.getBottom() - 112, screen.getWidth(), 112);
     songView.setBounds (screen.getX(), screen.getBottom() - 112, screen.getWidth(), 112);
-    songPanel.setBounds (pageCard.reduced (12, 10));
+    songPanel.setBounds (pageCard.getX() + 12, pageCard.getY() + 8, pageCard.getWidth() - 24, 468 - pageCard.getY() - 8);
     {
         int px = screen.getX() + 70;
         const int pw = (screen.getRight() - 14 - px) / 5;

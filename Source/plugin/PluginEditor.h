@@ -155,17 +155,20 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseUp (const juce::MouseEvent&) override;
-    juce::Rectangle<int> dropZone() const { return getLocalBounds().removeFromTop (58); }
+    juce::Rectangle<int> dropZone() const { return getLocalBounds().removeFromTop (50); }
     void refresh(); // update the button from the message thread (never while drawing)
 
 private:
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
-    juce::ToggleButton newKey { "new key" };
+    juce::ToggleButton newKey { "new key" }, useSamples { "my samples" }, playWith { "play it with my song" };
     Segmented length;
+    std::unique_ptr<Stepper> style;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> useSamplesAtt, playWithAtt;
     juce::TextButton write { "write a song" };
     bool full = true;
     std::unique_ptr<juce::FileChooser> chooser;
+    juce::Rectangle<float> scanLink, folderLink;
 };
 
 // Song mode, on the screen: the song's sections as a timeline, and progress

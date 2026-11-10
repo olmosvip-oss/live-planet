@@ -5,6 +5,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../Source/engine/Engine.h"
 #include "../Source/song/Song.h"
+#include "../Source/song/Library.h"
 
 namespace
 {
@@ -370,8 +371,69 @@ static int fuzzTest (const juce::File& outDir)
     return 0;
 }
 
+// One short song in every style, to hear the kits and grooves.
+static int styleTour (const juce::File& outDir)
+{
+    using namespace lp::song;
+    lp::Weather sky; sky.temperatureC = 16; sky.windKmh = 12; sky.cloudPct = 50;
+    const lp::SoundId mains[] = { lp::SoundId::Rhodes, lp::SoundId::FeltPiano, lp::SoundId::Harp, lp::SoundId::Organ, lp::SoundId::Vibes, lp::SoundId::Marimba };
+    for (int st = 0; st < kNumStyles; ++st)
+    {
+        Options o; o.style = st; o.full = false; o.seed = 100 + (uint32_t) st; o.mainSound = mains[st];
+        auto song = generate (Profile {}, sky, o);
+        Rendered r;
+        const bool ok = render (song, {}, outDir.getChildFile (juce::String (st + 1) + " " + styleName ((Style) st)), r);
+        std::printf ("%-11s %5.0f bpm  %s%s  %d bars  ok=%d  %s\n", styleName ((Style) st), song.bpm, lp::noteName (song.key),
+                     song.minor ? "m" : "", song.totalBars(), ok, r.mixFile.getFullPathName().toRawUTF8());
+    }
+    return 0;
+}
+
+// Scans the sample folders, then writes a song that uses them.
+static int libraryTest (const juce::File& outDir)
+{
+    using namespace lp::song;
+    Library lib;
+    lib.scan (Library::defaultFolders());
+    std::printf ("found %d samples (%d kicks, %d snares, %d hats, %d usable loops)\n", lib.size(), lib.count (SampleKind::Kick),
+                 lib.count (SampleKind::Snare), lib.count (SampleKind::Hat), lib.loopCount());
+    for (auto& e : lib.all())
+        std::printf ("  %-42s kind=%d loop=%d bpm=%.0f key=%s%s pack=%s\n", juce::File (e.path).getFileName().toRawUTF8(), (int) e.kind, (int) e.loop,
+                     e.bpm, e.key >= 0 ? lp::noteName (e.key) : "-", e.minor ? "m" : "", e.pack.toRawUTF8());
+    Target t { 90.0, 5, true, Style::Dusty };
+    auto loopLen = [] (const juce::String& path, double bpm)
+    {
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (path)));
+        if (! rd) return 0;
+        const double bars = (double) rd->lengthInSamples / rd->sampleRate * bpm / 240.0;
+        for (int b : { 1, 2, 4, 8, 16 }) if (std::abs (bars - b) / b < 0.015) return b;
+        return 0;
+    };
+    auto picks = pickFromLibrary (lib, t, 7, loopLen);
+    std::printf ("\npicks for 90 bpm F minor dusty: drum pack '%s', %d drum sounds, loop: %s (%d bars)\n", picks.drumPack.toRawUTF8(),
+                 (int) picks.drums.size(), picks.loop ? juce::File (picks.loop->path).getFileName().toRawUTF8() : "none", picks.loopBars);
+    Options o; o.forceBpm = picks.loop ? picks.loop->bpm : 0.0; o.forceKey = 5; o.forceMinor = true; o.style = 0; o.full = false; o.seed = 5;
+    auto song = generate (Profile {}, lp::Weather {}, o);
+    song.drumSamples = picks.drums;
+    if (picks.loop)
+    {
+        Part loop; loop.name = "loop"; loop.kind = PartKind::Loop; loop.samplePath = picks.loop->path; loop.loopBars = loopLen (picks.loop->path, song.bpm);
+        for (auto& sec : song.sections) if (sec.name.rfind ("chorus", 0) == 0) for (int b = sec.startBar; b + loop.loopBars <= sec.startBar + sec.bars; b += loop.loopBars) loop.loopStartBars.push_back (b);
+        song.parts.push_back (loop);
+    }
+    Rendered r;
+    const bool ok = render (song, {}, outDir, r);
+    std::printf ("song at %.0f bpm, %d stems, rendered=%d -> %s\n", song.bpm, r.stems.size(), ok, r.mixFile.getFullPathName().toRawUTF8());
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
+    if (argc > 2 && juce::String (argv[1]) == "--library")
+        return libraryTest (juce::File (juce::String (argv[2])));
+    if (argc > 2 && juce::String (argv[1]) == "--styles")
+        return styleTour (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--fuzz")
         return fuzzTest (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--song")
