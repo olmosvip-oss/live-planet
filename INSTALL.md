@@ -12,12 +12,19 @@ On Linux, use `~/.vst3/` and `~/.clap/`.
 
 The **Live Planet** app next to the plugins works on its own, with no music app needed.
 
-## Mac: "can't be opened" warning
-Test builds are not signed by Apple yet. To allow them, open Terminal and run:
+## Mac: plugin doesn't show up, or "can't be opened"
+The Mac download is a zip inside a zip: unzip **LivePlanet-macOS.zip** again to get the plugins.
+Test builds are not signed by Apple yet, so macOS blocks them. After copying them into place, open Terminal and run:
 
 ```
-sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Live Planet.vst3" "/Library/Audio/Plug-Ins/Components/Live Planet.component"
+cd "/Library/Audio/Plug-Ins"
+for p in "VST3/Live Planet.vst3" "Components/Live Planet.component"; do
+  [ -e "$p" ] && sudo xattr -dr com.apple.quarantine "$p" && sudo codesign --force --deep -s - "$p"
+done
 ```
+
+In Ableton: Settings > Plug-Ins, turn on "Use VST3 Plug-In System Folders" and "Use Audio Units v2",
+then hold Option and click Rescan. Live Planet appears under the maker name **Live Planet Audio**.
 
 ## Using it
 1. Add Live Planet to an **instrument** track.

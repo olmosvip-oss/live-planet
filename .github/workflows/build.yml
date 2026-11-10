@@ -51,7 +51,28 @@ jobs:
           else cp "$ART/Standalone/Live Planet" dist/; fi
           cp INSTALL.md dist/
 
+      # Mac: sign each bundle (ad-hoc) and zip with ditto, which keeps the
+      # executable permissions that GitHub's own artifact zip throws away.
+      - name: Sign and package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          for b in *.vst3 *.component *.clap *.app; do
+            [ -e "$b" ] && codesign --force --deep -s - "$b"
+          done
+          cd ..
+          mkdir -p package
+          ditto -c -k --keepParent dist "package/LivePlanet-macOS.zip"
+
+      - name: Upload (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LivePlanet-macOS
+          path: package/LivePlanet-macOS.zip
+
       - name: Upload
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: LivePlanet-${{ matrix.name }}
