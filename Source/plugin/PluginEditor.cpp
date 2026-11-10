@@ -660,8 +660,6 @@ void SongPanel::paint (Graphics& g)
     // status under the button
     auto status = getLocalBounds().toFloat().withTrimmedTop ((float) write.getBottom() + 6.0f);
     const bool busy = st.stage == SongJob::Stage::Writing || st.stage == SongJob::Stage::Rendering;
-    write.setEnabled (! busy && st.stage != SongJob::Stage::Listening);
-    write.setButtonText (st.haveSong ? "write another" : "write a song");
     if (busy)
     {
         auto bar = status.removeFromTop (5.0f).withTrimmedTop (1.0f);
@@ -674,6 +672,16 @@ void SongPanel::paint (Graphics& g)
     g.setFont (font (12.0f));
     g.setColour (st.stage == SongJob::Stage::Failed ? Colour (0xffb5482b) : th->inkDim);
     g.drawText (st.message.toLowerCase(), status, Justification::centredLeft, true);
+}
+
+void SongPanel::refresh()
+{
+    const auto st = proc.songJob.getStatus();
+    const bool busy = st.stage == SongJob::Stage::Writing || st.stage == SongJob::Stage::Rendering || st.stage == SongJob::Stage::Listening;
+    if (write.isEnabled() == busy) write.setEnabled (! busy);
+    const String text = st.haveSong ? "write another" : "write a song";
+    if (write.getButtonText() != text) write.setButtonText (text);
+    repaint();
 }
 
 void SongPanel::mouseUp (const MouseEvent& e)
@@ -1153,7 +1161,7 @@ void LivePlanetEditor::timerCallback()
     const bool sampleMode = page != 2 && (int) proc.params.getRawParameterValue ("sound")->load() == LivePlanetProcessor::kSampleChoice;
     if (page == 2)
     {
-        songPanel.repaint();
+        songPanel.refresh();
         songView.repaint();
         for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
             pill->repaint();

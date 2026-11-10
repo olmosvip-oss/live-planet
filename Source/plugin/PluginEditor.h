@@ -156,6 +156,7 @@ public:
     void resized() override;
     void mouseUp (const juce::MouseEvent&) override;
     juce::Rectangle<int> dropZone() const { return getLocalBounds().removeFromTop (58); }
+    void refresh(); // update the button from the message thread (never while drawing)
 
 private:
     LivePlanetProcessor& proc;

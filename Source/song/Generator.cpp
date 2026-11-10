@@ -157,6 +157,7 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
         // avoid the harsh diminished chord
         for (auto& d : prog)
             if (lp::scaleSemis (sc, d + 4) - lp::scaleSemis (sc, d) == 6) d = (d + 5) % 7;
+        if (prog.empty()) prog = { 0, 5, 3, 4 };
         progressions[p.label] = prog;
     }
 

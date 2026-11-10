@@ -325,8 +325,55 @@ static int songTest (const juce::File& outDir)
     return 0;
 }
 
+// Throws awkward audio at song mode to make sure nothing can crash it.
+static int fuzzTest (const juce::File& outDir)
+{
+    using namespace lp::song;
+    const double sr = 44100.0;
+    juce::Random rng (3);
+    struct Case { const char* name; double seconds; int kind; };
+    const Case cases[] = { { "silence", 30, 0 }, { "white noise", 40, 1 }, { "sine 440", 20, 2 }, { "drum loop 140", 60, 3 },
+                           { "drum loop 72", 45, 4 }, { "very short", 9, 3 }, { "clicks", 50, 5 }, { "long noisy song", 400, 6 } };
+    for (auto& c : cases)
+    {
+        std::vector<float> x ((size_t) (c.seconds * sr));
+        for (size_t i = 0; i < x.size(); ++i)
+        {
+            const double t = (double) i / sr;
+            switch (c.kind)
+            {
+                case 0: x[i] = 0.0f; break;
+                case 1: x[i] = rng.nextFloat() - 0.5f; break;
+                case 2: x[i] = (float) std::sin (2 * juce::MathConstants<double>::pi * 440 * t) * 0.5f; break;
+                case 3: { const double b = std::fmod (t, 60.0 / 140.0); x[i] = (float) (std::sin (2 * 3.14159 * 60 * b) * std::exp (-b * 12) + (rng.nextFloat() - 0.5f) * std::exp (-std::fmod (t, 30.0 / 140.0) * 50) * 0.4); break; }
+                case 4: { const double b = std::fmod (t, 60.0 / 72.0); x[i] = (float) (std::sin (2 * 3.14159 * 55 * b) * std::exp (-b * 6)); break; }
+                case 5: x[i] = (i % 22050 == 0) ? 1.0f : 0.0f; break;
+                default: x[i] = (float) ((rng.nextFloat() - 0.5f) * 0.3 + std::sin (2 * 3.14159 * (220 + 110 * std::floor (t / 8.0)) * t) * 0.3 * (0.5 + 0.5 * std::sin (t * 0.2))); break;
+            }
+        }
+        const auto prof = analyse (x.data(), (int) x.size(), sr);
+        std::printf ("%-16s valid=%d bpm=%.1f key=%s%s sections=%d", c.name, prof.valid, prof.bpm, lp::noteName (prof.key), prof.minor ? "m" : "", (int) prof.sections.size());
+        for (int full = 0; full <= 1; ++full)
+        {
+            Options o; o.seed = (uint32_t) (rng.nextInt (100000)); o.full = full == 1;
+            const auto song = generate (prof, lp::Weather {}, o);
+            if (full == 0)
+            {
+                Rendered r;
+                const bool ok = render (song, {}, outDir.getChildFile (c.name), r);
+                std::printf ("  sketch: %d bars rendered=%d", song.totalBars(), ok);
+            }
+            else std::printf ("  full: %d bars, %d parts", song.totalBars(), (int) song.parts.size());
+        }
+        std::printf ("\n");
+    }
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
+    if (argc > 2 && juce::String (argv[1]) == "--fuzz")
+        return fuzzTest (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--song")
         return songTest (juce::File (juce::String (argv[2])));
     if (argc > 1 && juce::String (argv[1]) == "--latency")

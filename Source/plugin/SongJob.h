@@ -23,7 +23,7 @@ public:
         juce::File abletonSet;
     };
 
-    SongJob() : juce::Thread ("Live Planet song mode") {}
+    SongJob() : juce::Thread ("Live Planet song mode", 16 * 1024 * 1024) {}
     ~SongJob() override { signalThreadShouldExit(); notify(); stopThread (20000); }
 
     void setReference (const juce::File& file)
@@ -56,7 +56,33 @@ public:
         startIfNeeded();
     }
 
-    Status getStatus() const { const juce::ScopedLock sl (lock); return status; }
+    // everything except the notes themselves: cheap enough to call while drawing
+    Status getStatus() const
+    {
+        const juce::ScopedLock sl (lock);
+        Status s;
+        s.stage = status.stage;
+        s.progress = status.progress;
+        s.message = status.message;
+        s.haveReference = status.haveReference;
+        s.referenceName = status.referenceName;
+        s.profile.valid = status.profile.valid;
+        s.profile.bpm = status.profile.bpm;
+        s.profile.key = status.profile.key;
+        s.profile.minor = status.profile.minor;
+        s.profile.lengthSeconds = status.profile.lengthSeconds;
+        for (auto& sec : status.profile.sections)
+            s.profile.sections.push_back ({ sec.label, sec.startBar, sec.bars, sec.energy, {}, {} });
+        s.haveSong = status.haveSong;
+        s.song.title = status.song.title;
+        s.song.bpm = status.song.bpm;
+        s.song.key = status.song.key;
+        s.song.minor = status.song.minor;
+        s.song.sections = status.song.sections;
+        s.files = status.files;
+        s.abletonSet = status.abletonSet;
+        return s;
+    }
     bool isBusy() const { const juce::ScopedLock sl (lock); return status.stage == Stage::Listening || status.stage == Stage::Writing || status.stage == Stage::Rendering; }
 
     // where songs are saved: ~/Music/Live Planet/Songs
@@ -106,9 +132,24 @@ private:
                 ref = pendingReference;
                 o = options; rs = settings; sky = weather;
             }
-            if (t == Task::Listen) listen (ref);
-            else if (t == Task::Write) write (o, rs, sky);
-            else wait (-1);
+            try
+            {
+                if (t == Task::Listen) listen (ref);
+                else if (t == Task::Write) write (o, rs, sky);
+                else wait (-1);
+            }
+            catch (const std::bad_alloc&)
+            {
+                setStage (Stage::Failed, 0.0f, "not enough memory for a song this long. try sketch, or a shorter reference.");
+            }
+            catch (const std::exception& e)
+            {
+                setStage (Stage::Failed, 0.0f, juce::String ("something went wrong: ") + e.what());
+            }
+            catch (...)
+            {
+                setStage (Stage::Failed, 0.0f, "something went wrong writing the song.");
+            }
         }
     }
 
