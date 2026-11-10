@@ -15,10 +15,11 @@ struct SourceSound
     std::vector<float> data;   // mono
     double sampleRate = 48000.0;
     double rootHz = 261.6256;  // the pitch of the sound
+    float foldSemis = 0.0f;    // >0: keep notes within this many semitones of the sound's own pitch
 };
 
-enum class SoundId { Glass, Choir, FeltPiano, MusicBox, Nylon, Strings, Vapor, UserSample, Auto };
-constexpr int kNumBuiltIns = 7;
+enum class SoundId { Glass, Choir, FeltPiano, MusicBox, Nylon, Strings, Vapor, Rhodes, Kalimba, Vibes, Ocarina, UserSample, Auto };
+constexpr int kNumBuiltIns = 11;
 
 namespace sources
 {
@@ -266,6 +267,129 @@ namespace sources
         return s;
     }
 
+    // A dusty electric piano: soft tines, a little bark, gently chorused.
+    inline SourceSound rhodes()
+    {
+        auto s = make ("Rhodes", 4.5, kC4);
+        std::vector<Partial> p {
+            { 1.0, 1.0, 4.8 }, { 2.0, 0.32, 2.2 }, { 3.0, 0.1, 1.1 }, { 4.0, 0.05, 0.7 },
+            { 7.03, 0.14, 0.22 },                     // the tine "ping"
+            { 1.0018, 0.55, 4.4 }, { 2.0036, 0.15, 2.0 } // second, slightly detuned tine for warmth
+        };
+        addPartials (s, p, 0.0, 0.0, 81);
+        for (auto& v : s.data)                         // pickup bark: soft, uneven saturation
+            v = (float) std::tanh (v * 1.6 + 0.25 * v * v) * 0.8f;
+        for (int i = 0; i < 64; ++i) s.data[(size_t) i] *= (float) i / 64.0f;
+        normalise (s.data);
+        return s;
+    }
+
+    // A wooden thumb piano: short metal tines over a hollow wooden box.
+    inline SourceSound kalimba()
+    {
+        auto s = make ("Kalimba", 3.0, kC4);
+        addPartials (s, { { 1.0, 1.0, 1.9 }, { 5.92, 0.22, 0.25 }, { 13.4, 0.07, 0.08 }, { 2.0, 0.06, 0.6 } }, 0.0, 0.0, 91);
+        dsp::SVF box;
+        box.setup (420.0f, 2.2f, (float) kRate);
+        dsp::Noise nz;
+        for (int i = 0; i < (int) (0.03 * kRate); ++i)
+        {
+            box.tick (nz.next() * (1.0f - (float) i / (float) (0.03 * kRate)));
+            s.data[(size_t) i] += box.bp * 0.9f;
+        }
+        for (int i = 0; i < 48; ++i) s.data[(size_t) i] *= (float) i / 48.0f;
+        normalise (s.data);
+        return s;
+    }
+
+    // Vibraphone: soft mallets on metal bars, with the slow motor tremolo.
+    inline SourceSound vibes()
+    {
+        auto s = make ("Vibes", 5.0, kC4);
+        addPartials (s, { { 1.0, 1.0, 5.0 }, { 4.0, 0.22, 1.4 }, { 10.0, 0.05, 0.4 }, { 3.0, 0.03, 1.0 } }, 0.0, 0.0, 101);
+        for (size_t i = 0; i < s.data.size(); ++i)
+        {
+            const double t = (double) i / kRate;
+            s.data[i] *= (float) (1.0 - 0.32 * (0.5 + 0.5 * std::sin (kTwoPi * 5.2 * t)));
+        }
+        for (int i = 0; i < 96; ++i) s.data[(size_t) i] *= (float) i / 96.0f;
+        normalise (s.data);
+        return s;
+    }
+
+    // A clay ocarina: an almost pure, breathy flute tone.
+    inline SourceSound ocarina()
+    {
+        auto s = make ("Ocarina", 4.0, kC4);
+        addPartials (s, { { 1.0, 1.0, 0 }, { 2.0, 0.08, 0 }, { 3.0, 0.035, 0 } }, 0.004, 0.25, 111);
+        dsp::SVF breath;
+        breath.setup ((float) (kC4 * 3.0), 1.2f, (float) kRate);
+        dsp::Noise nz;
+        float peak = 0;
+        for (auto v : s.data) peak = std::max (peak, std::abs (v));
+        for (auto& v : s.data)
+        {
+            breath.tick (nz.next());
+            v += breath.bp * peak * 0.22f;
+        }
+        normalise (s.data);
+        return s;
+    }
+
+    // Finds the musical pitch of a recording (YIN method) from its loudest moments.
+    // Returns 0 when the sound has no clear pitch (drums, noise, chords).
+    inline double detectPitch (const std::vector<float>& d, double sampleRate)
+    {
+        const int win = (int) (0.06 * sampleRate);
+        const int minLag = (int) (sampleRate / 1000.0), maxLag = (int) (sampleRate / 55.0);
+        const int block = win + maxLag + 2;
+        if ((int) d.size() < block * 2) return 0.0;
+
+        // the five loudest stretches of the sound
+        std::vector<std::pair<double, int>> loud;
+        for (int start = 0; start + block < (int) d.size(); start += block / 2)
+        {
+            double e = 0;
+            for (int i = 0; i < win; ++i) e += (double) d[(size_t) (start + i)] * d[(size_t) (start + i)];
+            loud.push_back ({ e, start });
+        }
+        std::sort (loud.begin(), loud.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+
+        std::vector<double> found, diff ((size_t) maxLag + 1);
+        for (size_t k = 0; k < std::min<size_t> (5, loud.size()); ++k)
+        {
+            const int s0 = loud[k].second;
+            double running = 0;
+            diff[0] = 1.0;
+            for (int tau = 1; tau <= maxLag; ++tau)
+            {
+                double sum = 0;
+                for (int i = 0; i < win; ++i)
+                {
+                    const double x = d[(size_t) (s0 + i)] - d[(size_t) (s0 + i + tau)];
+                    sum += x * x;
+                }
+                running += sum;
+                diff[(size_t) tau] = running > 0 ? sum * tau / running : 1.0;
+            }
+            for (int tau = minLag; tau < maxLag - 1; ++tau)
+                if (diff[(size_t) tau] < 0.12)
+                {
+                    while (tau + 1 < maxLag && diff[(size_t) tau + 1] < diff[(size_t) tau]) ++tau;
+                    const double a = diff[(size_t) tau - 1], b = diff[(size_t) tau], c = diff[(size_t) tau + 1];
+                    const double shift = (a - 2 * b + c) != 0 ? 0.5 * (a - c) / (a - 2 * b + c) : 0.0;
+                    found.push_back (sampleRate / (tau + shift));
+                    break;
+                }
+        }
+        if (found.size() < 3) return 0.0;
+        std::sort (found.begin(), found.end());
+        const double median = found[found.size() / 2];
+        int agree = 0;
+        for (auto f : found) if (std::abs (12.0 * std::log2 (f / median)) < 0.6) ++agree;
+        return agree >= 3 ? median : 0.0;
+    }
+
     // Built once and shared by every copy of the plugin.
     inline const std::vector<SourceSound>& library()
     {
@@ -279,6 +403,10 @@ namespace sources
             v.push_back (nylon());
             v.push_back (strings());
             v.push_back (vapor());
+            v.push_back (rhodes());
+            v.push_back (kalimba());
+            v.push_back (vibes());
+            v.push_back (ocarina());
             return v;
         }();
         return lib;

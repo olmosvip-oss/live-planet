@@ -11,6 +11,20 @@ namespace
     inline float mtof (float note) { return 440.0f * std::pow (2.0f, (note - 69.0f) / 12.0f); }
     inline float cents (float c)   { return std::pow (2.0f, c / 1200.0f); }
     inline long floorDiv (long a, long b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+    // How fast to play a sound to hit a note. Your own samples are kept near their
+    // natural pitch (folded by octaves), so they never turn into chipmunks or growls.
+    inline double pitchRatio (const SourceSound& src, float note)
+    {
+        double semis = 12.0 * std::log2 (440.0 * std::pow (2.0, (note - 69.0) / 12.0) / src.rootHz);
+        if (src.foldSemis > 0.0f)
+        {
+            const double lo = -src.foldSemis, hi = lo + 12.0;
+            while (semis >= hi) semis -= 12.0;
+            while (semis < lo)  semis += 12.0;
+        }
+        return std::pow (2.0, semis / 12.0);
+    }
+
     inline float decayMul (float seconds, double sr)
     {
         return (float) std::exp (std::log (0.001) / (std::max (0.01f, seconds) * sr));
@@ -118,7 +132,7 @@ void Engine::dampShots (int layer, int note, float seconds)
             s.mul = std::min (s.mul, m);
 }
 
-void Engine::spawnShot (const SourceSound& src, int note, float gain, float pan, int layer)
+void Engine::spawnShot (const SourceSound& src, int note, float gain, float pan, int layer, float cents)
 {
     if (src.data.size() < 1024) return;
     Shot* s = nullptr;
@@ -132,9 +146,15 @@ void Engine::spawnShot (const SourceSound& src, int note, float gain, float pan,
     s->active = true;
     s->data = src.data.data();
     s->len = (int) src.data.size();
-    s->inc = mtof ((float) note) / src.rootHz * src.sampleRate / sr;
+    s->inc = pitchRatio (src, (float) note) * src.sampleRate / sr * std::pow (2.0, cents / 1200.0);
     s->note = note;
     s->layer = layer;
+    // position: start later in the sound, skipping the hard attack, so notes swell in softly
+    if (layer != 2 && p_position > 0.02f)
+    {
+        s->pos = (double) s->len * 0.28 * std::pow (p_position, 1.5);
+        s->fadeIn = (int) (sr * (0.004 + 0.12 * p_position));
+    }
     const float a = (juce::jlimit (-1.0f, 1.0f, pan) + 1.0f) * 0.25f * dsp::kPi;
     s->gl = std::cos (a) * gain;
     s->gr = std::sin (a) * gain;
@@ -374,14 +394,24 @@ void Engine::changeChord (const std::vector<int>& padNotes, int bassNote, int of
 void Engine::startPad (int note, float vel, int offset, MidiOut& midi)
 {
     const auto& pr = profileFor (soundNow);
+    bool bloom = false;
     if (pr.padStruck)
     {
         dampShots (0, note + pr.padOctave, 0.25f);
-        const float pan = (h01 (hash3 ((uint32_t) note, citySeed, 9)) * 2.0f - 1.0f) * 0.5f;
-        spawnShot (sourceFor (soundNow), note + pr.padOctave, vel * p_padLevel * 0.75f * pr.padGain, pan, 0);
+        const float pan = (h01 (hash3 ((uint32_t) note, citySeed, 9)) * 2.0f - 1.0f) * (0.25f + 0.6f * p_texture);
+        const float drift = (rng.nextFloat() * 2.0f - 1.0f) * p_texture * 22.0f; // scatter: a little out of tune, like old tape
+        const auto& src = sourceFor (soundNow);
+        spawnShot (src, note + pr.padOctave, vel * p_padLevel * 0.75f * pr.padGain, pan, 0, drift);
+        if (src.foldSemis <= 0.0f && rng.nextFloat() < p_sparkle * 0.6f)     // sparkle: a soft glint an octave up
+            spawnShot (src, note + pr.padOctave + 12, vel * p_padLevel * 0.22f * pr.padGain, -pan, 0, -drift);
         midi.add (offset, 1, note, vel, true);
         pushVisual (note, vel, 0);
-        return;
+        // ...and a soft bloom of grains swelling up behind the strike
+        for (auto& c : padVoices)
+            if (c.active && c.stage != 2 && c.note == note + pr.padOctave)
+                c.stage = 2;
+        bloom = true;
+        vel *= 0.8f;
     }
     Voice* v = nullptr;
     for (auto& c : padVoices) if (! c.active) { v = &c; break; }
@@ -391,7 +421,7 @@ void Engine::startPad (int note, float vel, int offset, MidiOut& midi)
         for (auto& c : padVoices) if (c.env < v->env) v = &c;
     }
     const Weather& w = current;
-    const float attack = (1.0f + w.snowNorm() * 1.5f + (1.0f - w.windNorm()) * 0.7f) * pr.attackMul;
+    const float attack = (1.0f + w.snowNorm() * 1.5f + (1.0f - w.windNorm()) * 0.7f) * pr.attackMul * (bloom ? 1.6f : 1.0f);
     *v = {};
     v->active = true;
     v->note = note + pr.padOctave;
@@ -400,8 +430,11 @@ void Engine::startPad (int note, float vel, int offset, MidiOut& midi)
     v->releaseMul = decayMul (2.8f + w.snowNorm() * 2.0f, sr);
     v->layer = 0;
     v->pan = (h01 (hash3 ((uint32_t) note, citySeed, 9)) * 2.0f - 1.0f) * 0.55f;
-    midi.add (offset, 1, note, vel, true);
-    pushVisual (note, vel, 0);
+    if (! bloom)
+    {
+        midi.add (offset, 1, note, vel, true);
+        pushVisual (note, vel, 0);
+    }
 }
 
 void Engine::startDrop (int note, float vel, int offset, MidiOut& midi, float decaySec, bool withBell)
@@ -412,8 +445,9 @@ void Engine::startDrop (int note, float vel, int offset, MidiOut& midi, float de
     {
         const float pan = juce::jlimit (-1.0f, 1.0f, (rng.nextFloat() * 2.0f - 1.0f) * 0.6f + swingPan);
         const auto& src = sourceFor (soundNow);
-        spawnShot (src, note + pr.dropOctave, vel * p_dropLevel * 0.85f * pr.dropGain, pan, 1);
-        if (rng.nextFloat() < p_sparkle * 0.35f) // glitter: the same note an octave up, quieter
+        spawnShot (src, note + pr.dropOctave, vel * p_dropLevel * 0.85f * pr.dropGain, pan, 1,
+                   (rng.nextFloat() * 2.0f - 1.0f) * p_texture * 18.0f);
+        if (src.foldSemis <= 0.0f && rng.nextFloat() < p_sparkle * 0.35f) // glitter: the same note an octave up, quieter
             spawnShot (src, note + pr.dropOctave + 12, vel * p_dropLevel * 0.16f, -pan, 1);
         midi.add (offset, 2, note, vel, true);
         if (pending.size() < pending.capacity())
@@ -463,7 +497,7 @@ void Engine::runStep (long step, int offset, const EngineParams& p, const std::b
     if (stepInBar == 0 || p.sound != lastRequested)
         resolveSound (bar, p, offset, midi);
     const auto& pr = profileFor (soundNow);
-    p_padLevel = p.padLevel; p_dropLevel = p.dropLevel; p_bassLevel = p.bassLevel; p_sparkle = p.sparkle;
+    p_padLevel = p.padLevel; p_dropLevel = p.dropLevel; p_bassLevel = p.bassLevel; p_sparkle = p.sparkle; p_texture = p.texture; p_position = p.position;
 
     const bool heldChanged = held != lastHeld;
     lastHeld = held;
@@ -552,6 +586,26 @@ void Engine::process (float* L, float* R, int n, const EngineParams& p, const Tr
     curBpm = t.bpm > 0.0 ? t.bpm : (double) (70.0f + current.windNorm() * 20.0f - current.snowNorm() * 8.0f);
     uiBpm = (float) curBpm;
     const double ppqPerSample = curBpm / 60.0 / sr;
+
+    if (t.shouldPlay != running)
+    {
+        running = t.shouldPlay;
+        if (! running)
+            stopAll (0, midi);       // let everything ring out naturally
+        else
+        {
+            freePpq = 0.0;           // start from the top of a bar
+            lastStep = -999999;
+            currentChordId = 0xffffffffu;
+        }
+    }
+    uiRunning = running;
+    if (! running)
+    {
+        for (int off = 0; off < n; off += kChunk)
+            renderChunk (L + off, R + off, std::min (kChunk, n - off), p);
+        return;
+    }
     const double ppq = t.hostPlaying ? t.ppq : freePpq;
 
     for (int off = 0; off < n; off += kChunk)
@@ -587,6 +641,20 @@ void Engine::process (float* L, float* R, int n, const EngineParams& p, const Tr
     }
 
     freePpq = ppq + n * ppqPerSample;
+}
+
+void Engine::stopAll (int offset, MidiOut& midi)
+{
+    for (auto& v : padVoices) if (v.active) v.stage = 2;
+    dampShots (0, -1, 1.5f);
+    dampShots (2, -1, 1.0f);
+    for (auto n : currentPad) midi.add (offset, 1, n, 0.0f, false);
+    if (bassMidiNote >= 0) midi.add (offset, 3, bassMidiNote, 0.0f, false);
+    bassMidiNote = -1;
+    bassTargetEnv = 0.0f;
+    currentPad.clear();
+    pending.clear();
+    currentChordId = 0xffffffffu;
 }
 
 void Engine::spawnGrain (std::vector<Grain>& pool, const SourceSound& src, double startPos, double ratio,
@@ -632,12 +700,14 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
     const double rateFix = src.sampleRate / sr;
     const double srcLen = (double) src.data.size();
     const float spray = juce::jlimit (0.0f, 1.0f, p.texture + windN * 0.3f + pr.scatterAdd);
+    // struck sounds: read the bloom from after the attack, so it sings instead of clicking
+    const float posBase = pr.padStruck ? 0.12f + 0.8f * p.position : p.position;
     const float padGrainSec = juce::jlimit (0.02f, 0.9f, p.grainMs * 0.001f * (1.0f + snowN * 0.8f) * pr.grainMul);
     const int padGrainLen = (int) (padGrainSec * fsr);
     const int dropGrainLen = (int) (juce::jlimit (0.015f, 0.16f, padGrainSec * 0.35f) * fsr);
     constexpr float padOverlap = 6.0f, dropOverlap = 3.0f;
     const float padNorm = 0.32f / std::sqrt (padOverlap);
-    const float dropNorm = 0.45f / std::sqrt (dropOverlap);
+    const float dropNorm = 0.8f / std::sqrt (dropOverlap);
 
     // --- pads
     for (auto& v : padVoices)
@@ -651,11 +721,11 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         while (v.countdown <= 0)
         {
             v.countdown += interval * (0.7 + 0.6 * rng.nextDouble());
-            double ratio = mtof ((float) v.note) / src.rootHz * rateFix
+            double ratio = pitchRatio (src, (float) v.note) * rateFix
                          * cents ((rng.nextFloat() * 2.0f - 1.0f) * (4.0f + spray * 14.0f));
             float gain = v.env * v.vel * p.padLevel * padNorm * pr.padGain;
-            if (rng.nextFloat() < p.sparkle * 0.3f) { ratio *= 2.0; gain *= 0.5f; }
-            const double pos = (p.position + (rng.nextFloat() - 0.5f) * spray * 0.6f + 1.0f) * srcLen;
+            if (rng.nextFloat() < p.sparkle * 0.3f) { ratio *= src.foldSemis > 0.0f ? 1.4983 : 2.0; gain *= 0.5f; }
+            const double pos = (posBase + (rng.nextFloat() - 0.5f) * spray * 0.6f + 1.0f) * srcLen;
             const float pan = v.pan + (rng.nextFloat() * 2.0f - 1.0f) * (0.25f + 0.6f * spray);
             spawnGrain (padGrains, src, pos, ratio, padGrainLen, gain, pan);
         }
@@ -674,10 +744,10 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         while (v.countdown <= 0)
         {
             v.countdown += interval * (0.7 + 0.6 * rng.nextDouble());
-            double ratio = mtof ((float) v.note) / src.rootHz * rateFix * cents ((rng.nextFloat() * 2.0f - 1.0f) * 6.0f);
+            double ratio = pitchRatio (src, (float) v.note) * rateFix * cents ((rng.nextFloat() * 2.0f - 1.0f) * 6.0f);
             float gain = v.env * v.vel * p.dropLevel * dropNorm * pr.dropGain;
-            if (rng.nextFloat() < p.sparkle * 0.35f) { ratio *= 2.0; gain *= 0.55f; }
-            const double pos = (p.position + (rng.nextFloat() - 0.5f) * spray * 0.4f + 1.0f) * srcLen;
+            if (rng.nextFloat() < p.sparkle * 0.35f) { ratio *= src.foldSemis > 0.0f ? 1.4983 : 2.0; gain *= 0.55f; }
+            const double pos = (posBase + (rng.nextFloat() - 0.5f) * spray * 0.4f + 1.0f) * srcLen;
             spawnGrain (dropGrains, src, pos, ratio, dropGrainLen, gain, v.pan + (rng.nextFloat() - 0.5f) * 0.3f);
         }
 
@@ -742,7 +812,7 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
             float v = sh.data[i0] + (sh.data[i0 + 1] - sh.data[i0]) * fr;
             const float left = (float) (sh.len - sh.pos);
             if (left < fadeLen) v *= left / fadeLen;
-            if (sh.age < 48) v *= (float) sh.age / 48.0f;
+            if (sh.age < sh.fadeIn) v *= (float) sh.age / (float) sh.fadeIn;
             v *= sh.env;
             bl[(size_t) i] += v * sh.gl;
             br[(size_t) i] += v * sh.gr;
@@ -782,9 +852,11 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
     const float bassAtk = 1.0f - std::exp (-1.0f / (0.25f * fsr));
     const float bassGlide = 1.0f - std::exp (-1.0f / (0.08f * fsr));
     const float thunderMul = decayMul (3.5f, sr);
-    const float rainLevel = p.atmos * rainN * 0.22f;
+    // the rain and wind noise only plays while the music does
+    atmosGate += ((running ? 1.0f : 0.0f) - atmosGate) * std::min (1.0f, (float) n / (float) (1.5 * sr));
+    const float rainLevel = p.atmos * rainN * 0.5f * atmosGate;
     const float crackleProb = rainN * 0.004f;
-    const float windLevel = p.atmos * windN * 0.3f;
+    const float windLevel = p.atmos * windN * 0.6f * atmosGate;
     const float wobbleDepth = warm * 0.0011f * fsr;
     const float wobbleInc = kTwoPi * 0.55f / fsr, flutterInc = kTwoPi * 6.3f / fsr;
     const float windInc = kTwoPi * (0.05f + 0.2f * windN) / fsr;
@@ -825,12 +897,12 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         const float eL = echoL.read (echoDelay), eR = echoR.read (echoDelay);
         echoFiltL.tick (eL);
         echoFiltR.tick (eR);
-        const float echoIn = (dropL[(size_t) i] + dropR[(size_t) i]) * 0.5f + (padL[(size_t) i] + padR[(size_t) i]) * 0.06f;
+        const float echoIn = (dropL[(size_t) i] + dropR[(size_t) i]) * 0.6f + (padL[(size_t) i] + padR[(size_t) i]) * 0.22f;
         echoL.push (echoIn + echoFiltR.lp * echoFb);
         echoR.push (echoFiltL.lp * echoFb);
 
-        float xl = padL[(size_t) i] + dropL[(size_t) i] + bass + thunder + rainS + windS * (1.0f - wPan) + eL * echoAmt * 0.8f;
-        float xr = padR[(size_t) i] + dropR[(size_t) i] + bass + thunder + rainS + windS * wPan + eR * echoAmt * 0.8f;
+        float xl = padL[(size_t) i] + dropL[(size_t) i] + bass + thunder + rainS + windS * (1.0f - wPan) + eL * echoAmt * 1.5f;
+        float xr = padR[(size_t) i] + dropR[(size_t) i] + bass + thunder + rainS + windS * wPan + eR * echoAmt * 1.5f;
 
         // tape warmth: slow wobble, gentle darkening and soft saturation
         wobblePhase += wobbleInc; if (wobblePhase > kTwoPi) wobblePhase -= kTwoPi;

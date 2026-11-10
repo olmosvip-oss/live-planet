@@ -54,7 +54,11 @@ public:
     lp::Weather getManualWeather() const;
 
     static juce::StringArray soundNames() { return { "Auto (weather picks)", "Glass", "Choir", "Felt Piano", "Music Box",
-                                                     "Nylon Guitar", "Tape Strings", "Vapor Synth", "Your Sample" }; }
+                                                     "Nylon Guitar", "Tape Strings", "Vapor Synth", "Rhodes", "Kalimba",
+                                                     "Vibes", "Ocarina", "Your Sample" }; }
+    static constexpr int kSampleChoice = 12;
+    std::atomic<bool> hostPlaying { false };
+    juce::String getSampleInfo() const { return sampleInfo; }
 
 private:
     void timerCallback() override;
@@ -70,7 +74,7 @@ private:
     mutable juce::SpinLock skyLock;
     std::atomic<uint32_t> citySeed { lp::hashString ("Tokyo") };
 
-    juce::String samplePath, sampleName;
+    juce::String samplePath, sampleName, sampleInfo;
     std::deque<std::unique_ptr<lp::SourceSound>> loadedSamples;
 
     std::bitset<128> held;

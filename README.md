@@ -16,9 +16,9 @@ An instrument plugin played by the weather. Pick any city on Earth and its live 
 | Humidity / fog | More reverb haze |
 | The city's name | The key (every city has its own key; you can override it) |
 
-Hold keys on a MIDI keyboard and your notes become the chord while the weather keeps playing it. The notes also go out as MIDI, so Live Planet can play any other instrument.
+It only plays while your song is playing (or the play button on its screen is on, or you hold keys). Hold keys on a MIDI keyboard and your notes become the chord while the weather keeps playing it. The notes also go out as MIDI, so Live Planet can play any other instrument.
 
-**Sounds:** seven instruments, each played its own way with its own effects:
+**Sounds:** eleven instruments, each played its own way with its own effects:
 
 | Sound | How it plays | Auto mode picks it for |
 |---|---|---|
@@ -29,6 +29,10 @@ Hold keys on a MIDI keyboard and your notes become the chord while the weather k
 | Nylon Guitar | strummed plucked strings | mild sunny days |
 | Tape Strings | warm, wobbly string section | storms and strong wind |
 | Vapor Synth | wide glossy supersaw, big echoes | hot sunny days |
+| Rhodes | dusty lo-fi electric piano | drizzle |
+| Kalimba | wooden thumb piano | warm nights |
+| Vibes | soft vibraphone with motor tremolo | partly cloudy days |
+| Ocarina | breathy clay flute | cool clear days |
 
 Choose **Auto** and the weather picks the instrument (it re-chooses every 8 bars and whenever you change city), or drag in any audio file of your own.
 **Effects:** grain size, scatter, sparkle (octave-up glitter), tape warmth and wobble, ping-pong echo, reverb with shimmer, and real rain and wind noise.

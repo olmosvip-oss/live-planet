@@ -295,21 +295,22 @@ SoundKeys::SoundKeys (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
 
 float SoundKeys::hueFor (int i)
 {
-    static const float hues[] = { 0.0f, 0.5f, 0.74f, 0.07f, 0.9f, 0.15f, 0.99f, 0.6f };
-    return hues[jlimit (0, 7, i)];
+    static const float hues[] = { 0.0f, 0.5f, 0.74f, 0.07f, 0.9f, 0.15f, 0.99f, 0.6f, 0.04f, 0.11f, 0.55f, 0.28f };
+    return hues[jlimit (0, 11, i)];
 }
 
 String SoundKeys::nameFor (int i)
 {
-    static const char* names[] = { "auto", "glass", "choir", "piano", "music box", "guitar", "strings", "vapor" };
-    return names[jlimit (0, 7, i)];
+    static const char* names[] = { "auto", "glass", "choir", "piano", "music box", "guitar", "strings", "vapor",
+                                   "rhodes", "kalimba", "vibes", "ocarina" };
+    return names[jlimit (0, 11, i)];
 }
 
 Rectangle<float> SoundKeys::keyBounds (int i) const
 {
     const float gap = 8.0f;
     const float kw = ((float) getWidth() - gap * 3.0f) / 4.0f;
-    const float kh = ((float) getHeight() - gap - 3.0f) / 2.0f;
+    const float kh = ((float) getHeight() - gap * 2.0f - 3.0f) / 3.0f;
     return { (float) (i % 4) * (kw + gap), (float) (i / 4) * (kh + gap), kw, kh };
 }
 
@@ -318,7 +319,7 @@ void SoundKeys::paint (Graphics& g)
     const int selected = (int) proc.params.getRawParameterValue ("sound")->load();
     const int autoPick = proc.engine.uiSound.load() + 1;
     const float t = (float) (Time::getMillisecondCounterHiRes() * 0.001);
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < 12; ++i)
     {
         auto r = keyBounds (i);
         const bool lit = i == selected;
@@ -335,7 +336,7 @@ void SoundKeys::paint (Graphics& g)
 
 void SoundKeys::mouseUp (const MouseEvent& e)
 {
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < 12; ++i)
         if (keyBounds (i).contains (e.position))
             if (auto* p = proc.params.getParameter ("sound"))
             {
@@ -344,6 +345,40 @@ void SoundKeys::mouseUp (const MouseEvent& e)
                 p->endChangeGesture();
                 repaint();
             }
+}
+
+void PlayButton::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (2.0f);
+    const bool on = proc.engine.uiRunning.load();
+    const bool over = isMouseOver();
+    g.setColour (Colours::white.withAlpha (over ? 0.2f : 0.12f));
+    g.fillEllipse (r);
+    g.setColour (Colours::white.withAlpha (over ? 0.55f : 0.35f));
+    g.drawEllipse (r, 1.2f);
+    const auto c = r.getCentre();
+    g.setColour (Colours::white.withAlpha (0.92f));
+    if (on)
+        g.fillRoundedRectangle (c.x - 6.0f, c.y - 6.0f, 12.0f, 12.0f, 2.0f);
+    else
+    {
+        Path tri;
+        tri.addTriangle (c.x - 4.5f, c.y - 7.5f, c.x - 4.5f, c.y + 7.5f, c.x + 8.0f, c.y);
+        g.fillPath (tri);
+    }
+}
+
+void PlayButton::mouseUp (const MouseEvent&)
+{
+    if (auto* p = proc.params.getParameter ("play"))
+    {
+        // if the DAW is playing, the button can't stop it, so only toggle our own play
+        const bool nowOn = p->getValue() > 0.5f;
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (nowOn ? 0.0f : 1.0f);
+        p->endChangeGesture();
+    }
+    repaint();
 }
 
 void ThemeDots::paint (Graphics& g)
@@ -382,6 +417,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
                   lnf.th),
       pageSwitch ("instrument", "sky", [this] { return page; }, [this] (int i) { setPage (i); }, lnf.th),
       keys (p, lnf.th),
+      playButton (p),
       themeDots (p, [this] { applyTheme(); })
 {
     setLookAndFeel (&lnf);
@@ -400,6 +436,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addAndMakeVisible (liveSwitch);
     addAndMakeVisible (pageSwitch);
     addAndMakeVisible (keys);
+    addAndMakeVisible (playButton);
     addAndMakeVisible (themeDots);
 
     keyStepper = std::make_unique<Stepper> (*p.params.getParameter ("key"), lnf.th);
@@ -648,6 +685,7 @@ void LivePlanetEditor::timerCallback()
     repaint (infoCard);
     keys.repaint();
     liveSwitch.repaint();
+    playButton.repaint();
 }
 
 //==============================================================================
@@ -823,7 +861,7 @@ void LivePlanetEditor::paint (Graphics& g)
             g.setFont (font (12.5f));
             g.setColour (th.inkDim);
             const auto smp = proc.getSampleName();
-            g.drawText (smp.isEmpty() ? "or drop a sound here" : smp.toLowerCase(),
+            g.drawText (smp.isEmpty() ? "or drop a sound here" : smp.toLowerCase() + String (CharPointer_UTF8 ("  \xc2\xb7  ")) + proc.getSampleInfo(),
                         loadButton.getBounds().translated (loadButton.getWidth() + 10, 0).withWidth (160), Justification::centredLeft, true);
         }
         else if (proc.params.getRawParameterValue ("live")->load() > 0.5f)
@@ -929,6 +967,19 @@ void LivePlanetEditor::paintScreen (Graphics& g)
         g.fillPath (tri);
     }
 
+    // play status, next to the play button
+    {
+        const auto pb = playButton.getBounds().toFloat();
+        String hint;
+        if (! proc.engine.uiRunning.load())
+            hint = proc.hostPlaying.load() ? "" : "press play, start your song, or hold a key";
+        else if (! proc.hostPlaying.load() && proc.params.getRawParameterValue ("play")->load() > 0.5f)
+            hint = "playing on its own";
+        g.setFont (font (13.5f));
+        g.setColour (textCol.withAlpha (0.7f));
+        g.drawText (hint, Rectangle<float> (pb.getRight() + 12.0f, pb.getY(), 360.0f, pb.getHeight()), Justification::centredLeft, false);
+    }
+
     // now playing, top right
     g.setFont (font (13.5f));
     g.setColour (textCol.withAlpha (0.8f));
@@ -966,29 +1017,30 @@ void LivePlanetEditor::resized()
     const int rx = 744, rw = 336;
     infoCard = { rx, 56, rw, 118 };
     cityBox.setBounds (rx + 18, 56 + 118 - 44, rw - 36, 30);
-    rightPlate = { rx, 190, rw, 278 };
-    liveSwitch.setBounds (rx + 14, 204, 140, 30);
-    pageSwitch.setBounds (rx + rw - 14 - 170, 204, 170, 30);
-    pageCard = { rx + 12, 244, rw - 24, 150 };
+    rightPlate = { rx, 186, rw, 292 };
+    liveSwitch.setBounds (rx + 14, 198, 140, 30);
+    pageSwitch.setBounds (rx + rw - 14 - 170, 198, 170, 30);
+    pageCard = { rx + 12, 236, rw - 24, 172 };
     auto pc = pageCard.reduced (12, 12);
-    keys.setBounds (pc.removeFromTop (86));
-    pc.removeFromTop (12);
-    loadButton.setBounds (pc.removeFromTop (28).withWidth (112));
+    keys.setBounds (pc.removeFromTop (114));
+    pc.removeFromTop (8);
+    loadButton.setBounds (pc.removeFromTop (26).withWidth (112));
     {
-        auto sp = pageCard.reduced (6, 4);
+        auto sp = pageCard.reduced (6, 8);
         const int cw = sp.getWidth() / 4;
         const char* top[] = { "temp", "rain", "snow", "wind" };
         const char* bottom[] = { "clouds", "pressure", "humidity" };
-        for (int i = 0; i < 4; ++i) k (top[i])->setBounds (sp.getX() + i * cw, sp.getY(), cw, 70);
-        for (int i = 0; i < 3; ++i) k (bottom[i])->setBounds (sp.getX() + i * cw, sp.getY() + 72, cw, 70);
-        auto tg = Rectangle<int> (sp.getX() + 3 * cw, sp.getY() + 76, cw, 64);
+        for (int i = 0; i < 4; ++i) k (top[i])->setBounds (sp.getX() + i * cw, sp.getY(), cw, 74);
+        for (int i = 0; i < 3; ++i) k (bottom[i])->setBounds (sp.getX() + i * cw, sp.getY() + 80, cw, 74);
+        auto tg = Rectangle<int> (sp.getX() + 3 * cw, sp.getY() + 84, cw, 64);
         dayToggle.setBounds (tg.removeFromTop (28).reduced (2, 0));
         tg.removeFromTop (6);
         thunderToggle.setBounds (tg.removeFromTop (28).reduced (2, 0));
     }
     const int sw = (rw - 28 - 12) / 2;
-    keyStepper->setBounds (rx + 14, 426, sw, 30);
-    scaleStepper->setBounds (rx + 14 + sw + 12, 426, sw, 30);
+    keyStepper->setBounds (rx + 14, 438, sw, 30);
+    scaleStepper->setBounds (rx + 14 + sw + 12, 438, sw, 30);
+    playButton.setBounds (screen.getX() + 18, screen.getBottom() - 112 - 54, 42, 42);
 
     // three bark slabs of knobs
     const int py = 490, ph = 236;

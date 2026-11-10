@@ -32,6 +32,8 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
 
     // Sky
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "live", 1 }, "Live Weather", true));
+    // plays without the DAW running (the play button on the screen)
+    l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "play", 1 }, "Play", false));
     l.add (knob ("temp", "Temperature", -20.0f, 40.0f, 16.0f, "C"));
     l.add (knob ("rain", "Rain", 0.0f, 12.0f, 0.8f, "mm", 2.0f));
     l.add (knob ("snow", "Snow", 0.0f, 4.0f, 0.0f, "cm", 0.8f));
@@ -116,7 +118,7 @@ lp::EngineParams LivePlanetProcessor::readParams() const
     lp::EngineParams p;
     p.keyRoot = (int) v ("key") - 1;
     p.scale = (int) v ("scale") - 1;
-    const int soundIdx = juce::jlimit (0, 8, (int) v ("sound"));
+    const int soundIdx = juce::jlimit (0, kSampleChoice, (int) v ("sound"));
     p.sound = soundIdx == 0 ? lp::SoundId::Auto : (lp::SoundId) (soundIdx - 1);
     p.padLevel = v ("pad");
     p.dropLevel = v ("drops");
@@ -174,6 +176,9 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                     t.ppq = *ppq;
                 }
         }
+    hostPlaying = t.hostPlaying;
+    // only make sound when the song is playing, the play button is on, or you hold keys
+    t.shouldPlay = t.hostPlaying || params.getRawParameterValue ("play")->load() > 0.5f || held.any();
 
     midiOut.clear();
     auto* L = buffer.getWritePointer (0);
@@ -256,7 +261,6 @@ bool LivePlanetProcessor::loadSample (const juce::File& file)
     auto s = std::make_unique<lp::SourceSound>();
     s->name = file.getFileNameWithoutExtension();
     s->sampleRate = reader->sampleRate;
-    s->rootHz = 261.6256; // played as if it were a C
     s->data.resize ((size_t) len);
     float peak = 0.0f;
     for (int i = 0; i < len; ++i)
@@ -270,6 +274,35 @@ bool LivePlanetProcessor::loadSample (const juce::File& file)
     if (peak > 0.0f)
         for (auto& v : s->data) v *= 0.9f / peak;
 
+    // remove any offset and soften the very start and end
+    double mean = 0;
+    for (auto v : s->data) mean += v;
+    mean /= (double) len;
+    const int fade = std::min (len / 4, (int) (0.01 * reader->sampleRate));
+    for (int i = 0; i < len; ++i)
+    {
+        float g = 1.0f;
+        if (i < fade) g = (float) i / (float) fade;
+        if (i > len - fade) g = (float) (len - i) / (float) fade;
+        s->data[(size_t) i] = (float) ((s->data[(size_t) i] - mean) * g);
+    }
+
+    // find the sample's own pitch so it is played in tune and near its natural register
+    const double f0 = lp::sources::detectPitch (s->data, reader->sampleRate);
+    if (f0 > 0.0)
+    {
+        s->rootHz = f0;
+        s->foldSemis = 8.0f;
+        const int midi = juce::roundToInt (69.0 + 12.0 * std::log2 (f0 / 440.0));
+        sampleInfo = juce::String ("pitch ") + lp::noteName (midi) + juce::String (midi / 12 - 1);
+    }
+    else
+    {
+        s->rootHz = 261.6256;
+        s->foldSemis = 6.0f;   // no clear pitch: only nudge it gently
+        sampleInfo = "texture (no clear pitch)";
+    }
+
     engine.setUserSource (s.get());
     loadedSamples.push_back (std::move (s));
     while (loadedSamples.size() > 3) loadedSamples.pop_front(); // older ones are long out of use
@@ -277,7 +310,7 @@ bool LivePlanetProcessor::loadSample (const juce::File& file)
     samplePath = file.getFullPathName();
     sampleName = file.getFileNameWithoutExtension();
     if (auto* p = params.getParameter ("sound"))
-        p->setValueNotifyingHost (p->convertTo0to1 (8.0f));
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) kSampleChoice));
     return true;
 }
 

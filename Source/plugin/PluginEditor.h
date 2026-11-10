@@ -84,6 +84,20 @@ private:
     const lp::ui::Theme*& th;
 };
 
+// Round glass play / stop button on the screen (plays without the DAW running)
+class PlayButton : public juce::Component
+{
+public:
+    explicit PlayButton (LivePlanetProcessor& p) : proc (p) {}
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+
+private:
+    LivePlanetProcessor& proc;
+};
+
 class ThemeDots : public juce::Component
 {
 public:
@@ -166,6 +180,7 @@ private:
     juce::TextEditor cityBox;
     Segmented liveSwitch, pageSwitch;
     SoundKeys keys;
+    PlayButton playButton;
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;
     juce::TextButton loadButton { "load sample" };

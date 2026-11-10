@@ -40,6 +40,7 @@ struct TransportInfo
     bool   hostPlaying = false;
     double bpm = 0.0;   // 0 = use the weather's own tempo
     double ppq = 0.0;   // position in quarter notes when the host is playing
+    bool   shouldPlay = true; // false: stay silent (DAW stopped, play button off, no keys held)
 };
 
 struct MidiOut
@@ -77,6 +78,7 @@ public:
 
     // what is playing right now, for the screen (read from the UI thread; small
     // races only affect a label)
+    std::atomic<bool> uiRunning { false };
     std::atomic<int> uiStep { 0 }, uiSound { 0 }, uiKey { 0 }, uiScale { 0 }, uiChordRoot { 0 }, uiChordMinor { 0 };
     std::atomic<float> uiBpm { 80.0f };
 
@@ -114,6 +116,7 @@ private:
         int len = 0, age = 0, note = 0, layer = 0;
         double pos = 0, inc = 1;
         float gl = 0, gr = 0, env = 1, mul = 1;
+        int fadeIn = 48;
         bool active = false;
     };
 
@@ -124,7 +127,8 @@ private:
     void startPad (int note, float vel, int offset, MidiOut& midi);
     void startDrop (int note, float vel, int offset, MidiOut& midi, float decaySec, bool withBell);
     void triggerThunder();
-    void spawnShot (const SourceSound& src, int note, float gain, float pan, int layer);
+    void stopAll (int offset, MidiOut& midi);
+    void spawnShot (const SourceSound& src, int note, float gain, float pan, int layer, float cents = 0.0f);
     void dampShots (int layer, int note, float seconds);
     void resolveSound (long bar, const EngineParams& p, int offset, MidiOut& midi);
     void restrike (int offset, float strumMs, MidiOut& midi);
@@ -143,7 +147,9 @@ private:
     std::vector<Shot> shots;
     SoundId soundNow = SoundId::Glass, autoSound = SoundId::Glass, lastRequested = (SoundId) -1;
     long soundBlock = -1;
-    float p_padLevel = 0.75f, p_dropLevel = 0.7f, p_bassLevel = 0.45f, p_sparkle = 0.3f;
+    bool running = false;
+    float p_padLevel = 0.75f, p_dropLevel = 0.7f, p_bassLevel = 0.45f, p_sparkle = 0.3f, p_texture = 0.35f, p_position = 0.3f;
+    float atmosGate = 0.0f;
     std::atomic<const SourceSound*> userSource { nullptr };
 
     std::vector<Grain> padGrains, dropGrains;
