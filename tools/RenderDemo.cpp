@@ -284,8 +284,10 @@ static int songTest (const juce::File& outDir)
     sky.temperatureC = 14; sky.windKmh = 10; sky.cloudPct = 60; sky.rainMm = 0.6f; sky.isDay = true;
 
     Options o; o.seed = 11; o.mainSound = lp::SoundId::FeltPiano;
+    const bool trapTest = std::getenv ("LP_TRAP_TEST") != nullptr;
+    if (trapTest) { o.style = (int) Style::Trap; o.mainSound = lp::SoundId::Vapor; }
     Song truth = generate (Profile {}, sky, o);
-    truth.bpm = 96; truth.title = "reference";
+    truth.bpm = trapTest ? 140 : 96; truth.title = "reference";
     std::printf ("REFERENCE (made here, so we know the truth)\n  %.0f bpm, %s %s, %d bars\n  sections:",
                  truth.bpm, lp::noteName (truth.key), truth.minor ? "minor" : "major", truth.totalBars());
     for (auto& sct : truth.sections) std::printf (" %s(%d)", sct.name.c_str(), sct.bars);

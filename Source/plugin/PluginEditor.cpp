@@ -347,7 +347,8 @@ void SoundKeys::mouseUp (const MouseEvent& e)
 void PlayButton::paint (Graphics& g)
 {
     auto r = getLocalBounds().toFloat().reduced (2.0f);
-    const bool on = proc.engine.uiRunning.load();
+    const bool song = songMode && songMode();
+    const bool on = song ? proc.previewPlaying.load() : proc.engine.uiRunning.load();
     const bool over = isMouseOver();
     g.setColour (Colours::white.withAlpha (over ? 0.2f : 0.12f));
     g.fillEllipse (r);
@@ -367,6 +368,12 @@ void PlayButton::paint (Graphics& g)
 
 void PlayButton::mouseUp (const MouseEvent&)
 {
+    if (songMode && songMode())
+    {
+        if (proc.studio.length() > 0) proc.previewPlaying = ! proc.previewPlaying.load();
+        repaint();
+        return;
+    }
     if (auto* p = proc.params.getParameter ("play"))
     {
         // if the DAW is playing, the button can't stop it, so only toggle our own play
@@ -595,7 +602,7 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     : proc (p), th (theme),
       length ({ "full song", "sketch" }, [this] { return full ? 0 : 1; }, [this] (int i) { full = i == 0; }, theme)
 {
-    newKey.setToggleState (true, dontSendNotification);
+    newKey.setToggleState (false, dontSendNotification); // stay in your song's key unless you ask
     addAndMakeVisible (newKey);
     addAndMakeVisible (length);
     style = std::make_unique<Stepper> (*p.params.getParameter ("songstyle"), theme);
@@ -604,6 +611,8 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     addAndMakeVisible (playWith);
     useSamplesAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "usesamples", useSamples);
     playWithAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "songplay", playWith);
+    addAndMakeVisible (samplesOnly);
+    samplesOnlyAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "samplesonly", samplesOnly);
     write.onClick = [this] { proc.makeSong (full, newKey.getToggleState()); repaint(); };
     addAndMakeVisible (write);
 }
@@ -622,7 +631,10 @@ void SongPanel::resized()
     row2.removeFromLeft (8);
     length.setBounds (row2);
     r.removeFromTop (6);
-    playWith.setBounds (r.removeFromTop (26));
+    auto row3 = r.removeFromTop (26);
+    playWith.setBounds (row3.removeFromLeft (row3.getWidth() / 2 + 20));
+    row3.removeFromLeft (8);
+    samplesOnly.setBounds (row3);
     r.removeFromTop (6);
     write.setBounds (r.removeFromTop (30));
 }
@@ -803,6 +815,14 @@ void SongView::paint (Graphics& g)
             }
         }
     }
+    if (st.haveSong && proc.studio.length() > 0 && proc.songIsPlaying())
+    {
+        const float frac = (float) jlimit (0.0, 1.0, proc.playheadPos.load() / (double) proc.studio.length());
+        auto lane = r.withTrimmedTop (6.0f);
+        const float x = lane.getX() + lane.getWidth() * frac;
+        g.setColour (Colours::white);
+        g.drawLine (x, lane.getY() - 4.0f, x, lane.getBottom(), 1.5f);
+    }
     if (busy)
     {
         auto bar = Rectangle<float> (b.getX() + 16.0f, b.getBottom() - 6.0f, b.getWidth() - 32.0f, 3.0f);
@@ -895,8 +915,9 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       dragNotes (p),
       songPanel (p, lnf.th),
       songView (p),
+      studioView (p),
       pillMidi ("drag midi", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.midiFile.getFullPathName()) : StringArray(); }),
-      pillStems ("drag stems", [&p] { auto st = p.songJob.getStatus(); StringArray a; if (st.haveSong) for (auto& f : st.files.stems) a.add (f.getFullPathName()); return a; }),
+      pillStems ("drag stems", [&p] { auto st = p.songJob.getStatus(); StringArray a; if (st.haveSong) for (auto& t : st.tracks) a.add (t.stem.getFullPathName()); return a; }),
       pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray(); }),
       pillHelper ("locators", [&p] { auto st = p.songJob.getStatus(); return st.abletonSet.existsAsFile() ? StringArray (st.abletonSet.getFullPathName()) : StringArray(); }),
       pillFolder ("folder", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.folder.getFullPathName()) : StringArray(); }),
@@ -926,6 +947,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addAndMakeVisible (dragNotes);
     addChildComponent (songPanel);
     addChildComponent (songView);
+    addChildComponent (studioView);
+    playButton.songMode = [this] { return page == 2; };
     for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         addChildComponent (pill);
     addAndMakeVisible (themeDots);
@@ -1050,6 +1073,7 @@ void LivePlanetEditor::setPage (int p)
     scaleStepper->setVisible (p != 2);
     keySwitch.setVisible (p != 2);
     songView.setVisible (p == 2);
+    studioView.setVisible (p == 2 && proc.songJob.getStatus().haveSong);
     for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         pill->setVisible (p == 2);
     dragNotes.setVisible (p != 2);
@@ -1202,6 +1226,10 @@ void LivePlanetEditor::timerCallback()
     const bool sampleMode = page != 2 && (int) proc.params.getRawParameterValue ("sound")->load() == LivePlanetProcessor::kSampleChoice;
     if (page == 2)
     {
+        const bool haveSong = proc.songJob.getStatus().haveSong;
+        if (studioView.isVisible() != haveSong) studioView.setVisible (haveSong);
+        if (haveSong) studioView.repaint();
+        playButton.repaint();
         songPanel.refresh();
         songView.repaint();
         for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
@@ -1526,6 +1554,7 @@ void LivePlanetEditor::resized()
     dragNotes.setBounds (screen.getRight() - 18 - 210, screen.getBottom() - 112 - 50, 210, 34);
     sampleView.setBounds (screen.getX(), screen.getBottom() - 112, screen.getWidth(), 112);
     songView.setBounds (screen.getX(), screen.getBottom() - 112, screen.getWidth(), 112);
+    studioView.setBounds (screen.getX() + 10, screen.getY() + 10, screen.getWidth() - 20, screen.getHeight() - 112 - 60);
     songPanel.setBounds (pageCard.getX() + 12, pageCard.getY() + 8, pageCard.getWidth() - 24, 468 - pageCard.getY() - 8);
     {
         int px = screen.getX() + 70;

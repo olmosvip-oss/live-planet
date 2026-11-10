@@ -185,7 +185,8 @@ bool Library::load (const juce::File& cache)
 }
 
 LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::uint32 seed,
-                              std::function<int (const juce::String&, double)> loopLengthBars)
+                              std::function<int (const juce::String&, double)> loopLengthBars,
+                              const juce::String& forceDrumPack)
 {
     LibraryPicks picks;
     juce::Random rng ((juce::int64) seed * 31 + 7);
@@ -201,13 +202,16 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
         packs[e.pack][(size_t) slot] += (e.styles & styleBit) ? 3 : 1;
     }
     juce::String bestPack;
-    float bestScore = 0.0f;
+    std::vector<std::pair<float, juce::String>> kitPacks;
     for (auto& [pack, c] : packs)
     {
         if (c[0] == 0 || (c[1] == 0 && c[2] == 0) || c[3] == 0) continue; // needs kick, snare or clap, hat
-        const float score = (float) (c[0] + c[1] + c[2] + c[3] + c[4] + c[5]) + rng.nextFloat() * 4.0f;
-        if (score > bestScore) { bestScore = score; bestPack = pack; }
+        kitPacks.push_back ({ (float) (c[0] + c[1] + c[2] + c[3] + c[4] + c[5]) + rng.nextFloat() * 4.0f, pack });
     }
+    std::sort (kitPacks.begin(), kitPacks.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+    for (size_t i = 0; i < std::min<size_t> (8, kitPacks.size()); ++i) picks.drumPacks.add (kitPacks[i].second);
+    if (forceDrumPack.isNotEmpty()) bestPack = forceDrumPack;
+    else if (! kitPacks.empty()) bestPack = kitPacks.front().second;
     auto pickOne = [&] (SampleKind k) -> juce::String
     {
         std::vector<const LibraryEntry*> inPack, styled, any;
@@ -261,6 +265,54 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
     {
         const int bars = loopLengthBars ? loopLengthBars (loops[i].second->path, loops[i].second->bpm) : 0;
         if (bars > 0) { picks.loop = loops[i].second; picks.loopBars = bars; break; }
+    }
+
+    // a whole set that plays together: everything at the main loop's exact tempo, same key family
+    if (picks.loop != nullptr)
+    {
+        double best = picks.loop->bpm, bestDiff = 1e9;
+        for (double m : { 0.5, 1.0, 2.0 })
+            if (std::abs (picks.loop->bpm * m - target.bpm) < bestDiff) { bestDiff = std::abs (picks.loop->bpm * m - target.bpm); best = picks.loop->bpm * m; }
+        picks.loopBpm = best;
+        std::map<LoopKind, LoopChoice> byKind;
+        for (auto& e : lib.all())
+        {
+            if (e.kind != SampleKind::Loop || e.bpm <= 0) continue;
+            bool tempoOk = false;
+            for (double m : { 0.5, 1.0, 2.0 }) tempoOk = tempoOk || std::abs (e.bpm * m / best - 1.0) < 0.015;
+            if (! tempoOk) continue;
+            const bool tonal = e.loop != LoopKind::Drums;
+            if (tonal)
+            {
+                if (e.key < 0) continue;
+                const bool sameKey = e.key == target.key && e.minor == target.minor;
+                const bool relKey = e.key == relative && e.minor != target.minor;
+                if (! sameKey && ! relKey) continue;
+            }
+            auto& choice = byKind[e.loop];
+            choice.kind = e.loop;
+            if (choice.options.size() >= 24) continue;
+            choice.options.push_back ({ &e, 0 });
+        }
+        for (auto& [kind, choice] : byKind)
+        {
+            // shuffle a little (seeded) so "write another" finds new sounds, then keep ones that are whole bars
+            for (size_t i = choice.options.size(); i > 1; --i) std::swap (choice.options[i - 1], choice.options[(size_t) rng.nextInt ((int) i)]);
+            if (kind == picks.loop->loop)
+                for (size_t i = 0; i < choice.options.size(); ++i)
+                    if (choice.options[i].first == picks.loop) std::swap (choice.options[0], choice.options[i]);
+            std::vector<std::pair<const LibraryEntry*, int>> ok;
+            for (auto& o : choice.options)
+            {
+                const int bars = loopLengthBars ? loopLengthBars (o.first->path, best) : 0;
+                if (bars > 0) ok.push_back ({ o.first, bars });
+                if (ok.size() >= 6) break;
+            }
+            choice.options = ok;
+            if (! ok.empty()) picks.loopSet.push_back (choice);
+        }
+        // the main loop's kind first
+        std::stable_sort (picks.loopSet.begin(), picks.loopSet.end(), [&] (auto& a, auto& b) { return a.kind == picks.loop->loop && b.kind != picks.loop->loop; });
     }
     return picks;
 }

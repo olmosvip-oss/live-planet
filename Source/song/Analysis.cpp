@@ -78,7 +78,8 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
     const double fps = sr / hop;
     std::vector<float> window (N);
     for (int i = 0; i < N; ++i) window[(size_t) i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * (float) i / (float) (N - 1));
-    std::vector<float> onset ((size_t) frames, 0.0f), lowOnset ((size_t) frames, 0.0f), rms ((size_t) frames), bright ((size_t) frames);
+    std::vector<float> onset ((size_t) frames, 0.0f), lowOnset ((size_t) frames, 0.0f), midOnset ((size_t) frames, 0.0f),
+                       highOnset ((size_t) frames, 0.0f), rms ((size_t) frames), bright ((size_t) frames);
     std::vector<std::array<float, 12>> chroma ((size_t) frames);
     std::vector<float> prevMag (N / 2, 0.0f), mag (N / 2);
     std::vector<cpx> buf (N);
@@ -100,23 +101,33 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
         }
         rms[(size_t) fr] = (float) std::sqrt (e / N);
         fft (buf);
-        float flux = 0, low = 0, num = 0, den = 0;
+        float flux = 0, low = 0, midF = 0, highF = 0, num = 0, den = 0;
         for (int b = 1; b < N / 2; ++b)
         {
             mag[(size_t) b] = std::log1p (std::abs (buf[(size_t) b]) * 10.0f);
             const float d = mag[(size_t) b] - prevMag[(size_t) b];
-            if (d > 0) { flux += d; if (b * sr / N < 150.0) low += d; }
+            if (d > 0)
+            {
+                flux += d;
+                const double fb = b * sr / N;
+                if (fb < 150.0) low += d;
+                else if (fb > 180.0 && fb < 2500.0) midF += d;
+                else if (fb > 5000.0) highF += d;
+            }
             const float m = std::abs (buf[(size_t) b]);
             num += m * (float) (b * sr / N);
             den += m;
         }
         onset[(size_t) fr] = flux;
+        midOnset[(size_t) fr] = midF;
+        highOnset[(size_t) fr] = highF;
         lowOnset[(size_t) fr] = low;
         bright[(size_t) fr] = den > 0 ? num / den : 0.0f;
         std::swap (prevMag, mag);
     }
 
     // a finer look for pitch (key and chords): long windows resolve bass notes properly
+    std::array<double, 12> bassChroma {};
     {
         constexpr int N2 = 8192, hop2 = 2048;
         std::vector<float> win2 (N2);
@@ -139,6 +150,7 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
                 {
                     const float m = std::abs (b2[(size_t) b]);
                     c[(size_t) pc2[(size_t) b]] += m * m;
+                    if (b * sr / N2 < 260.0) bassChroma[(size_t) pc2[(size_t) b]] += m * m;
                 }
             // spread this window's chroma over the onset frames it covers
             const int f0 = (start + N2 / 2 - hop2 / 2) / hop, f1 = std::min (frames, (start + N2 / 2 + hop2 / 2) / hop);
@@ -158,22 +170,58 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
         env[(size_t) i] = std::max (0.0f, onset[(size_t) i] - mean);
     }
 
-    // 3. tempo: autocorrelation of the hits, gently preferring 80-130 bpm
-    double bestScore = -1, bestLag = fps * 0.6;
-    for (double bpm = 60.0; bpm <= 180.0; bpm += 0.5)
+    // 3. tempo: autocorrelation of the hits, then a careful look at the related tempos
+    //    (double, half, and the triplet relations that rolling hi-hats can fool you with)
+    auto score = [&] (double bpm)
     {
         const double lag = fps * 60.0 / bpm;
-        double s = 0;
-        for (int i = 0; i + (int) (lag * 4) + 1 < frames; ++i)
-        {
-            const int l1 = (int) lag, l2 = (int) (lag * 2), l4 = (int) (lag * 4);
-            s += env[(size_t) i] * (env[(size_t) (i + l1)] + 0.5f * env[(size_t) (i + l2)] + 0.25f * env[(size_t) (i + l4)]);
-        }
-        const double prior = std::exp (-0.5 * std::pow (std::log2 (bpm / 105.0) / 0.55, 2.0));
-        s *= 0.4 + prior;
-        if (s > bestScore) { bestScore = s; bestLag = lag; }
+        double sc = 0;
+        const int l1 = (int) std::round (lag), l2 = (int) std::round (lag * 2), l4 = (int) std::round (lag * 4);
+        for (int i = 0; i + l4 + 1 < frames; ++i)
+            sc += env[(size_t) i] * (env[(size_t) (i + l1)] + 0.5f * env[(size_t) (i + l2)] + 0.25f * env[(size_t) (i + l4)]);
+        return sc;
+    };
+    double bestBpm = 100.0, bestScore = -1;
+    for (double bpm = 60.0; bpm <= 180.0; bpm += 0.5)
+    {
+        const double sc = score (bpm) * (0.4 + std::exp (-0.5 * std::pow (std::log2 (bpm / 105.0) / 0.55, 2.0)));
+        if (sc > bestScore) { bestScore = sc; bestBpm = bpm; }
     }
-    p.bpm = std::round (fps * 60.0 / bestLag * 2.0) / 2.0;
+    {
+        // a bar-level check: the real tempo makes the strongest hits (kicks/snares) line up every beat and bar
+        auto barScore = [&] (double bpm)
+        {
+            const double lag = fps * 60.0 / bpm;
+            double sc = 0;
+            for (int k : { 1, 2, 4 })
+            {
+                const int l = (int) std::round (lag * k);
+                for (int i = 0; i + l < frames; ++i) sc += (double) (lowOnset[(size_t) i] + midOnset[(size_t) i]) * (lowOnset[(size_t) (i + l)] + midOnset[(size_t) (i + l)]) / k;
+            }
+            return sc;
+        };
+        double pick = bestBpm, pickScore = -1;
+        for (double m : { 1.0, 2.0, 0.5, 1.5, 2.0 / 3.0, 4.0 / 3.0, 0.75 })
+        {
+            const double cand = bestBpm * m;
+            if (cand < 60.0 || cand > 180.0) continue;
+            const double prior = std::exp (-0.5 * std::pow (std::log2 (cand / 110.0) / 0.6, 2.0));
+            const double sc = barScore (cand) * (0.5 + prior) * (m == 1.0 ? 1.05 : 1.0);
+            if (sc > pickScore) { pickScore = sc; pick = cand; }
+        }
+        bestBpm = pick;
+    }
+    p.bpm = std::round (bestBpm * 2.0) / 2.0;
+    {
+        float envMean0 = 0;
+        for (auto v : env) envMean0 += v;
+        envMean0 /= (float) frames;
+        int hits0 = 0;
+        for (int i = 1; i + 1 < frames; ++i)
+            if (env[(size_t) i] > envMean0 * 2.0f && env[(size_t) i] >= env[(size_t) i - 1] && env[(size_t) i] > env[(size_t) i + 1]) ++hits0;
+        const double hitsPerBeat = hits0 / (frames / (fps * 60.0 / p.bpm));
+        if (p.bpm < 85.0 && hitsPerBeat > 2.2 && p.bpm * 2.0 <= 170.0) p.bpm *= 2.0; // a "70" with rolling 16ths is really 140
+    }
     const double beat = fps * 60.0 / p.bpm;
 
     // beat phase, then which beat is the downbeat (strongest low end)
@@ -207,6 +255,14 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
         if (a > best) { best = a; p.key = k; p.minor = false; }
         if (b > best) { best = b; p.key = k; p.minor = true; }
     }
+    {
+        const int rel = p.minor ? (p.key + 3) % 12 : (p.key + 9) % 12;
+        if (bassChroma[(size_t) rel] > bassChroma[(size_t) p.key] * 1.6)
+        {
+            p.key = rel;
+            p.minor = ! p.minor;
+        }
+    }
 
     // 5. per bar: chroma, chord, loudness
     struct Bar { std::array<float, 12> chroma {}; float energy = 0; int root = -1; bool minor = false; };
@@ -236,6 +292,39 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
                                 + bi.chroma[(size_t) ((r + 7) % 12)] * 0.9f) / std::sqrt (1.0f + 0.64f + 0.81f);
                 if (s > bestChord) { bestChord = s; bi.root = r; bi.minor = q == 1; }
             }
+    }
+
+    // the groove: average hit strength on each 16th, per band
+    {
+        std::array<double, 16> lo {}, mi {}, hi {};
+        auto peakNear = [&] (const std::vector<float>& e, double f)
+        {
+            float m = 0;
+            for (int d = -1; d <= 1; ++d)
+            {
+                const int i = (int) std::round (f) + d;
+                if (i >= 0 && i < frames) m = std::max (m, e[(size_t) i]);
+            }
+            return m;
+        };
+        for (int b = 0; b < bars; ++b)
+            for (int st = 0; st < 16; ++st)
+            {
+                const double f = firstBar + b * barLen + st * barLen / 16.0;
+                lo[(size_t) st] += peakNear (lowOnset, f);
+                mi[(size_t) st] += peakNear (midOnset, f);
+                hi[(size_t) st] += peakNear (highOnset, f);
+            }
+        auto norm = [] (const std::array<double, 16>& a, std::array<float, 16>& out)
+        {
+            double mx = 1e-9, mn = 1e9;
+            for (auto v : a) { mx = std::max (mx, v); mn = std::min (mn, v); }
+            for (size_t i = 0; i < 16; ++i) out[i] = (float) ((a[i] - mn) / std::max (1e-9, mx - mn));
+        };
+        norm (lo, p.grooveLow);
+        norm (mi, p.grooveMid);
+        norm (hi, p.grooveHigh);
+        p.hasGroove = true;
     }
 
     // 6. sections: where the music changes (novelty in a bar-by-bar similarity map)

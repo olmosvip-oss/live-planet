@@ -252,6 +252,47 @@ namespace
         }
     };
 
+    // a simple time-preserving pitch shifter: two crossfading read heads on a delay line
+    void pitchShift (juce::AudioBuffer<float>& buf, int semis, double sr)
+    {
+        const double ratio = std::pow (2.0, semis / 12.0);
+        const int win = (int) (0.06 * sr);
+        const int n = buf.getNumSamples();
+        juce::AudioBuffer<float> out (2, n);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float* in = buf.getReadPointer (ch);
+            float* o = out.getWritePointer (ch);
+            double phase = 0.0;
+            const double step = (1.0 - ratio) / win; // how fast the delay changes
+            for (int i = 0; i < n; ++i)
+            {
+                phase += step;
+                phase -= std::floor (phase);
+                float acc = 0;
+                for (int k = 0; k < 2; ++k)
+                {
+                    const double ph = std::fmod (phase + 0.5 * k, 1.0);
+                    const double pos = i - ph * win;
+                    const int p0 = (int) std::floor (pos);
+                    const float fr = (float) (pos - p0);
+                    const float a = p0 >= 0 && p0 < n ? in[p0] : 0.0f;
+                    const float b = p0 + 1 >= 0 && p0 + 1 < n ? in[p0 + 1] : 0.0f;
+                    const float w = std::sin ((float) ph * juce::MathConstants<float>::pi);
+                    acc += (a + (b - a) * fr) * w * w;
+                }
+                o[i] = acc;
+            }
+        }
+        buf = std::move (out);
+    }
+
+    void reverse (juce::AudioBuffer<float>& b)
+    {
+        for (int ch = 0; ch < b.getNumChannels(); ++ch)
+            std::reverse (b.getWritePointer (ch), b.getWritePointer (ch) + b.getNumSamples());
+    }
+
     struct Event { long sample; int note; float vel; bool on; };
 
     std::vector<Event> eventsFor (const Part& part, double samplesPerBeat)
@@ -319,6 +360,187 @@ void writeMidi (const Song& song, const juce::File& file)
     if (os.openedOk()) mf.writeTo (os, 1);
 }
 
+// Renders one part on its own (also used when you swap, reverse or re-pitch a track in the studio).
+bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs, juce::AudioBuffer<float>& buf,
+                 std::function<bool()> shouldStop)
+{
+    const double sr = rs.sampleRate;
+    const double spb = sr * 60.0 / song.bpm;
+    const int total = (int) ((song.totalBars() * 4.0 + 8.0) * spb);
+    constexpr int block = 256;
+    lp::Weather calm;
+    calm.rainMm = 0; calm.windKmh = 6; calm.cloudPct = 30; calm.temperatureC = 18; calm.humidityPct = 60;
+    buf.setSize (2, total);
+    buf.clear();
+
+    // your edits: transposing a played part moves its notes, so it stays clean and in time
+    Part part = partIn;
+    if (part.kind != PartKind::Loop && part.kind != PartKind::Drums && part.pitchSemis != 0)
+        for (auto& n : part.notes) n.pitch += part.pitchSemis;
+
+    const auto events = eventsFor (part, spb);
+    size_t next = 0;
+    auto* L = buf.getWritePointer (0);
+    auto* R = buf.getWritePointer (1);
+
+    if (part.kind == PartKind::Loop)
+    {
+        // your loop, fitted exactly to its bars and placed at each start
+        const double barSamples = 4.0 * spb;
+        auto probe = loadAudio (part.samplePath, sr);
+        if (probe.getNumSamples() > 0 && part.loopBars > 0)
+        {
+            const double stretch = (double) probe.getNumSamples() / (part.loopBars * barSamples);
+            auto loop = loadAudio (part.samplePath, sr, stretch);
+            if (part.reversed) reverse (loop);
+            const int ln = loop.getNumSamples();
+            for (int startBar : part.loopStartBars)
+            {
+                const int at = (int) (startBar * barSamples);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < ln && at + i < total; ++i)
+                    {
+                        const float fade = std::min ({ 1.0f, (float) i / 240.0f, (float) (ln - i) / 240.0f });
+                        buf.getWritePointer (ch)[at + i] += loop.getSample (ch, i) * fade;
+                    }
+            }
+        }
+    }
+    else if (part.kind == PartKind::Drums && ! song.drumSamples.empty())
+    {
+        SampleKit kit;
+        for (auto& [note, path] : song.drumSamples)
+        {
+            auto a = loadAudio (path, sr);
+            if (a.getNumSamples() > 0) kit.sounds[note] = std::move (a);
+        }
+        for (int pos = 0; pos < total; pos += block)
+        {
+            const int n = std::min (block, total - pos);
+            int done = 0;
+            while (next < events.size() && events[next].sample < pos + n)
+            {
+                const int at = (int) std::max<long> (0, events[next].sample - pos);
+                if (at > done) { kit.render (L + pos + done, R + pos + done, at - done); done = at; }
+                if (events[next].on) kit.hit (events[next].note, events[next].vel);
+                ++next;
+            }
+            kit.render (L + pos + done, R + pos + done, n - done);
+        }
+    }
+    else if (part.kind == PartKind::Drums)
+    {
+        DrumKit kit;
+        kit.prepare (sr, part.variant);
+        for (int pos = 0; pos < total; pos += block)
+        {
+            const int n = std::min (block, total - pos);
+            int done = 0;
+            while (next < events.size() && events[next].sample < pos + n)
+            {
+                const int at = (int) std::max<long> (0, events[next].sample - pos);
+                if (at > done) { kit.render (L + pos + done, R + pos + done, at - done); done = at; }
+                if (events[next].on) kit.hit (events[next].note, events[next].vel);
+                ++next;
+            }
+            kit.render (L + pos + done, R + pos + done, n - done);
+        }
+    }
+    else if (part.kind == PartKind::Bass)
+    {
+        BassSynth bass;
+        bass.sr = sr;
+        bass.is808 = part.variant == 1;
+        for (int pos = 0; pos < total; pos += block)
+        {
+            const int n = std::min (block, total - pos);
+            int done = 0;
+            while (next < events.size() && events[next].sample < pos + n)
+            {
+                const int at = (int) std::max<long> (0, events[next].sample - pos);
+                if (at > done) { bass.render (L + pos + done, R + pos + done, at - done); done = at; }
+                if (events[next].on) bass.noteOn (events[next].note, events[next].vel); else bass.noteOff (events[next].note);
+                ++next;
+            }
+            bass.render (L + pos + done, R + pos + done, n - done);
+        }
+    }
+    else
+    {
+        // tonal parts are played by Live Planet's own instruments, exactly like keys on a keyboard
+        lp::Engine engine;
+        engine.prepare (sr);
+        engine.jumpToWeather (calm);
+        lp::EngineParams p;
+        p.sound = part.sound;
+        p.nostalgia = rs.nostalgia;
+        p.space = part.kind == PartKind::Pad ? std::min (1.0f, rs.space + 0.2f) : rs.space;
+        p.warmth = rs.warmth;
+        p.echo = part.kind == PartKind::Melody || part.kind == PartKind::Counter ? rs.echo : rs.echo * 0.3f;
+        p.atmos = 0.0f;
+        p.position = 0.1f;
+        lp::MidiOut midi;
+        std::bitset<128> held;
+        std::vector<lp::KeyEvent> keys;
+        for (int pos = 0; pos < total; pos += block)
+        {
+            const int n = std::min (block, total - pos);
+            keys.clear();
+            while (next < events.size() && events[next].sample < pos + n)
+            {
+                const auto& e = events[next++];
+                keys.push_back ({ (int) std::max<long> (0, e.sample - pos), e.note, e.vel, e.on });
+            }
+            lp::TransportInfo t;
+            t.shouldPlay = false;
+            t.keys = keys.data();
+            t.numKeys = (int) keys.size();
+            midi.clear();
+            engine.process (L + pos, R + pos, n, p, t, held, midi);
+            lp::VisualEvent ve;
+            while (engine.popVisual (ve)) {}
+            if (shouldStop && (pos & 0xffff) == 0 && shouldStop()) return false;
+        }
+    }
+
+    // level each part to where it sits in a mix (measured only where it actually plays)
+    {
+        double sum = 0;
+        long count = 0;
+        for (int i = 0; i < total; i += 4)
+        {
+            const float v = std::abs (L[i]) + std::abs (R[i]);
+            if (v > 2e-4f) { sum += (double) L[i] * L[i] + (double) R[i] * R[i]; ++count; }
+        }
+        const double rms = count > 0 ? std::sqrt (sum / (2.0 * (double) count)) : 0.0;
+        float targetDb = -16.0f;
+        switch (part.kind)
+        {
+            case PartKind::Chords:  targetDb = -17.0f; break;
+            case PartKind::Melody:  targetDb = -15.5f; break;
+            case PartKind::Counter: targetDb = -23.0f; break;
+            case PartKind::Pad:     targetDb = -24.0f; break;
+            case PartKind::Bass:    targetDb = -16.0f; break;
+            case PartKind::Drums:   targetDb = -17.0f; break;
+            case PartKind::Loop:    targetDb = -21.0f; break;
+        }
+        if (rms > 1e-6)
+        {
+            const float g = juce::jlimit (0.05f, 12.0f, juce::Decibels::decibelsToGain (targetDb) / (float) rms);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                for (int i = 0; i < total; ++i) d[i] = std::tanh (d[i] * g * 1.05f) / 1.05f;
+            }
+        }
+    }
+
+    // loops and drums are re-pitched with a pitch shifter (keeps them in time)
+    if (part.pitchSemis != 0 && (part.kind == PartKind::Loop || part.kind == PartKind::Drums))
+        pitchShift (buf, part.pitchSemis, sr);
+    return true;
+}
+
 bool render (const Song& song, const RenderSettings& rs, const juce::File& folder, Rendered& out,
              std::function<void (float)> progress, std::function<bool()> shouldStop)
 {
@@ -341,163 +563,8 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
     for (size_t pi = 0; pi < song.parts.size(); ++pi)
     {
         const auto& part = song.parts[pi];
-        juce::AudioBuffer<float> buf (2, total);
-        buf.clear();
-        const auto events = eventsFor (part, spb);
-        size_t next = 0;
-        auto* L = buf.getWritePointer (0);
-        auto* R = buf.getWritePointer (1);
-
-        if (part.kind == PartKind::Loop)
-        {
-            // your loop, fitted exactly to its bars and placed at each start
-            const double barSamples = 4.0 * spb;
-            auto probe = loadAudio (part.samplePath, sr);
-            if (probe.getNumSamples() > 0 && part.loopBars > 0)
-            {
-                const double stretch = (double) probe.getNumSamples() / (part.loopBars * barSamples);
-                auto loop = loadAudio (part.samplePath, sr, stretch);
-                const int ln = loop.getNumSamples();
-                for (int startBar : part.loopStartBars)
-                {
-                    const int at = (int) (startBar * barSamples);
-                    for (int ch = 0; ch < 2; ++ch)
-                        for (int i = 0; i < ln && at + i < total; ++i)
-                        {
-                            const float fade = std::min ({ 1.0f, (float) i / 240.0f, (float) (ln - i) / 240.0f });
-                            buf.getWritePointer (ch)[at + i] += loop.getSample (ch, i) * fade;
-                        }
-                }
-            }
-        }
-        else if (part.kind == PartKind::Drums && ! song.drumSamples.empty())
-        {
-            SampleKit kit;
-            for (auto& [note, path] : song.drumSamples)
-            {
-                auto a = loadAudio (path, sr);
-                if (a.getNumSamples() > 0) kit.sounds[note] = std::move (a);
-            }
-            for (int pos = 0; pos < total; pos += block)
-            {
-                const int n = std::min (block, total - pos);
-                int done = 0;
-                while (next < events.size() && events[next].sample < pos + n)
-                {
-                    const int at = (int) std::max<long> (0, events[next].sample - pos);
-                    if (at > done) { kit.render (L + pos + done, R + pos + done, at - done); done = at; }
-                    if (events[next].on) kit.hit (events[next].note, events[next].vel);
-                    ++next;
-                }
-                kit.render (L + pos + done, R + pos + done, n - done);
-            }
-        }
-        else if (part.kind == PartKind::Drums)
-        {
-            DrumKit kit;
-            kit.prepare (sr, part.variant);
-            for (int pos = 0; pos < total; pos += block)
-            {
-                const int n = std::min (block, total - pos);
-                int done = 0;
-                while (next < events.size() && events[next].sample < pos + n)
-                {
-                    const int at = (int) std::max<long> (0, events[next].sample - pos);
-                    if (at > done) { kit.render (L + pos + done, R + pos + done, at - done); done = at; }
-                    if (events[next].on) kit.hit (events[next].note, events[next].vel);
-                    ++next;
-                }
-                kit.render (L + pos + done, R + pos + done, n - done);
-            }
-        }
-        else if (part.kind == PartKind::Bass)
-        {
-            BassSynth bass;
-            bass.sr = sr;
-            bass.is808 = part.variant == 1;
-            for (int pos = 0; pos < total; pos += block)
-            {
-                const int n = std::min (block, total - pos);
-                int done = 0;
-                while (next < events.size() && events[next].sample < pos + n)
-                {
-                    const int at = (int) std::max<long> (0, events[next].sample - pos);
-                    if (at > done) { bass.render (L + pos + done, R + pos + done, at - done); done = at; }
-                    if (events[next].on) bass.noteOn (events[next].note, events[next].vel); else bass.noteOff (events[next].note);
-                    ++next;
-                }
-                bass.render (L + pos + done, R + pos + done, n - done);
-            }
-        }
-        else
-        {
-            // tonal parts are played by Live Planet's own instruments, exactly like keys on a keyboard
-            lp::Engine engine;
-            engine.prepare (sr);
-            engine.jumpToWeather (calm);
-            lp::EngineParams p;
-            p.sound = part.sound;
-            p.nostalgia = rs.nostalgia;
-            p.space = part.kind == PartKind::Pad ? std::min (1.0f, rs.space + 0.2f) : rs.space;
-            p.warmth = rs.warmth;
-            p.echo = part.kind == PartKind::Melody || part.kind == PartKind::Counter ? rs.echo : rs.echo * 0.3f;
-            p.atmos = 0.0f;
-            p.position = 0.1f;
-            lp::MidiOut midi;
-            std::bitset<128> held;
-            std::vector<lp::KeyEvent> keys;
-            for (int pos = 0; pos < total; pos += block)
-            {
-                const int n = std::min (block, total - pos);
-                keys.clear();
-                while (next < events.size() && events[next].sample < pos + n)
-                {
-                    const auto& e = events[next++];
-                    keys.push_back ({ (int) std::max<long> (0, e.sample - pos), e.note, e.vel, e.on });
-                }
-                lp::TransportInfo t;
-                t.shouldPlay = false;
-                t.keys = keys.data();
-                t.numKeys = (int) keys.size();
-                midi.clear();
-                engine.process (L + pos, R + pos, n, p, t, held, midi);
-                lp::VisualEvent ve;
-                while (engine.popVisual (ve)) {}
-                if (shouldStop && (pos & 0xffff) == 0 && shouldStop()) return false;
-            }
-        }
-
-        // level each part to where it sits in a mix (measured only where it actually plays)
-        {
-            double sum = 0;
-            long count = 0;
-            for (int i = 0; i < total; i += 4)
-            {
-                const float v = std::abs (L[i]) + std::abs (R[i]);
-                if (v > 2e-4f) { sum += (double) L[i] * L[i] + (double) R[i] * R[i]; ++count; }
-            }
-            const double rms = count > 0 ? std::sqrt (sum / (2.0 * (double) count)) : 0.0;
-            float targetDb = -16.0f;
-            switch (part.kind)
-            {
-                case PartKind::Chords:  targetDb = -17.0f; break;
-                case PartKind::Melody:  targetDb = -15.5f; break;
-                case PartKind::Counter: targetDb = -23.0f; break;
-                case PartKind::Pad:     targetDb = -24.0f; break;
-                case PartKind::Bass:    targetDb = -16.0f; break;
-                case PartKind::Drums:   targetDb = -17.0f; break;
-                case PartKind::Loop:    targetDb = -21.0f; break;
-            }
-            if (rms > 1e-6)
-            {
-                const float g = juce::jlimit (0.05f, 12.0f, juce::Decibels::decibelsToGain (targetDb) / (float) rms);
-                for (int ch = 0; ch < 2; ++ch)
-                {
-                    auto* d = buf.getWritePointer (ch);
-                    for (int i = 0; i < total; ++i) d[i] = std::tanh (d[i] * g * 1.05f) / 1.05f;
-                }
-            }
-        }
+        juce::AudioBuffer<float> buf;
+        if (! renderPart (song, part, rs, buf, shouldStop)) return false;
         for (int ch = 0; ch < 2; ++ch)
             mix.addFrom (ch, 0, buf, ch, 0, total, 1.6f);
 

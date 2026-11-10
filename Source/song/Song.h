@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <array>
 #include "../engine/Weather.h"
 #include "../engine/Sources.h"
 
@@ -30,6 +31,9 @@ struct Profile
     int key = 0;                // pitch class of the home note
     bool minor = false;
     float density = 0.5f;       // how busy the rhythm is, 0..1
+    // the groove: how strongly each 16th of a bar is hit, low (kick) / mid (snare) / high (hats), 0..1
+    std::array<float, 16> grooveLow {}, grooveMid {}, grooveHigh {};
+    bool hasGroove = false;
     float brightness = 0.5f;    // how bright the sound is, 0..1
     double lengthSeconds = 0.0;
     std::vector<RefSection> sections;
@@ -71,6 +75,13 @@ struct Part
     juce::String samplePath;         // Loop parts: the audio file to repeat
     int loopBars = 0;                // Loop parts: how many bars the file lasts
     std::vector<int> loopStartBars;  // Loop parts: where it plays
+    // what you see in the studio, and your edits
+    juce::String source;             // e.g. "Splice: LD_92_keys_loop_Fmin" or "Live Planet: Rhodes"
+    juce::String remix;              // how it was changed, e.g. "fitted to 140 bpm (+0.8%)"
+    juce::StringArray candidates;    // other samples it could swap to
+    int candidate = 0;
+    int pitchSemis = 0;
+    bool reversed = false;
 };
 
 struct Section
@@ -135,5 +146,9 @@ bool render (const Song& song, const RenderSettings& settings, const juce::File&
              std::function<void (float)> progress = {}, std::function<bool()> shouldStop = {});
 
 void writeMidi (const Song& song, const juce::File& file);
+
+// Renders one part on its own, with its edits (used by the studio to redo a single track).
+bool renderPart (const Song& song, const Part& part, const RenderSettings& rs, juce::AudioBuffer<float>& out,
+                 std::function<bool()> shouldStop = {});
 
 } // namespace lp::song

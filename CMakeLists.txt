@@ -54,6 +54,7 @@ target_sources(LivePlanet PRIVATE
     ${LP_ENGINE_SOURCES}
     Source/plugin/PluginProcessor.cpp
     Source/plugin/PluginEditor.cpp
+    Source/plugin/StudioView.cpp
     Source/plugin/WeatherService.cpp)
 
 target_compile_definitions(LivePlanet PUBLIC

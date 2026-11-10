@@ -41,6 +41,7 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
         juce::StringArray { "auto", "dusty", "boom bap", "trap", "house", "brushes", "electronic" }, 0));
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "usesamples", 1 }, "Use My Samples", true));
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "songplay", 1 }, "Play Song With DAW", true));
+    l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "samplesonly", 1 }, "Samples Only", false));
     // your MIDI keyboard: "play" = notes play the instrument directly, "chord" = your keys set the chord the weather plays
     l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "keymode", 1 }, "Keyboard",
                                                           juce::StringArray { "play", "chord" }, 0));
@@ -116,10 +117,11 @@ bool LivePlanetProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
     return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
 }
 
-void LivePlanetProcessor::prepareToPlay (double sampleRate, int)
+void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     engine.prepare (sampleRate);
     keyEvents.reserve (1024);
+    studio.prepare (std::max (samplesPerBlock, 4096));
 }
 
 lp::Weather LivePlanetProcessor::getManualWeather() const
@@ -226,10 +228,11 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     hostPlaying = t.hostPlaying;
     // only make sound when the song is playing, the play button is on, or you hold keys
     t.shouldPlay = t.hostPlaying || params.getRawParameterValue ("play")->load() > 0.5f || (chordMode && held.any());
-    auto* song = songAudio.load();
-    const bool playSong = song != nullptr && t.hostPlaying && params.getRawParameterValue ("songplay")->load() > 0.5f;
-    songPlaying = playSong;
-    if (playSong) t.shouldPlay = false;
+    const bool haveSong = studio.length() > 0;
+    const bool preview = haveSong && previewPlaying.load();
+    const bool playSong = haveSong && ! preview && t.hostPlaying && params.getRawParameterValue ("songplay")->load() > 0.5f;
+    songPlaying = playSong || preview;
+    if (playSong || preview) t.shouldPlay = false; // the weather music steps aside while your song plays
     t.keys = keyEvents.data();
     t.numKeys = (int) keyEvents.size();
     static const std::bitset<128> none;
@@ -256,23 +259,30 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         }
     }
 
-    if (playSong)
+    if (preview || playSong)
     {
-        // read the finished song at the DAW's position (bar 1 = the start of the song)
         const double sbpm = songBpm.load();
-        const double hostBpm = t.bpm > 0.0 ? t.bpm : sbpm;
-        double pos = std::max (0.0, t.ppq) * 60.0 / sbpm * 48000.0;
-        const double inc = 48000.0 / getSampleRate() * (hostBpm / sbpm);
-        const int len = song->getNumSamples();
-        const float* a = song->getReadPointer (0);
-        const float* b = song->getReadPointer (1);
-        for (int i = 0; i < n; ++i, pos += inc)
+        double pos, inc;
+        if (preview)
         {
-            const int i0 = (int) pos;
-            if (i0 + 1 >= len) break;
-            const float f = (float) (pos - i0);
-            L[i] += a[i0] + (a[i0 + 1] - a[i0]) * f;
-            R[i] += b[i0] + (b[i0 + 1] - b[i0]) * f;
+            pos = previewPos.load();
+            inc = StudioPlayer::fileRate / getSampleRate();
+        }
+        else
+        {
+            // bar 1 of your project = the start of the song
+            const double hostBpm = t.bpm > 0.0 ? t.bpm : sbpm;
+            pos = std::max (0.0, t.ppq) * 60.0 / sbpm * StudioPlayer::fileRate;
+            inc = StudioPlayer::fileRate / getSampleRate() * (hostBpm / sbpm);
+        }
+        studio.render (L, R, n, pos, inc, getSampleRate());
+        for (int i = 0; i < n; ++i) { L[i] = std::tanh (L[i]); R[i] = std::tanh (R[i]); }
+        const double next = pos + n * inc;
+        playheadPos = next;
+        if (preview)
+        {
+            if (next >= (double) studio.length()) { previewPlaying = false; previewPos = 0.0; }
+            else previewPos = next;
         }
     }
 
@@ -297,14 +307,18 @@ void LivePlanetProcessor::searchCity (const juce::String& name)
 
 void LivePlanetProcessor::timerCallback()
 {
+    if (! isTimerRunning()) return;
     {
         double bpm = 90.0;
-        if (auto mix = songJob.takeFinishedMix (bpm))
+        songJob.takeFinishedMix (bpm); // (the studio plays the tracks themselves now)
+        const auto st = songJob.getStatus();
+        if (st.haveSong && st.version != loadedStudioVersion)
         {
-            songBpm = bpm;
-            songBuffers.push_back (mix);
-            songAudio = mix.get();
-            while (songBuffers.size() > 3) songBuffers.pop_front(); // the audio thread only ever reads the newest
+            loadedStudioVersion = st.version;
+            juce::Array<juce::File> stems;
+            for (auto& t : st.tracks) stems.add (t.stem);
+            songBpm = st.song.bpm;
+            studio.load (stems);
         }
         static bool scannedOnce = false;
         if (! scannedOnce && ! SongJob::libraryCache().existsAsFile())
@@ -615,7 +629,8 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
     rs.warmth = params.getRawParameterValue ("warmth")->load();
     rs.echo = params.getRawParameterValue ("echo")->load();
     rs.sampleRate = 48000.0;
-    songJob.makeSong (o, rs, engine.getTargetWeather(), params.getRawParameterValue ("usesamples")->load() > 0.5f);
+    songJob.makeSong (o, rs, engine.getTargetWeather(), params.getRawParameterValue ("usesamples")->load() > 0.5f,
+                      params.getRawParameterValue ("samplesonly")->load() > 0.5f);
 }
 
 juce::Array<juce::File> LivePlanetProcessor::libraryFolders() const

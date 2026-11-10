@@ -5,6 +5,7 @@
 #include "../engine/Engine.h"
 #include "WeatherService.h"
 #include "SongJob.h"
+#include "StudioPlayer.h"
 
 class LivePlanetProcessor : public juce::AudioProcessor, private juce::Timer
 {
@@ -62,6 +63,13 @@ public:
     std::atomic<juce::AudioBuffer<float>*> songAudio { nullptr };
     std::atomic<double> songBpm { 90.0 };
     std::atomic<bool> songPlaying { false };
+
+    // the studio: the song's tracks with a live mixer, and a preview transport
+    StudioPlayer studio;
+    std::atomic<bool> previewPlaying { false };
+    std::atomic<double> previewPos { 0.0 };   // in 48 kHz samples
+    std::atomic<double> playheadPos { 0.0 };  // where the song is right now (preview or DAW)
+    int loadedStudioVersion = -1;
     juce::String getSampleName() const { return sampleName; }
 
     struct SkyStatus

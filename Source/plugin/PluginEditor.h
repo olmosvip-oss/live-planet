@@ -89,6 +89,7 @@ class PlayButton : public juce::Component
 {
 public:
     explicit PlayButton (LivePlanetProcessor& p) : proc (p) {}
+    std::function<bool()> songMode; // in the song tab it plays the song preview
     void paint (juce::Graphics&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseEnter (const juce::MouseEvent&) override { repaint(); }
@@ -161,10 +162,10 @@ public:
 private:
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
-    juce::ToggleButton newKey { "new key" }, useSamples { "my samples" }, playWith { "play it with my song" };
+    juce::ToggleButton newKey { "new key" }, useSamples { "my samples" }, playWith { "play it with my song" }, samplesOnly { "samples only" };
     Segmented length;
     std::unique_ptr<Stepper> style;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> useSamplesAtt, playWithAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> useSamplesAtt, playWithAtt, samplesOnlyAtt;
     juce::TextButton write { "write a song" };
     bool full = true;
     std::unique_ptr<juce::FileChooser> chooser;
@@ -180,6 +181,30 @@ public:
 
 private:
     LivePlanetProcessor& proc;
+};
+
+// The studio: every track of the song, where its sound came from, and its mixer and remix tools
+class StudioView : public juce::Component
+{
+public:
+    explicit StudioView (LivePlanetProcessor& p) : proc (p) {}
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override { hoverRow = -1; repaint(); }
+    std::function<void()> onMixChanged;
+    bool mixDirty = false;
+
+private:
+    enum Col { None, Mute, Solo, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp };
+    juce::Rectangle<float> rowBounds (int row) const;
+    juce::Rectangle<float> colBounds (int row, Col c) const;
+    Col colAt (int row, juce::Point<float> p) const;
+    void setFromX (int row, Col c, float x);
+    LivePlanetProcessor& proc;
+    int hoverRow = -1, dragRow = -1;
+    Col dragCol = None;
 };
 
 // A pill you drag into your DAW (or click to show in Finder)
@@ -288,6 +313,7 @@ private:
     DragNotes dragNotes;
     SongPanel songPanel;
     SongView songView;
+    StudioView studioView;
     FilePill pillMidi, pillStems, pillMix, pillHelper, pillFolder;
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;

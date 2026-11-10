@@ -66,7 +66,7 @@ Target chooseTarget (const Profile& ref, const lp::Weather& sky, const Options& 
     Target t {};
     if (ref.valid)
     {
-        t.bpm = std::round (ref.bpm * (1.0 + (rng.f() - 0.5) * 0.08));
+        t.bpm = std::round (ref.bpm * (1.0 + (rng.f() - 0.5) * (o.shiftKey ? 0.08 : 0.03)));
         static const int shifts[] = { -2, -1, 1, 2, 3, -3 };
         t.key = (ref.key + (o.shiftKey ? shifts[rng.i (6)] : 0) + 12) % 12;
         t.minor = ref.minor;
@@ -84,14 +84,14 @@ Target chooseTarget (const Profile& ref, const lp::Weather& sky, const Options& 
         // the groove that fits the reference's tempo and how busy it is
         const float d = ref.valid ? ref.density : 0.35f;
         const double b = t.bpm;
-        if (d > 0.5f && (b >= 128.0 || b <= 80.0))      t.style = Style::Trap;
+        if ((d > 0.5f && (b >= 128.0 || b <= 80.0)) || (b >= 130.0 && b <= 160.0 && ref.valid && ref.minor)) t.style = Style::Trap;
         else if (b >= 116.0 && b < 132.0 && d > 0.35f)  t.style = Style::House;
         else if (b >= 84.0 && b < 104.0 && d > 0.35f)   t.style = Style::BoomBap;
         else if (d < 0.25f)                              t.style = t.minor ? Style::Brushes : Style::Dusty;
         else if (b >= 104.0)                             t.style = Style::Electronic;
         else                                             t.style = Style::Dusty;
     }
-    if (t.style == Style::Trap && t.bpm < 100.0) t.bpm *= 2.0; // trap counts in double time
+    if (t.style == Style::Trap && t.bpm < 100.0 && ! ref.valid) t.bpm *= 2.0; // trap counts in double time
     if (t.style == Style::House) t.bpm = juce::jlimit (116.0, 128.0, t.bpm);
     return t;
 }
@@ -118,7 +118,18 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
     // ---- structure
     struct Plan { std::string label; int bars; float energy; const RefSection* ref; };
     std::vector<Plan> plan;
-    if (ref.valid && ! ref.sections.empty())
+    int refBars = 0;
+    for (auto& s2 : ref.sections) refBars = std::max (refBars, s2.startBar + s2.bars);
+    const bool shortRef = ref.valid && (ref.sections.size() < 4 || refBars < 32);
+    if (shortRef)
+    {
+        const RefSection* main = &ref.sections.front();
+        for (auto& s2 : ref.sections) if (s2.energy > main->energy) main = &s2;
+        for (auto& [l, b] : std::vector<std::pair<std::string, int>> {
+                 { "intro", 8 }, { "verse", 16 }, { "chorus", 16 }, { "verse", 16 }, { "chorus", 16 }, { "bridge", 8 }, { "chorus", 16 }, { "outro", 8 } })
+            plan.push_back ({ l, b, sectionEnergy (l), main });
+    }
+    else if (ref.valid && ! ref.sections.empty())
     {
         float maxE = 0.01f;
         for (auto& s : ref.sections) maxE = std::max (maxE, s.energy);
@@ -182,7 +193,7 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
         // make it our own: swap some chords for close relatives
         static const int relative[7] = { 5, 3, 4, 1, 2, 0, 4 };
         for (auto& d : prog)
-            if (rng.chance (0.35f)) d = relative[(size_t) d];
+            if (rng.chance (o.shiftKey ? 0.35f : (p.label == "chorus" || p.label == "verse" ? 0.08f : 0.3f))) d = relative[(size_t) d];
         // avoid the harsh diminished chord
         for (auto& d : prog)
             if (lp::scaleSemis (sc, d + 4) - lp::scaleSemis (sc, d) == 6) d = (d + 5) % 7;
@@ -369,6 +380,25 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
             else
             {
                 const bool big = e > 0.6f;
+                if (ref.valid && ref.hasGroove && ! (isIntro || isOutro))
+                {
+                    // the reference's groove (where its hits land), not its sound
+                    const float lift = big ? 0.0f : 0.12f; // quieter sections keep only the strongest hits
+                    for (int st = 0; st < 16; ++st)
+                    {
+                        const double at = st * 0.25;
+                        const float lo = ref.grooveLow[(size_t) st], mi = ref.grooveMid[(size_t) st], hiS = ref.grooveHigh[(size_t) st];
+                        if (lo > 0.5f + lift && ! (mi > lo && mi > 0.6f)) hit (at, 36, 0.6f + 0.4f * lo);
+                        if (mi > 0.55f + lift && mi >= lo * 0.8f) hit (at, big ? 39 : 38, 0.55f + 0.4f * mi);
+                        if (hiS > 0.3f + lift * 0.5f) hit (at, 42, 0.25f + 0.4f * hiS);
+                    }
+                    if (song.style == Style::Trap && big && rng.chance (0.5f)) // a roll now and then
+                    {
+                        const double rollAt = (1 + rng.i (3)) + 0.5;
+                        for (double r2 = rollAt; r2 < rollAt + 0.5 - 1e-6; r2 += 0.125) hit (r2, 42, 0.35f + (float) (r2 - rollAt));
+                    }
+                }
+                else
                 switch (song.style)
                 {
                     case Style::Trap:

@@ -47,9 +47,19 @@ private:
     std::vector<LibraryEntry> entries;
 };
 
+// A set of loops that fit together (same key, same tempo), each with alternatives to swap to.
+struct LoopChoice
+{
+    LoopKind kind = LoopKind::Other;
+    std::vector<std::pair<const LibraryEntry*, int>> options; // entry + its length in bars; [0] is the pick
+};
+
 // What a song takes from your library.
 struct LibraryPicks
 {
+    std::vector<LoopChoice> loopSet;      // for samples-only songs and for swapping
+    double loopBpm = 0.0;                 // the tempo the loops share
+    juce::StringArray drumPacks;          // packs that have a full kit, best first (for swapping drums)
     std::map<int, juce::String> drums;    // drum note -> one-shot
     const LibraryEntry* loop = nullptr;   // a melodic loop in the song's key and tempo
     int loopBars = 0;
@@ -60,6 +70,13 @@ struct LibraryPicks
 // the key and sits within a few percent of the tempo. `loopLengthBars` must tell how
 // long a file is in bars at a tempo (returns 0 if it can't be read or isn't whole bars).
 LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::uint32 seed,
-                              std::function<int (const juce::String& path, double bpm)> loopLengthBars);
+                              std::function<int (const juce::String& path, double bpm)> loopLengthBars,
+                              const juce::String& forceDrumPack = {});
+
+inline const char* loopKindName (LoopKind k)
+{
+    static const char* n[] = { "", "drum loop", "bass", "keys", "guitar", "synth", "vocal", "strings", "loop" };
+    return n[(int) k];
+}
 
 } // namespace lp::song
