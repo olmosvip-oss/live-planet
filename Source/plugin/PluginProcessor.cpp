@@ -1,0 +1,313 @@
+#include "PluginProcessor.h"
+#include "PluginEditor.h"
+
+using APVTS = juce::AudioProcessorValueTreeState;
+
+namespace
+{
+    std::unique_ptr<juce::AudioParameterFloat> knob (const char* id, const char* name, float lo, float hi,
+                                                     float def, const char* unit = "", float skewCentre = -1.0f)
+    {
+        juce::NormalisableRange<float> range (lo, hi);
+        if (skewCentre > lo) range.setSkewForCentre (skewCentre);
+        return std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id, 1 }, name, range, def,
+                                                            juce::AudioParameterFloatAttributes().withLabel (unit));
+    }
+}
+
+APVTS::ParameterLayout LivePlanetProcessor::createLayout()
+{
+    APVTS::ParameterLayout l;
+
+    // Sky
+    l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "live", 1 }, "Live Weather", true));
+    l.add (knob ("temp", "Temperature", -20.0f, 40.0f, 16.0f, "C"));
+    l.add (knob ("rain", "Rain", 0.0f, 12.0f, 0.8f, "mm", 2.0f));
+    l.add (knob ("snow", "Snow", 0.0f, 4.0f, 0.0f, "cm", 0.8f));
+    l.add (knob ("wind", "Wind", 0.0f, 80.0f, 12.0f, "km/h", 25.0f));
+    l.add (knob ("clouds", "Clouds", 0.0f, 100.0f, 55.0f, "%"));
+    l.add (knob ("pressure", "Pressure", 970.0f, 1045.0f, 1012.0f, "hPa"));
+    l.add (knob ("humidity", "Humidity", 0.0f, 100.0f, 70.0f, "%"));
+    l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "daylight", 1 }, "Daylight", true));
+    l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "thunder", 1 }, "Thunder", false));
+
+    // Music
+    juce::StringArray keys { "Auto" };
+    for (int i = 0; i < 12; ++i) keys.add (lp::noteName (i));
+    l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "key", 1 }, "Key", keys, 0));
+    l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "scale", 1 }, "Scale",
+        juce::StringArray { "Auto", "Major", "Lydian", "Mixolydian", "Dorian", "Minor" }, 0));
+    l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "sound", 1 }, "Sound", soundNames(), 0));
+    l.add (knob ("pad", "Chords", 0.0f, 1.0f, 0.75f));
+    l.add (knob ("drops", "Melody", 0.0f, 1.0f, 0.7f));
+    l.add (knob ("bass", "Bass", 0.0f, 1.0f, 0.45f));
+
+    // Texture
+    l.add (knob ("grain", "Grain Size", 20.0f, 400.0f, 140.0f, "ms", 120.0f));
+    l.add (knob ("texture", "Scatter", 0.0f, 1.0f, 0.35f));
+    l.add (knob ("sparkle", "Sparkle", 0.0f, 1.0f, 0.3f));
+    l.add (knob ("position", "Position", 0.0f, 1.0f, 0.3f));
+    l.add (knob ("warmth", "Warmth", 0.0f, 1.0f, 0.4f));
+    l.add (knob ("echo", "Echo", 0.0f, 1.0f, 0.3f));
+    l.add (knob ("space", "Space", 0.0f, 1.0f, 0.6f));
+    l.add (knob ("shimmer", "Shimmer", 0.0f, 1.0f, 0.35f));
+    l.add (knob ("atmos", "Atmosphere", 0.0f, 1.0f, 0.2f));
+    l.add (knob ("gain", "Volume", -24.0f, 6.0f, 0.0f, "dB"));
+    return l;
+}
+
+LivePlanetProcessor::LivePlanetProcessor()
+    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+      params (*this, nullptr, "LivePlanet", createLayout())
+{
+    engine.setCitySeed (citySeed.load());
+    engine.jumpToWeather (getManualWeather());
+    weatherService.requestCoordinates (city, lat, lon);
+    startTimerHz (2);
+}
+
+LivePlanetProcessor::~LivePlanetProcessor()
+{
+    stopTimer();
+}
+
+bool LivePlanetProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+{
+    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+}
+
+void LivePlanetProcessor::prepareToPlay (double sampleRate, int)
+{
+    engine.prepare (sampleRate);
+}
+
+lp::Weather LivePlanetProcessor::getManualWeather() const
+{
+    lp::Weather w;
+    auto v = [this] (const char* id) { return params.getRawParameterValue (id)->load(); };
+    w.temperatureC = v ("temp");
+    w.rainMm = v ("rain");
+    w.snowCm = v ("snow");
+    w.windKmh = v ("wind");
+    w.cloudPct = v ("clouds");
+    w.pressureHpa = v ("pressure");
+    w.humidityPct = v ("humidity");
+    w.isDay = v ("daylight") > 0.5f;
+    w.thunder = v ("thunder") > 0.5f;
+    w.fog = w.humidityPct > 95.0f && w.cloudPct > 80.0f && w.rainMm < 0.1f;
+    w.weatherCode = w.thunder ? 95 : (w.snowCm > 0.05f ? 73 : (w.rainMm > 0.05f ? 61 : (w.cloudPct > 85 ? 3 : 1)));
+    return w;
+}
+
+lp::EngineParams LivePlanetProcessor::readParams() const
+{
+    auto v = [this] (const char* id) { return params.getRawParameterValue (id)->load(); };
+    lp::EngineParams p;
+    p.keyRoot = (int) v ("key") - 1;
+    p.scale = (int) v ("scale") - 1;
+    p.sound = (lp::SoundId) juce::jlimit (0, 4, (int) v ("sound"));
+    p.padLevel = v ("pad");
+    p.dropLevel = v ("drops");
+    p.bassLevel = v ("bass");
+    p.grainMs = v ("grain");
+    p.texture = v ("texture");
+    p.sparkle = v ("sparkle");
+    p.position = v ("position");
+    p.warmth = v ("warmth");
+    p.echo = v ("echo");
+    p.space = v ("space");
+    p.shimmer = v ("shimmer");
+    p.atmos = v ("atmos");
+    p.gainDb = v ("gain");
+    return p;
+}
+
+void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+{
+    juce::ScopedNoDenormals noDenormals;
+    const int n = buffer.getNumSamples();
+    buffer.clear();
+
+    // Keys you hold become the chord
+    for (const auto m : midi)
+    {
+        const auto msg = m.getMessage();
+        if (msg.isNoteOn()) held.set ((size_t) msg.getNoteNumber());
+        else if (msg.isNoteOff()) held.reset ((size_t) msg.getNoteNumber());
+        else if (msg.isAllNotesOff() || msg.isAllSoundOff()) held.reset();
+    }
+    midi.clear();
+
+    // Which sky are we using?
+    lp::Weather sky = getManualWeather();
+    const bool live = params.getRawParameterValue ("live")->load() > 0.5f;
+    if (live)
+    {
+        const juce::SpinLock::ScopedTryLockType tl (skyLock);
+        if (tl.isLocked() && haveLive)
+            sky = liveWeather;
+    }
+    engine.setTargetWeather (sky);
+    engine.setCitySeed (citySeed.load());
+
+    lp::TransportInfo t;
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+        {
+            if (auto bpm = pos->getBpm()) t.bpm = *bpm;
+            if (pos->getIsPlaying())
+                if (auto ppq = pos->getPpqPosition())
+                {
+                    t.hostPlaying = true;
+                    t.ppq = *ppq;
+                }
+        }
+
+    midiOut.clear();
+    auto* L = buffer.getWritePointer (0);
+    auto* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : L;
+    engine.process (L, R, n, readParams(), t, held, midiOut);
+
+    // Send the notes out so they can play any other instrument too
+    for (int i = 0; i < midiOut.count; ++i)
+    {
+        const auto& e = midiOut.events[(size_t) i];
+        midi.addEvent (e.on ? juce::MidiMessage::noteOn (e.channel, e.note, juce::jlimit (0.01f, 1.0f, e.velocity))
+                            : juce::MidiMessage::noteOff (e.channel, e.note),
+                       juce::jlimit (0, n - 1, e.offset));
+    }
+}
+
+//==============================================================================
+
+void LivePlanetProcessor::searchCity (const juce::String& name)
+{
+    weatherService.requestCity (name);
+    const juce::SpinLock::ScopedLockType sl (skyLock);
+    statusMessage = "Looking up " + name + "...";
+}
+
+void LivePlanetProcessor::timerCallback()
+{
+    WeatherService::Result r;
+    if (! weatherService.takeResult (r)) return;
+
+    const juce::SpinLock::ScopedLockType sl (skyLock);
+    if (r.ok)
+    {
+        city = r.city;
+        if (r.country.isNotEmpty() || r.city != city) country = r.country;
+        lat = r.lat;
+        lon = r.lon;
+        liveWeather = r.weather;
+        haveLive = true;
+        fetchedAt = r.fetchedAt;
+        statusMessage = {};
+        citySeed = lp::hashString (city);
+    }
+    else
+    {
+        statusMessage = r.error;
+    }
+}
+
+LivePlanetProcessor::SkyStatus LivePlanetProcessor::getSkyStatus() const
+{
+    const juce::SpinLock::ScopedLockType sl (skyLock);
+    SkyStatus s;
+    s.city = city;
+    s.country = country;
+    s.message = statusMessage;
+    s.live = params.getRawParameterValue ("live")->load() > 0.5f;
+    s.haveLive = haveLive;
+    s.busy = weatherService.isBusy();
+    s.fetchedAt = fetchedAt;
+    return s;
+}
+
+bool LivePlanetProcessor::loadSample (const juce::File& file)
+{
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
+    if (reader == nullptr) return false;
+
+    const auto maxLen = (juce::int64) (reader->sampleRate * 30.0);
+    const int len = (int) std::min (reader->lengthInSamples, maxLen);
+    if (len < 4096) return false;
+
+    juce::AudioBuffer<float> buf ((int) reader->numChannels, len);
+    reader->read (&buf, 0, len, 0, true, true);
+
+    auto s = std::make_unique<lp::SourceSound>();
+    s->name = file.getFileNameWithoutExtension();
+    s->sampleRate = reader->sampleRate;
+    s->rootHz = 261.6256; // played as if it were a C
+    s->data.resize ((size_t) len);
+    float peak = 0.0f;
+    for (int i = 0; i < len; ++i)
+    {
+        float v = 0.0f;
+        for (int ch = 0; ch < buf.getNumChannels(); ++ch) v += buf.getSample (ch, i);
+        v /= (float) buf.getNumChannels();
+        s->data[(size_t) i] = v;
+        peak = std::max (peak, std::abs (v));
+    }
+    if (peak > 0.0f)
+        for (auto& v : s->data) v *= 0.9f / peak;
+
+    engine.setUserSource (s.get());
+    loadedSamples.push_back (std::move (s));
+    while (loadedSamples.size() > 3) loadedSamples.pop_front(); // older ones are long out of use
+
+    samplePath = file.getFullPathName();
+    sampleName = file.getFileNameWithoutExtension();
+    if (auto* p = params.getParameter ("sound"))
+        p->setValueNotifyingHost (p->convertTo0to1 (4.0f));
+    return true;
+}
+
+//==============================================================================
+
+void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
+{
+    auto state = params.copyState();
+    {
+        const juce::SpinLock::ScopedLockType sl (skyLock);
+        state.setProperty ("city", city, nullptr);
+        state.setProperty ("country", country, nullptr);
+        state.setProperty ("lat", lat, nullptr);
+        state.setProperty ("lon", lon, nullptr);
+    }
+    state.setProperty ("samplePath", samplePath, nullptr);
+    if (auto xml = state.createXml())
+        copyXmlToBinary (*xml, destData);
+}
+
+void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes)
+{
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+    if (xml == nullptr) return;
+    auto state = juce::ValueTree::fromXml (*xml);
+    if (! state.isValid()) return;
+
+    params.replaceState (state);
+    {
+        const juce::SpinLock::ScopedLockType sl (skyLock);
+        city = state.getProperty ("city", city).toString();
+        country = state.getProperty ("country", country).toString();
+        lat = (double) state.getProperty ("lat", lat);
+        lon = (double) state.getProperty ("lon", lon);
+        citySeed = lp::hashString (city);
+    }
+    weatherService.requestCoordinates (city, lat, lon);
+
+    const juce::File f (state.getProperty ("samplePath", "").toString());
+    if (f.existsAsFile())
+        loadSample (f);
+}
+
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new LivePlanetProcessor();
+}

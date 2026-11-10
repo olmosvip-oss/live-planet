@@ -1,0 +1,58 @@
+name: Build Live Planet
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-14
+          - name: Windows
+            os: windows-latest
+          - name: Linux
+            os: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libfreetype6-dev libfontconfig1-dev libcurl4-openssl-dev libgl1-mesa-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Collect plugins
+        shell: bash
+        run: |
+          mkdir -p dist
+          ART=build/LivePlanet_artefacts/Release
+          cp -R "$ART/VST3/Live Planet.vst3" dist/
+          cp -R "$ART/CLAP/Live Planet.clap" dist/
+          if [ -d "$ART/AU" ]; then cp -R "$ART/AU/Live Planet.component" dist/; fi
+          if [ -d "$ART/Standalone/Live Planet.app" ]; then cp -R "$ART/Standalone/Live Planet.app" dist/;
+          elif [ -f "$ART/Standalone/Live Planet.exe" ]; then cp "$ART/Standalone/Live Planet.exe" dist/;
+          else cp "$ART/Standalone/Live Planet" dist/; fi
+          cp INSTALL.md dist/
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: LivePlanet-${{ matrix.name }}
+          path: dist
