@@ -4,3 +4,4 @@ renders/*.wav
 .DS_Store
 *.user
 .vs/
+renders/*.mp4

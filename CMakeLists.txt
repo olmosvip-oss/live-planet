@@ -63,6 +63,8 @@ target_link_libraries(LivePlanet
 if(UNIX AND NOT APPLE)
     find_package(CURL REQUIRED)
     target_link_libraries(LivePlanet PRIVATE CURL::libcurl)
+    # lets the standalone app talk to JACK audio on Linux (no extra library needed at build time)
+    target_compile_definitions(LivePlanet PUBLIC JUCE_JACK=1)
 endif()
 
 clap_juce_extensions_plugin(TARGET LivePlanet

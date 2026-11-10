@@ -19,16 +19,14 @@ namespace
 
 Engine::Engine()
 {
-    builtIns[0] = sources::glass();
-    builtIns[1] = sources::choir();
-    builtIns[2] = sources::feltKeys();
-    builtIns[3] = sources::musicBox();
+    (void) sources::library(); // build the sounds now, never on the audio thread
 
     for (size_t i = 0; i < hann.size(); ++i)
         hann[i] = 0.5f - 0.5f * std::cos (kTwoPi * (float) i / (float) (hann.size() - 1));
 
     padGrains.resize (768);
     dropGrains.resize (512);
+    shots.resize (96);
     pending.reserve (256);
     currentPad.reserve (16);
     scratchPad.reserve (16);
@@ -61,6 +59,9 @@ void Engine::prepare (double sampleRate)
     for (auto& g : dropGrains) g.active = false;
     for (auto& v : padVoices) v.active = false;
     for (auto& v : dropVoices) v.active = false;
+    for (auto& s : shots) s.active = false;
+    soundBlock = -1;
+    lastRequested = (SoundId) -1;
     pending.clear();
     currentPad.clear();
     currentChordId = 0xffffffffu;
@@ -70,14 +71,88 @@ void Engine::prepare (double sampleRate)
     thunderEnv = 0.0f;
 }
 
-const SourceSound& Engine::activeSource (const EngineParams& p) const
+const SourceSound& Engine::sourceFor (SoundId id) const
 {
-    if (p.sound == SoundId::UserSample)
+    if (id == SoundId::UserSample)
+    {
         if (auto* u = userSource.load())
             if (u->data.size() > 2048)
                 return *u;
-    const int idx = p.sound == SoundId::UserSample ? 0 : (int) p.sound;
-    return builtIns[(size_t) juce::jlimit (0, 3, idx)];
+        return sources::library()[0];
+    }
+    return sources::library()[(size_t) juce::jlimit (0, kNumBuiltIns - 1, (int) id)];
+}
+
+void Engine::resolveSound (long bar, const EngineParams& p, int offset, MidiOut& midi)
+{
+    SoundId want = p.sound;
+    if (want == SoundId::Auto)
+    {
+        // the weather re-chooses the instrument every 8 bars
+        const long block = floorDiv (bar, 8);
+        if (block != soundBlock || lastRequested != SoundId::Auto)
+        {
+            autoSound = autoSoundFor (target);
+            soundBlock = block;
+        }
+        want = autoSound;
+    }
+    lastRequested = p.sound;
+    uiSound = (int) want;
+    if (want == soundNow) return;
+
+    // switching instruments: let the old one ring out and start the chord again
+    soundNow = want;
+    for (auto& v : padVoices) if (v.active) v.stage = 2;
+    dampShots (0, -1, 1.2f);
+    for (auto n : currentPad) midi.add (offset, 1, n, 0.0f, false);
+    currentPad.clear();
+    currentChordId = 0xffffffffu;
+}
+
+void Engine::dampShots (int layer, int note, float seconds)
+{
+    const float m = decayMul (seconds, sr);
+    for (auto& s : shots)
+        if (s.active && s.layer == layer && (note < 0 || s.note == note))
+            s.mul = std::min (s.mul, m);
+}
+
+void Engine::spawnShot (const SourceSound& src, int note, float gain, float pan, int layer)
+{
+    if (src.data.size() < 1024) return;
+    Shot* s = nullptr;
+    for (auto& c : shots) if (! c.active) { s = &c; break; }
+    if (s == nullptr)
+    {
+        s = &shots[0];
+        for (auto& c : shots) if (c.env < s->env) s = &c;
+    }
+    *s = {};
+    s->active = true;
+    s->data = src.data.data();
+    s->len = (int) src.data.size();
+    s->inc = mtof ((float) note) / src.rootHz * src.sampleRate / sr;
+    s->note = note;
+    s->layer = layer;
+    const float a = (juce::jlimit (-1.0f, 1.0f, pan) + 1.0f) * 0.25f * dsp::kPi;
+    s->gl = std::cos (a) * gain;
+    s->gr = std::sin (a) * gain;
+}
+
+void Engine::restrike (int offset, float strumMs, MidiOut& midi)
+{
+    int idx = 0;
+    for (auto n : currentPad)
+    {
+        midi.add (offset, 1, n, 0.0f, false);
+        if (pending.size() < pending.capacity())
+        {
+            const float vel = 0.35f + 0.25f * rng.nextFloat();
+            pending.push_back ({ (int) (idx * strumMs * 0.001 * sr), 0, n, vel });
+        }
+        ++idx;
+    }
 }
 
 bool Engine::popVisual (VisualEvent& e)
@@ -253,18 +328,23 @@ void Engine::computeHarmony (long bar, const EngineParams& p, const std::bitset<
 
 void Engine::changeChord (const std::vector<int>& padNotes, int bassNote, int offset, float strumMs, MidiOut& midi)
 {
-    // let go of notes that are not in the new chord; shared notes keep ringing
+    const auto& pr = profileFor (soundNow);
+    auto inChord = [] (const std::vector<int>& v, int n) { return std::find (v.begin(), v.end(), n) != v.end(); };
+
+    // let go of notes that are not in the new chord; shared grain notes keep ringing,
+    // struck sounds play the whole new chord again
+    for (auto n : currentPad)
+        if (pr.padStruck || ! inChord (padNotes, n))
+            midi.add (offset, 1, n, 0.0f, false);
     for (auto& v : padVoices)
-        if (v.active && v.stage != 2 && std::find (padNotes.begin(), padNotes.end(), v.note) == padNotes.end())
-        {
+        if (v.active && v.stage != 2 && ! inChord (padNotes, v.note))
             v.stage = 2;
-            midi.add (offset, 1, v.note, 0.0f, false);
-        }
+    dampShots (0, -1, 0.9f);
 
     int idx = 0;
     for (auto n : padNotes)
     {
-        const bool alreadyOn = std::find (currentPad.begin(), currentPad.end(), n) != currentPad.end();
+        const bool alreadyOn = ! pr.padStruck && inChord (currentPad, n);
         if (! alreadyOn && pending.size() < pending.capacity())
         {
             const float vel = 0.55f + 0.3f * h01 (hash3 ((uint32_t) n, citySeed, (uint32_t) idx));
@@ -283,11 +363,26 @@ void Engine::changeChord (const std::vector<int>& padNotes, int bassNote, int of
     bassTargetFreq = mtof ((float) bassNote);
     if (bassEnv < 0.05f) bassFreq = bassTargetFreq;
     bassTargetEnv = 1.0f;
+    if (pr.bassStruck)
+    {
+        dampShots (2, -1, 0.4f);
+        spawnShot (sourceFor (soundNow), bassNote + 12, p_bassLevel * 0.9f, 0.0f, 2);
+    }
     pushVisual (bassNote, 0.7f, 2);
 }
 
 void Engine::startPad (int note, float vel, int offset, MidiOut& midi)
 {
+    const auto& pr = profileFor (soundNow);
+    if (pr.padStruck)
+    {
+        dampShots (0, note + pr.padOctave, 0.25f);
+        const float pan = (h01 (hash3 ((uint32_t) note, citySeed, 9)) * 2.0f - 1.0f) * 0.5f;
+        spawnShot (sourceFor (soundNow), note + pr.padOctave, vel * p_padLevel * 0.75f * pr.padGain, pan, 0);
+        midi.add (offset, 1, note, vel, true);
+        pushVisual (note, vel, 0);
+        return;
+    }
     Voice* v = nullptr;
     for (auto& c : padVoices) if (! c.active) { v = &c; break; }
     if (v == nullptr) // steal the quietest
@@ -296,10 +391,10 @@ void Engine::startPad (int note, float vel, int offset, MidiOut& midi)
         for (auto& c : padVoices) if (c.env < v->env) v = &c;
     }
     const Weather& w = current;
-    const float attack = 1.0f + w.snowNorm() * 1.5f + (1.0f - w.windNorm()) * 0.7f;
+    const float attack = (1.0f + w.snowNorm() * 1.5f + (1.0f - w.windNorm()) * 0.7f) * pr.attackMul;
     *v = {};
     v->active = true;
-    v->note = note;
+    v->note = note + pr.padOctave;
     v->vel = vel;
     v->attackPerSample = 1.0f / (float) (attack * sr);
     v->releaseMul = decayMul (2.8f + w.snowNorm() * 2.0f, sr);
@@ -311,6 +406,21 @@ void Engine::startPad (int note, float vel, int offset, MidiOut& midi)
 
 void Engine::startDrop (int note, float vel, int offset, MidiOut& midi, float decaySec, bool withBell)
 {
+    const auto& pr = profileFor (soundNow);
+    const float swingPan = std::sin (windLfo * 0.7f) * current.windNorm() * 0.5f;
+    if (pr.dropStruck)
+    {
+        const float pan = juce::jlimit (-1.0f, 1.0f, (rng.nextFloat() * 2.0f - 1.0f) * 0.6f + swingPan);
+        const auto& src = sourceFor (soundNow);
+        spawnShot (src, note + pr.dropOctave, vel * p_dropLevel * 0.85f * pr.dropGain, pan, 1);
+        if (rng.nextFloat() < p_sparkle * 0.35f) // glitter: the same note an octave up, quieter
+            spawnShot (src, note + pr.dropOctave + 12, vel * p_dropLevel * 0.16f, -pan, 1);
+        midi.add (offset, 2, note, vel, true);
+        if (pending.size() < pending.capacity())
+            pending.push_back ({ (int) (0.2 * sr), 2, note, 0.0f });
+        pushVisual (note, vel, 1);
+        return;
+    }
     Voice* v = nullptr;
     for (auto& c : dropVoices) if (! c.active) { v = &c; break; }
     if (v == nullptr)
@@ -320,14 +430,13 @@ void Engine::startDrop (int note, float vel, int offset, MidiOut& midi, float de
     }
     *v = {};
     v->active = true;
-    v->note = note;
+    v->note = note + pr.dropOctave;
     v->vel = vel;
     v->attackPerSample = 1.0f / (float) (0.004 * sr);
     v->releaseMul = decayMul (decaySec, sr);
     v->layer = 1;
-    const float swing = std::sin (windLfo * 0.7f) * current.windNorm() * 0.5f;
-    v->pan = juce::jlimit (-1.0f, 1.0f, (rng.nextFloat() * 2.0f - 1.0f) * 0.6f + swing);
-    v->bellEnv = withBell ? 1.0f : 0.0f;
+    v->pan = juce::jlimit (-1.0f, 1.0f, (rng.nextFloat() * 2.0f - 1.0f) * 0.6f + swingPan);
+    v->bellEnv = withBell ? pr.bell : 0.0f;
     midi.add (offset, 2, note, vel, true);
     if (pending.size() < pending.capacity())
         pending.push_back ({ (int) (0.2 * sr), 2, note, 0.0f });
@@ -351,8 +460,14 @@ void Engine::runStep (long step, int offset, const EngineParams& p, const std::b
     const long bar = floorDiv (step, 16);
     const uint32_t s = (uint32_t) step;
 
+    if (stepInBar == 0 || p.sound != lastRequested)
+        resolveSound (bar, p, offset, midi);
+    const auto& pr = profileFor (soundNow);
+    p_padLevel = p.padLevel; p_dropLevel = p.dropLevel; p_bassLevel = p.bassLevel; p_sparkle = p.sparkle;
+
     const bool heldChanged = held != lastHeld;
     lastHeld = held;
+    bool chordChanged = false;
     if (stepInBar == 0 || heldChanged || currentChordId == 0xffffffffu)
     {
         int bassNote = 36;
@@ -361,9 +476,13 @@ void Engine::runStep (long step, int offset, const EngineParams& p, const std::b
         if (id != currentChordId && ! scratchPad.empty())
         {
             currentChordId = id;
-            changeChord (scratchPad, bassNote, offset, 30.0f + w.windNorm() * 420.0f, midi);
+            changeChord (scratchPad, bassNote, offset, 30.0f + w.windNorm() * 420.0f + pr.strumMs, midi);
+            chordChanged = true;
         }
     }
+    if (! chordChanged && pr.padStruck && pr.restrikeBeats > 0.0f
+        && stepInBar % std::max (1, (int) (pr.restrikeBeats * 4.0f)) == 0)
+        restrike (offset, 20.0f + w.windNorm() * 200.0f + pr.strumMs, midi);
 
     if (melodyPool.empty()) return;
 
@@ -507,11 +626,12 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
     std::fill (dropL.begin(), dropL.begin() + n, 0.0f);
     std::fill (dropR.begin(), dropR.begin() + n, 0.0f);
 
-    const SourceSound& src = activeSource (p);
+    const auto& pr = profileFor (soundNow);
+    const SourceSound& src = sourceFor (soundNow);
     const double rateFix = src.sampleRate / sr;
     const double srcLen = (double) src.data.size();
-    const float spray = juce::jlimit (0.0f, 1.0f, p.texture + windN * 0.3f);
-    const float padGrainSec = juce::jlimit (0.02f, 0.6f, p.grainMs * 0.001f * (1.0f + snowN * 0.8f));
+    const float spray = juce::jlimit (0.0f, 1.0f, p.texture + windN * 0.3f + pr.scatterAdd);
+    const float padGrainSec = juce::jlimit (0.02f, 0.9f, p.grainMs * 0.001f * (1.0f + snowN * 0.8f) * pr.grainMul);
     const int padGrainLen = (int) (padGrainSec * fsr);
     const int dropGrainLen = (int) (juce::jlimit (0.015f, 0.16f, padGrainSec * 0.35f) * fsr);
     constexpr float padOverlap = 6.0f, dropOverlap = 3.0f;
@@ -532,7 +652,7 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
             v.countdown += interval * (0.7 + 0.6 * rng.nextDouble());
             double ratio = mtof ((float) v.note) / src.rootHz * rateFix
                          * cents ((rng.nextFloat() * 2.0f - 1.0f) * (4.0f + spray * 14.0f));
-            float gain = v.env * v.vel * p.padLevel * padNorm;
+            float gain = v.env * v.vel * p.padLevel * padNorm * pr.padGain;
             if (rng.nextFloat() < p.sparkle * 0.3f) { ratio *= 2.0; gain *= 0.5f; }
             const double pos = (p.position + (rng.nextFloat() - 0.5f) * spray * 0.6f + 1.0f) * srcLen;
             const float pan = v.pan + (rng.nextFloat() * 2.0f - 1.0f) * (0.25f + 0.6f * spray);
@@ -541,7 +661,7 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
     }
 
     // --- drops (rain notes): grains plus a clear bell tone so every note rings true
-    const float bellLevel = p.dropLevel * 0.16f * (1.0f - 0.5f * snowN);
+    const float bellLevel = p.dropLevel * 0.16f * (1.0f - 0.5f * snowN);  // per-note amount set by the sound
     for (auto& v : dropVoices)
     {
         if (! v.active) continue;
@@ -554,7 +674,7 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         {
             v.countdown += interval * (0.7 + 0.6 * rng.nextDouble());
             double ratio = mtof ((float) v.note) / src.rootHz * rateFix * cents ((rng.nextFloat() * 2.0f - 1.0f) * 6.0f);
-            float gain = v.env * v.vel * p.dropLevel * dropNorm;
+            float gain = v.env * v.vel * p.dropLevel * dropNorm * pr.dropGain;
             if (rng.nextFloat() < p.sparkle * 0.35f) { ratio *= 2.0; gain *= 0.55f; }
             const double pos = (p.position + (rng.nextFloat() - 0.5f) * spray * 0.4f + 1.0f) * srcLen;
             spawnGrain (dropGrains, src, pos, ratio, dropGrainLen, gain, v.pan + (rng.nextFloat() - 0.5f) * 0.3f);
@@ -606,17 +726,43 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
     renderPool (padGrains, padL, padR);
     renderPool (dropGrains, dropL, dropR);
 
+    // --- struck notes, played straight through
+    for (auto& sh : shots)
+    {
+        if (! sh.active) continue;
+        auto& bl = sh.layer == 1 ? dropL : padL;
+        auto& br = sh.layer == 1 ? dropR : padR;
+        constexpr float fadeLen = 3000.0f;
+        for (int i = 0; i < n; ++i)
+        {
+            if (sh.pos >= sh.len - 2 || sh.env < 0.0002f) { sh.active = false; break; }
+            const int i0 = (int) sh.pos;
+            const float fr = (float) (sh.pos - i0);
+            float v = sh.data[i0] + (sh.data[i0 + 1] - sh.data[i0]) * fr;
+            const float left = (float) (sh.len - sh.pos);
+            if (left < fadeLen) v *= left / fadeLen;
+            if (sh.age < 48) v *= (float) sh.age / 48.0f;
+            v *= sh.env;
+            bl[(size_t) i] += v * sh.gl;
+            br[(size_t) i] += v * sh.gr;
+            sh.env *= sh.mul;
+            sh.pos += sh.inc;
+            ++sh.age;
+        }
+    }
+
     // --- effects settings for this chunk
-    const float warm = juce::jlimit (0.0f, 1.0f, p.warmth + (1.0f - w.warmthNorm()) * 0.12f);
-    const float toneHz = 17000.0f * std::pow (0.2f, warm) * (w.isDay ? 1.0f : 0.8f);
+    const float warm = juce::jlimit (0.0f, 1.0f, p.warmth + pr.warmthAdd + (1.0f - w.warmthNorm()) * 0.12f);
+    const float toneHz = 17000.0f * std::pow (0.2f, warm) * (w.isDay ? 1.0f : 0.8f) * pr.brightness;
     toneL.setup (toneHz, 0.6f, fsr);
     toneR.setup (toneHz, 0.6f, fsr);
     const float drive = 1.0f + warm * 1.6f;
     const float windHz = 380.0f + 950.0f * (0.5f + 0.5f * std::sin (windLfo));
     windFilt.setup (windHz, 1.4f, fsr);
     const float echoDelay = juce::jlimit (100.0f, (float) (2.9 * sr), (float) (0.75 * 60.0 / curBpm * sr));
-    const float echoFb = 0.3f + 0.35f * p.echo;
-    const float space = juce::jlimit (0.0f, 1.0f, p.space + w.humidityNorm() * 0.08f + (w.fog ? 0.15f : 0.0f));
+    const float echoAmt = juce::jlimit (0.0f, 1.0f, p.echo * pr.echo);
+    const float echoFb = 0.3f + 0.35f * echoAmt;
+    const float space = juce::jlimit (0.0f, 1.0f, (p.space + w.humidityNorm() * 0.08f + (w.fog ? 0.15f : 0.0f)) * pr.reverb);
 
     juce::Reverb::Parameters rp;
     rp.roomSize = 0.8f + 0.17f * space;
@@ -631,7 +777,7 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         lastDamp = rp.damping;
     }
 
-    const float bassGain = p.bassLevel * 0.3f;
+    const float bassGain = p.bassLevel * 0.3f * pr.sineBass;
     const float bassAtk = 1.0f - std::exp (-1.0f / (0.25f * fsr));
     const float bassGlide = 1.0f - std::exp (-1.0f / (0.08f * fsr));
     const float thunderMul = decayMul (3.5f, sr);
@@ -641,7 +787,7 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
     const float wobbleDepth = warm * 0.0011f * fsr;
     const float wobbleInc = kTwoPi * 0.55f / fsr, flutterInc = kTwoPi * 6.3f / fsr;
     const float windInc = kTwoPi * (0.05f + 0.2f * windN) / fsr;
-    const float shimmerAmt = p.shimmer * 0.3f;
+    const float shimmerAmt = std::min (0.38f, p.shimmer * 0.3f * pr.shimmer);
     const float outGain = juce::Decibels::decibelsToGain (p.gainDb);
 
     for (int i = 0; i < n; ++i)
@@ -682,8 +828,8 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         echoL.push (echoIn + echoFiltR.lp * echoFb);
         echoR.push (echoFiltL.lp * echoFb);
 
-        float xl = padL[(size_t) i] + dropL[(size_t) i] + bass + thunder + rainS + windS * (1.0f - wPan) + eL * p.echo * 0.8f;
-        float xr = padR[(size_t) i] + dropR[(size_t) i] + bass + thunder + rainS + windS * wPan + eR * p.echo * 0.8f;
+        float xl = padL[(size_t) i] + dropL[(size_t) i] + bass + thunder + rainS + windS * (1.0f - wPan) + eL * echoAmt * 0.8f;
+        float xr = padR[(size_t) i] + dropR[(size_t) i] + bass + thunder + rainS + windS * wPan + eR * echoAmt * 0.8f;
 
         // tape warmth: slow wobble, gentle darkening and soft saturation
         wobblePhase += wobbleInc; if (wobblePhase > kTwoPi) wobblePhase -= kTwoPi;

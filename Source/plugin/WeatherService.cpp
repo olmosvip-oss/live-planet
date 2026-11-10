@@ -9,16 +9,23 @@ namespace
         auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
                            .withConnectionTimeoutMs (8000)
                            .withExtraHeaders ("User-Agent: LivePlanet/0.1");
-        std::unique_ptr<juce::InputStream> in (url.createInputStream (options));
-        if (in == nullptr)
+        // connections can drop for a moment, so try a few times before giving up
+        for (int attempt = 0; attempt < 4; ++attempt)
         {
-            error = "No internet connection";
-            return {};
+            if (attempt > 0)
+                juce::Thread::sleep (600 * attempt);
+            std::unique_ptr<juce::InputStream> in (url.createInputStream (options));
+            if (in == nullptr)
+                continue;
+            auto parsed = juce::JSON::parse (in->readEntireStreamAsString());
+            if (parsed.isObject())
+            {
+                error = {};
+                return parsed;
+            }
         }
-        auto parsed = juce::JSON::parse (in->readEntireStreamAsString());
-        if (! parsed.isObject())
-            error = "The weather service sent something unexpected";
-        return parsed;
+        error = "Couldn't reach the weather service. Check your internet connection.";
+        return {};
     }
 
     float num (const juce::var& obj, const char* key, float fallback)

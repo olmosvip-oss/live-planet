@@ -51,7 +51,8 @@ public:
     SkyStatus getSkyStatus() const;
     lp::Weather getManualWeather() const;
 
-    static juce::StringArray soundNames() { return { "Glass", "Choir", "Felt Keys", "Music Box", "Your Sample" }; }
+    static juce::StringArray soundNames() { return { "Auto (weather picks)", "Glass", "Choir", "Felt Piano", "Music Box",
+                                                     "Nylon Guitar", "Tape Strings", "Vapor Synth", "Your Sample" }; }
 
 private:
     void timerCallback() override;

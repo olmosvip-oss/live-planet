@@ -105,7 +105,8 @@ lp::EngineParams LivePlanetProcessor::readParams() const
     lp::EngineParams p;
     p.keyRoot = (int) v ("key") - 1;
     p.scale = (int) v ("scale") - 1;
-    p.sound = (lp::SoundId) juce::jlimit (0, 4, (int) v ("sound"));
+    const int soundIdx = juce::jlimit (0, 8, (int) v ("sound"));
+    p.sound = soundIdx == 0 ? lp::SoundId::Auto : (lp::SoundId) (soundIdx - 1);
     p.padLevel = v ("pad");
     p.dropLevel = v ("drops");
     p.bassLevel = v ("bass");
@@ -263,7 +264,7 @@ bool LivePlanetProcessor::loadSample (const juce::File& file)
     samplePath = file.getFullPathName();
     sampleName = file.getFileNameWithoutExtension();
     if (auto* p = params.getParameter ("sound"))
-        p->setValueNotifyingHost (p->convertTo0to1 (4.0f));
+        p->setValueNotifyingHost (p->convertTo0to1 (8.0f));
     return true;
 }
 

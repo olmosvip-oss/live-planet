@@ -1,5 +1,7 @@
 # Live Planet
 
+![Live Planet](docs/screenshot.png)
+
 An instrument plugin played by the weather. Pick any city on Earth and its live weather plays dreamy granular chords and melodies, always in key and in time with your song.
 
 | Weather | What it does to the music |
@@ -16,7 +18,19 @@ An instrument plugin played by the weather. Pick any city on Earth and its live 
 
 Hold keys on a MIDI keyboard and your notes become the chord while the weather keeps playing it. The notes also go out as MIDI, so Live Planet can play any other instrument.
 
-**Sounds:** Glass, Choir, Felt Keys, Music Box, or drag in any audio file of your own.
+**Sounds:** seven instruments, each played its own way with its own effects:
+
+| Sound | How it plays | Auto mode picks it for |
+|---|---|---|
+| Glass | shimmering grain clouds and bells | light rain |
+| Choir | slow "aah" voices, huge reverb | snowy nights, fog |
+| Felt Piano | struck soft piano chords and melody | heavy rain, grey days |
+| Music Box | rolled tine arpeggios, lo-fi wobble | calm nights, snowy days |
+| Nylon Guitar | strummed plucked strings | mild sunny days |
+| Tape Strings | warm, wobbly string section | storms and strong wind |
+| Vapor Synth | wide glossy supersaw, big echoes | hot sunny days |
+
+Choose **Auto** and the weather picks the instrument (it re-chooses every 8 bars and whenever you change city), or drag in any audio file of your own.
 **Effects:** grain size, scatter, sparkle (octave-up glitter), tape warmth and wobble, ping-pong echo, reverb with shimmer, and real rain and wind noise.
 
 Formats: VST3, AU (Mac), CLAP and a standalone app, for macOS, Windows and Linux.
@@ -43,6 +57,7 @@ The plugins appear in `build/LivePlanet_artefacts/Release/`. Every push to GitHu
 - `Source/engine/Theory.h`: scales, chord progressions, repeatable randomness
 - `Source/engine/Engine.cpp`: weather → harmony, the 16th-note clock, grain engine and effects
 - `Source/engine/Sources.h`: the built-in sounds, generated from pure math (no recorded samples)
+- `Source/engine/Profiles.h`: how each sound is played, its effects, and which weather picks it
 - `Source/plugin/`: the plugin wrapper, live weather fetching and the animated sky screen
 
 ## Before selling it

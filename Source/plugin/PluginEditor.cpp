@@ -549,8 +549,8 @@ void LivePlanetEditor::timerCallback()
         skyView.addNote (e);
 
     const auto status = proc.getSkyStatus();
-    const lp::Weather w = proc.engine.getCurrentWeather();
-    skyView.setSky (w);
+    skyView.setSky (proc.engine.getCurrentWeather()); // the picture morphs smoothly...
+    const lp::Weather w = proc.engine.getTargetWeather(); // ...the numbers show the real sky
 
     juce::String title, line1, line2;
     const bool usingLive = status.live && status.haveLive;
@@ -576,10 +576,11 @@ void LivePlanetEditor::timerCallback()
     const int quality = proc.engine.uiChordMinor.load();
     juce::String chord = quality < 0 ? juce::String ("your chord")
                                      : juce::String (lp::noteName (chordRoot)) + (quality == 1 ? "m" : (quality == 2 ? "sus2" : ""));
-    const juce::String musicLine = juce::String (lp::noteName (proc.engine.uiKey.load())) + " "
+    const juce::String musicLine = juce::String (lp::profileFor ((lp::SoundId) proc.engine.uiSound.load()).name) + "   -   "
+                                 + juce::String (lp::noteName (proc.engine.uiKey.load())) + " "
                                  + lp::getScale ((lp::ScaleId) proc.engine.uiScale.load()).name
                                  + "   -   now playing " + chord
-                                 + "   -   " + juce::String (proc.engine.uiBpm.load(), 0) + " BPM";
+                                 + "   -   " + juce::String (juce::roundToInt (proc.engine.uiBpm.load())) + " BPM";
     skyView.setText (title, line1, line2, musicLine);
     skyView.advance (dt);
     skyView.repaint();
@@ -592,7 +593,7 @@ void LivePlanetEditor::timerCallback()
     thunderToggle.setEnabled (manual);
 
     const auto sampleName = proc.getSampleName();
-    sampleLabel.setText (sampleName.isEmpty() ? "or drag an audio file here" : "Sample: " + sampleName, juce::dontSendNotification);
+    sampleLabel.setText (sampleName.isEmpty() ? "or drag in a file" : "Sample: " + sampleName, juce::dontSendNotification);
 
     if (wasManual != (int) manual) { wasManual = (int) manual; repaint (skyPanel); }
 }
@@ -694,10 +695,11 @@ void LivePlanetEditor::resized()
         auto row = [&r] (int h) { auto x = r.removeFromTop (h); r.removeFromTop (6); return x; };
         auto soundRow = row (26);
         soundLabel.setBounds (soundRow.removeFromLeft (52));
-        loadButton.setBounds (soundRow.removeFromRight (96));
-        soundRow.removeFromRight (6);
         soundBox.setBounds (soundRow);
-        sampleLabel.setBounds (row (16).withTrimmedLeft (52));
+        auto sampleRow = row (24).withTrimmedLeft (52);
+        loadButton.setBounds (sampleRow.removeFromLeft (100));
+        sampleRow.removeFromLeft (8);
+        sampleLabel.setBounds (sampleRow);
         auto keyRow = row (26);
         keyLabel.setBounds (keyRow.removeFromLeft (52));
         keyBox.setBounds (keyRow);

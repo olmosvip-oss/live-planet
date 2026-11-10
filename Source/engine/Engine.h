@@ -9,17 +9,17 @@
 #include "Theory.h"
 #include "Sources.h"
 #include "Dsp.h"
+#include "Profiles.h"
 
 namespace lp
 {
 
-enum class SoundId { Glass, Choir, FeltKeys, MusicBox, UserSample, Count };
 
 struct EngineParams
 {
     int   keyRoot   = -1;   // -1 = let the weather pick, else 0..11
     int   scale     = -1;   // -1 = let the weather pick, else ScaleId
-    SoundId sound   = SoundId::Glass;
+    SoundId sound   = SoundId::Auto;
     float grainMs   = 140.0f;
     float texture   = 0.35f; // how scattered the grains are
     float sparkle   = 0.3f;  // octave-up glitter grains
@@ -65,7 +65,7 @@ public:
     void prepare (double sampleRate);
     void setTargetWeather (const Weather& w) { target = w; }
     void jumpToWeather (const Weather& w) { target = w; current = w; }
-    void setCitySeed (uint32_t s) { citySeed = s; }
+    void setCitySeed (uint32_t s) { if (s != citySeed) soundBlock = -1; citySeed = s; } // new city: pick a sound at the next bar
     void setUserSource (const SourceSound* s) { userSource.store (s); }
 
     void process (float* L, float* R, int n, const EngineParams& p, const TransportInfo& t,
@@ -73,10 +73,11 @@ public:
 
     bool popVisual (VisualEvent& e);
     const Weather& getCurrentWeather() const { return current; }
+    Weather getTargetWeather() const { return target; } // the real sky (current glides toward it)
 
     // what is playing right now, for the screen (read from the UI thread; small
     // races only affect a label)
-    std::atomic<int> uiKey { 0 }, uiScale { 0 }, uiChordRoot { 0 }, uiChordMinor { 0 };
+    std::atomic<int> uiSound { 0 }, uiKey { 0 }, uiScale { 0 }, uiChordRoot { 0 }, uiChordMinor { 0 };
     std::atomic<float> uiBpm { 80.0f };
 
 private:
@@ -106,6 +107,16 @@ private:
         bool sparkleVoice = false;
     };
 
+    // a note played straight from the sound, start to finish (piano, guitar, music box)
+    struct Shot
+    {
+        const float* data = nullptr;
+        int len = 0, age = 0, note = 0, layer = 0;
+        double pos = 0, inc = 1;
+        float gl = 0, gr = 0, env = 1, mul = 1;
+        bool active = false;
+    };
+
     struct Pending { int samplesLeft; int kind; int note; float vel; }; // kind 0 pad on, 1 drop on, 2 midi off
 
     void runStep (long step, int offset, const EngineParams& p, const std::bitset<128>& held, MidiOut& midi);
@@ -113,11 +124,15 @@ private:
     void startPad (int note, float vel, int offset, MidiOut& midi);
     void startDrop (int note, float vel, int offset, MidiOut& midi, float decaySec, bool withBell);
     void triggerThunder();
+    void spawnShot (const SourceSound& src, int note, float gain, float pan, int layer);
+    void dampShots (int layer, int note, float seconds);
+    void resolveSound (long bar, const EngineParams& p, int offset, MidiOut& midi);
+    void restrike (int offset, float strumMs, MidiOut& midi);
+    const SourceSound& sourceFor (SoundId id) const;
     void renderChunk (float* L, float* R, int n, const EngineParams& p);
     void spawnGrain (std::vector<Grain>& pool, const SourceSound& src, double startPos, double ratio,
                      int len, float gain, float pan);
     void pushVisual (int note, float vel, int layer);
-    const SourceSound& activeSource (const EngineParams& p) const;
     void computeHarmony (long bar, const EngineParams& p, const std::bitset<128>& held,
                          std::vector<int>& padNotes, int& bassNote, uint32_t& chordId);
 
@@ -125,7 +140,10 @@ private:
     Weather target, current;
     uint32_t citySeed = 7;
 
-    std::array<SourceSound, 4> builtIns;
+    std::vector<Shot> shots;
+    SoundId soundNow = SoundId::Glass, autoSound = SoundId::Glass, lastRequested = (SoundId) -1;
+    long soundBlock = -1;
+    float p_padLevel = 0.75f, p_dropLevel = 0.7f, p_bassLevel = 0.45f, p_sparkle = 0.3f;
     std::atomic<const SourceSound*> userSource { nullptr };
 
     std::vector<Grain> padGrains, dropGrains;
