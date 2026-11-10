@@ -1,12 +1,14 @@
 cmake_minimum_required(VERSION 3.22)
+
+# Mac settings must come before project() to take effect:
+# one universal plugin that runs on both Apple Silicon and Intel Macs (and in Rosetta).
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Universal binary")
+
 project(LivePlanet VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
-if(APPLE)
-    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Universal binary")
-endif()
 
 add_subdirectory(libs/JUCE)
 add_subdirectory(libs/clap-juce-extensions EXCLUDE_FROM_ALL)

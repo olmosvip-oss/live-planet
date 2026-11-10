@@ -57,6 +57,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cd dist
+          lipo -info "Live Planet.vst3/Contents/MacOS/Live Planet"   # should list x86_64 and arm64
           for b in *.vst3 *.component *.clap *.app; do
             [ -e "$b" ] && codesign --force --deep -s - "$b"
           done
