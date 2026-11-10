@@ -186,7 +186,8 @@ bool Library::load (const juce::File& cache)
 
 LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::uint32 seed,
                               std::function<int (const juce::String&, double)> loopLengthBars,
-                              const juce::String& forceDrumPack)
+                              const juce::String& forceDrumPack,
+                              std::function<int (const juce::String&)> tuneFor)
 {
     LibraryPicks picks;
     juce::Random rng ((juce::int64) seed * 31 + 7);
@@ -249,10 +250,10 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
     const int relative = target.minor ? (target.key + 3) % 12 : (target.key + 9) % 12;
     for (auto& e : lib.all())
     {
-        if (e.kind != SampleKind::Loop || e.loop == LoopKind::Drums || e.loop == LoopKind::Bass || e.key < 0 || e.bpm <= 0) continue;
+        if (e.kind != SampleKind::Loop || e.loop == LoopKind::Drums || e.loop == LoopKind::Bass || e.bpm <= 0) continue;
         const bool sameKey = e.key == target.key && e.minor == target.minor;
         const bool relKey = e.key == relative && e.minor != target.minor;
-        if (! sameKey && ! relKey) continue;
+        if (e.key >= 0 && ! sameKey && ! relKey && ! tuneFor) continue;
         const double ratio = e.bpm / target.bpm;
         double best = 1e9;
         for (double m : { 0.5, 1.0, 2.0 }) best = std::min (best, std::abs (ratio * m - 1.0));
@@ -261,10 +262,18 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
         loops.push_back ({ score, &e });
     }
     std::sort (loops.begin(), loops.end(), [] (auto& a, auto& b) { return a.first > b.first; });
-    for (size_t i = 0; i < std::min<size_t> (loops.size(), 12); ++i)
+    // listen to the best few: the one that's really in key (or needs the least tuning) wins
     {
-        const int bars = loopLengthBars ? loopLengthBars (loops[i].second->path, loops[i].second->bpm) : 0;
-        if (bars > 0) { picks.loop = loops[i].second; picks.loopBars = bars; break; }
+        int bestTune = 99;
+        for (size_t i = 0; i < std::min<size_t> (loops.size(), 16); ++i)
+        {
+            const int bars = loopLengthBars ? loopLengthBars (loops[i].second->path, loops[i].second->bpm) : 0;
+            if (bars <= 0) continue;
+            const int tune = tuneFor ? tuneFor (loops[i].second->path) : 0;
+            if (tune == 99) continue;
+            if (std::abs (tune) < std::abs (bestTune)) { bestTune = tune; picks.loop = loops[i].second; picks.loopBars = bars; }
+            if (tune == 0) break;
+        }
     }
 
     // a whole set that plays together: everything at the main loop's exact tempo, same key family
@@ -282,7 +291,7 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
             for (double m : { 0.5, 1.0, 2.0 }) tempoOk = tempoOk || std::abs (e.bpm * m / best - 1.0) < 0.015;
             if (! tempoOk) continue;
             const bool tonal = e.loop != LoopKind::Drums;
-            if (tonal)
+            if (tonal && ! tuneFor)
             {
                 if (e.key < 0) continue;
                 const bool sameKey = e.key == target.key && e.minor == target.minor;
@@ -291,23 +300,44 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
             }
             auto& choice = byKind[e.loop];
             choice.kind = e.loop;
-            if (choice.options.size() >= 24) continue;
-            choice.options.push_back ({ &e, 0 });
+            if (choice.options.size() >= 40) continue;
+            // name says the right key: try it first
+            const bool nameFits = e.key >= 0 && ((e.key == target.key && e.minor == target.minor) || (e.key == relative && e.minor != target.minor));
+            if (nameFits) choice.options.insert (choice.options.begin(), { &e, 0, 0 });
+            else choice.options.push_back ({ &e, 0, 0 });
         }
         for (auto& [kind, choice] : byKind)
         {
             // shuffle a little (seeded) so "write another" finds new sounds, then keep ones that are whole bars
-            for (size_t i = choice.options.size(); i > 1; --i) std::swap (choice.options[i - 1], choice.options[(size_t) rng.nextInt ((int) i)]);
+            // shuffle within "name fits" and "other" groups so "write another" finds new sounds
+            auto firstOther = std::find_if (choice.options.begin(), choice.options.end(), [&] (const LoopOption& o)
+                { return ! (o.entry->key >= 0 && ((o.entry->key == target.key && o.entry->minor == target.minor) || (o.entry->key == relative && o.entry->minor != target.minor))); });
+            const size_t split = (size_t) (firstOther - choice.options.begin());
+            for (size_t i = split; i > 1; --i) std::swap (choice.options[i - 1], choice.options[(size_t) rng.nextInt ((int) i)]);
+            for (size_t i = choice.options.size(); i > split + 1; --i) std::swap (choice.options[i - 1], choice.options[split + (size_t) rng.nextInt ((int) (i - split))]);
             if (kind == picks.loop->loop)
                 for (size_t i = 0; i < choice.options.size(); ++i)
-                    if (choice.options[i].first == picks.loop) std::swap (choice.options[0], choice.options[i]);
-            std::vector<std::pair<const LibraryEntry*, int>> ok;
+                    if (choice.options[i].entry == picks.loop) std::swap (choice.options[0], choice.options[i]);
+            // listen to each: keep ones that are whole bars and (for tonal loops) in key or close enough to tune
+            std::vector<LoopOption> ok;
             for (auto& o : choice.options)
             {
-                const int bars = loopLengthBars ? loopLengthBars (o.first->path, best) : 0;
-                if (bars > 0) ok.push_back ({ o.first, bars });
+                const int bars = loopLengthBars ? loopLengthBars (o.entry->path, best) : 0;
+                if (bars <= 0) continue;
+                int tune = 0;
+                if (kind != LoopKind::Drums && tuneFor)
+                {
+                    tune = tuneFor (o.entry->path);
+                    if (tune == 99 || std::abs (tune) > 3) continue; // no clear key, or too far to tune cleanly
+                }
+                ok.push_back ({ o.entry, bars, tune });
                 if (ok.size() >= 6) break;
             }
+            // in key first, then the smallest tuning
+            std::stable_sort (ok.begin(), ok.end(), [] (const LoopOption& a, const LoopOption& b) { return std::abs (a.tune) < std::abs (b.tune); });
+            if (kind == picks.loop->loop)
+                for (size_t i = 0; i < ok.size(); ++i)
+                    if (ok[i].entry == picks.loop) std::swap (ok[0], ok[i]);
             choice.options = ok;
             if (! ok.empty()) picks.loopSet.push_back (choice);
         }

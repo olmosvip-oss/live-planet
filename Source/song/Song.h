@@ -43,6 +43,19 @@ struct Profile
 // Analyses mono audio. Runs in well under a second per minute of music.
 Profile analyse (const float* mono, int numSamples, double sampleRate);
 
+// Listens for the key of a (short) recording. Returns false if it has no clear key.
+bool detectKey (const float* mono, int numSamples, double sampleRate, int& key, bool& minor);
+
+// Semitones to move something in one key so its notes fit another (relative keys count as the same).
+inline int tuneShift (int fromKey, bool fromMinor, int toKey, bool toMinor)
+{
+    const int a = fromMinor ? (fromKey + 3) % 12 : fromKey;
+    const int b = toMinor ? (toKey + 3) % 12 : toKey;
+    int d = ((b - a) % 12 + 12) % 12;
+    if (d > 6) d -= 12;
+    return d;
+}
+
 // ---------- the new song
 
 enum class PartKind { Chords, Melody, Counter, Pad, Bass, Drums, Loop };
@@ -82,6 +95,8 @@ struct Part
     int candidate = 0;
     int pitchSemis = 0;
     bool reversed = false;
+    int autoTune = 0;                // loops: semitones to bring the sample into the song's key
+    juce::Array<int> candidateTunes; // ...for each candidate
 };
 
 struct Section

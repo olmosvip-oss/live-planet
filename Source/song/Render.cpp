@@ -536,8 +536,9 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     }
 
     // loops and drums are re-pitched with a pitch shifter (keeps them in time)
-    if (part.pitchSemis != 0 && (part.kind == PartKind::Loop || part.kind == PartKind::Drums))
-        pitchShift (buf, part.pitchSemis, sr);
+    const int shift = part.pitchSemis + (part.kind == PartKind::Loop ? part.autoTune : 0); // your pitch + tuning into the song's key
+    if (shift != 0 && (part.kind == PartKind::Loop || part.kind == PartKind::Drums))
+        pitchShift (buf, shift, sr);
     return true;
 }
 

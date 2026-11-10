@@ -55,6 +55,46 @@ namespace
     }
 }
 
+bool detectKey (const float* input, int numSamples, double sampleRate, int& key, bool& minor)
+{
+    constexpr int N = 8192;
+    const int step = std::max (1, (int) std::round (sampleRate / 22050.0));
+    const double sr = sampleRate / step;
+    std::vector<float> x ((size_t) (numSamples / step));
+    for (size_t i = 0; i < x.size(); ++i) x[i] = input[i * (size_t) step];
+    if ((int) x.size() < N) return false;
+    std::vector<float> win (N);
+    for (int i = 0; i < N; ++i) win[(size_t) i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * (float) i / (float) (N - 1));
+    float total[12] {};
+    double bass[12] {};
+    std::vector<cpx> b (N);
+    for (int start = 0; start + N <= (int) x.size(); start += N / 2)
+    {
+        for (int i = 0; i < N; ++i) b[(size_t) i] = cpx (x[(size_t) (start + i)] * win[(size_t) i], 0.0f);
+        fft (b);
+        for (int k = 1; k < N / 2; ++k)
+        {
+            const double f = k * sr / N;
+            if (f < 90.0 || f > 2500.0) continue;
+            const int pc = (int) ((std::lround (12.0 * std::log2 (f / 440.0)) + 69 + 1200) % 12);
+            const float m = std::abs (b[(size_t) k]);
+            total[pc] += m * m;
+            if (f < 260.0) bass[pc] += m * m;
+        }
+    }
+    float best = -2, second = -2;
+    for (int k = 0; k < 12; ++k)
+        for (int q = 0; q < 2; ++q)
+        {
+            const float c = corr (total, q ? kMinor : kMajor, k);
+            if (c > best) { second = best; best = c; key = k; minor = q == 1; }
+            else if (c > second) second = c;
+        }
+    const int rel = minor ? (key + 3) % 12 : (key + 9) % 12;
+    if (bass[rel] > bass[key] * 1.6) { key = rel; minor = ! minor; }
+    return best > 0.55f; // a clear enough key
+}
+
 Profile analyse (const float* input, int numSamples, double sampleRate)
 {
     Profile p;

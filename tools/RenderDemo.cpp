@@ -421,6 +421,15 @@ static int libraryTest (const juce::File& outDir)
     if (picks.loop)
     {
         Part loop; loop.name = "loop"; loop.kind = PartKind::Loop; loop.samplePath = picks.loop->path; loop.loopBars = loopLen (picks.loop->path, song.bpm);
+        int k = -1; bool mi = false;
+        {
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (picks.loop->path)));
+            juce::AudioBuffer<float> b (1, (int) rd->lengthInSamples); rd->read (&b, 0, b.getNumSamples(), 0, true, false);
+            const bool clear = detectKey (b.getReadPointer (0), b.getNumSamples(), rd->sampleRate, k, mi);
+            std::printf ("loop's key by ear: %s%s (clear=%d), name says %s%s, tune to F minor: %+d st\n", lp::noteName (std::max (0, k)), mi ? "m" : "", clear,
+                         lp::noteName (picks.loop->key), picks.loop->minor ? "m" : "", tuneShift (k, mi, 5, true));
+        }
         for (auto& sec : song.sections) if (sec.name.rfind ("chorus", 0) == 0) for (int b = sec.startBar; b + loop.loopBars <= sec.startBar + sec.bars; b += loop.loopBars) loop.loopStartBars.push_back (b);
         song.parts.push_back (loop);
     }

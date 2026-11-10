@@ -314,7 +314,8 @@ private:
         if (useLib || onlySamples)
         {
             setStage (Stage::Writing, 0.03f, "looking through your samples...");
-            picks = lp::song::pickFromLibrary (library, target, o.seed, [] (const juce::String& path, double bpm) { return loopBars (path, bpm); });
+            picks = lp::song::pickFromLibrary (library, target, o.seed, [] (const juce::String& path, double bpm) { return loopBars (path, bpm); },
+                                               {}, [this, &target] (const juce::String& path) { return tuneFor (path, target.key, target.minor); });
             if (picks.loop != nullptr)
             {
                 opts.forceBpm = picks.loopBpm > 0 ? picks.loopBpm : picks.loop->bpm;
@@ -360,8 +361,9 @@ private:
             lp::song::Part loop;
             loop.name = name.toStdString();
             loop.kind = lp::song::PartKind::Loop;
-            for (auto& opt : choice.options) loop.candidates.add (opt.first->path);
+            for (auto& opt : choice.options) { loop.candidates.add (opt.entry->path); loop.candidateTunes.add (opt.tune); }
             loop.samplePath = loop.candidates[0];
+            loop.autoTune = loop.candidateTunes[0];
             loop.loopBars = loopBars (loop.samplePath, song.bpm);
             if (loop.loopBars <= 0) return;
             for (auto& sec : song.sections)
@@ -370,13 +372,12 @@ private:
                         for (int b = sec.startBar; b + loop.loopBars <= sec.startBar + sec.bars; b += loop.loopBars)
                             loop.loopStartBars.push_back (b);
             if (loop.loopStartBars.empty()) return;
-            const double fileBpm = choice.options[0].first->bpm;
+            const double fileBpm = choice.options[0].entry->bpm;
             double m = 1.0;
             for (double mm : { 0.5, 1.0, 2.0 }) if (std::abs (fileBpm * mm - song.bpm) < std::abs (fileBpm * m - song.bpm)) m = mm;
             const double fit = (song.bpm / (fileBpm * m) - 1.0) * 100.0;
             loop.source = "splice: " + juce::File (loop.samplePath).getFileNameWithoutExtension();
-            loop.remix = juce::String ("plays as recorded") + (std::abs (fit) > 0.05 ? ", fitted to " + juce::String (juce::roundToInt (song.bpm)) + " bpm (" + (fit > 0 ? "+" : "") + juce::String (fit, 1) + "%)" : "")
-                       + ", arranged into this song's sections";
+            loop.remix = remixText (loop, fit, song);
             song.parts.push_back (loop);
         };
 
@@ -446,6 +447,55 @@ private:
         status.message = "\"" + song.title + "\" is ready";
     }
 
+    // semitones to put a sample in the song's key (99 = it has no clear key). Listens once per file.
+    int tuneFor (const juce::String& path, int songKey, bool songMinor)
+    {
+        auto it = keyCache.find (path);
+        if (it == keyCache.end())
+        {
+            int key = -1;
+            bool minor = false;
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (path)));
+            if (rd != nullptr && rd->lengthInSamples > 0)
+            {
+                const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 20.0));
+                juce::AudioBuffer<float> b ((int) rd->numChannels, len);
+                rd->read (&b, 0, len, 0, true, true);
+                std::vector<float> mono ((size_t) len);
+                for (int i = 0; i < len; ++i)
+                {
+                    float v = 0;
+                    for (int ch = 0; ch < b.getNumChannels(); ++ch) v += b.getSample (ch, i);
+                    mono[(size_t) i] = v;
+                }
+                if (! lp::song::detectKey (mono.data(), len, rd->sampleRate, key, minor)) key = -1;
+            }
+            it = keyCache.emplace (path, std::make_pair (key, minor)).first;
+        }
+        if (it->second.first < 0) return 99;
+        return lp::song::tuneShift (it->second.first, it->second.second, songKey, songMinor);
+    }
+
+    juce::String remixText (const lp::song::Part& loop, double fitPercent, const lp::song::Song& song) const
+    {
+        juce::String t = "plays as recorded";
+        if (std::abs (fitPercent) > 0.05)
+            t << ", fitted to " << juce::roundToInt (song.bpm) << " bpm (" << (fitPercent > 0 ? "+" : "") << juce::String (fitPercent, 1) << "%)";
+        auto it = keyCache.find (loop.samplePath);
+        const juce::String songKey = juce::String (lp::noteName (song.key)) + (song.minor ? " minor" : " major");
+        if (loop.autoTune != 0 && it != keyCache.end() && it->second.first >= 0)
+            t << ", tuned " << (loop.autoTune > 0 ? "+" : "") << loop.autoTune << " st to " << songKey
+              << " (it was " << lp::noteName (it->second.first) << (it->second.second ? " minor" : " major") << ")";
+        else if (it != keyCache.end() && it->second.first >= 0)
+            t << ", already in " << songKey;
+        t << ", arranged into this song's sections";
+        return t;
+    }
+
+    std::map<juce::String, std::pair<int, bool>> keyCache;
+
     static TrackInfo trackInfo (const lp::song::Part& p, const juce::File& stem)
     {
         TrackInfo t;
@@ -481,6 +531,7 @@ private:
             {
                 part.candidate = (part.candidate + 1) % part.candidates.size();
                 part.samplePath = part.candidates[part.candidate];
+                part.autoTune = part.candidate < part.candidateTunes.size() ? part.candidateTunes[part.candidate] : 0;
                 const int bars = loopBars (part.samplePath, song.bpm);
                 if (bars > 0)
                 {
@@ -494,6 +545,7 @@ private:
                     if (! starts.empty()) part.loopStartBars = starts;
                 }
                 part.source = "splice: " + juce::File (part.samplePath).getFileNameWithoutExtension();
+                part.remix = remixText (part, 0.0, song);
             }
             else if (part.kind == PK::Drums && ! song.drumSamples.empty() && part.candidates.size() > 1)
             {

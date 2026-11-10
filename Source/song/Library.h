@@ -48,10 +48,12 @@ private:
 };
 
 // A set of loops that fit together (same key, same tempo), each with alternatives to swap to.
+struct LoopOption { const LibraryEntry* entry; int bars; int tune; };
+
 struct LoopChoice
 {
     LoopKind kind = LoopKind::Other;
-    std::vector<std::pair<const LibraryEntry*, int>> options; // entry + its length in bars; [0] is the pick
+    std::vector<LoopOption> options; // [0] is the pick; tune = semitones to put it in the song's key
 };
 
 // What a song takes from your library.
@@ -71,7 +73,8 @@ struct LibraryPicks
 // long a file is in bars at a tempo (returns 0 if it can't be read or isn't whole bars).
 LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::uint32 seed,
                               std::function<int (const juce::String& path, double bpm)> loopLengthBars,
-                              const juce::String& forceDrumPack = {});
+                              const juce::String& forceDrumPack = {},
+                              std::function<int (const juce::String& path)> tuneFor = {}); // 99 = no clear key
 
 inline const char* loopKindName (LoopKind k)
 {
