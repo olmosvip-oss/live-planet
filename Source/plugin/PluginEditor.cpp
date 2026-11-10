@@ -608,6 +608,10 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
                   [&p] (int i) { if (auto* q = p.params.getParameter ("live")) { q->beginChangeGesture(); q->setValueNotifyingHost (i == 0 ? 1.0f : 0.0f); q->endChangeGesture(); } },
                   lnf.th),
       pageSwitch ("instrument", "sky", [this] { return page; }, [this] (int i) { setPage (i); }, lnf.th),
+      keySwitch ("play", "chord",
+                 [&p] { return p.params.getRawParameterValue ("keymode")->load() > 0.5f ? 1 : 0; },
+                 [&p] (int i) { if (auto* q = p.params.getParameter ("keymode")) { q->beginChangeGesture(); q->setValueNotifyingHost ((float) i); q->endChangeGesture(); } },
+                 lnf.th),
       keys (p, lnf.th),
       playButton (p),
       presetBrowser (p, lnf.th),
@@ -626,10 +630,12 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     cityBox.setColour (TextEditor::outlineColourId, Colours::transparentBlack);
     cityBox.setColour (TextEditor::focusedOutlineColourId, Colours::transparentBlack);
     cityBox.onReturnKey = [this] { runSearch(); };
+    cityBox.onEscapeKey = [this] { cityBox.setText ({}, false); cityBox.giveAwayKeyboardFocus(); };
     addAndMakeVisible (cityBox);
 
     addAndMakeVisible (liveSwitch);
     addAndMakeVisible (pageSwitch);
+    addAndMakeVisible (keySwitch);
     addAndMakeVisible (keys);
     addAndMakeVisible (playButton);
     addAndMakeVisible (presetBrowser);
@@ -686,6 +692,16 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     setSize (kW, kH);
     applyTheme();
     setPage (0);
+
+    // only the city search box ever takes the keyboard, so your DAW's keys keep playing notes
+    setWantsKeyboardFocus (false);
+    for (auto* c : getChildren())
+        if (c != &cityBox)
+        {
+            c->setWantsKeyboardFocus (false);
+            c->setMouseClickGrabsKeyboardFocus (false);
+        }
+    addMouseListener (this, true);
 
     gl.setRenderer (this);
     gl.setComponentPaintingEnabled (true);
@@ -1092,6 +1108,7 @@ void LivePlanetEditor::paint (Graphics& g)
     g.setColour (th.inkDim);
     g.drawText ("key", keyStepper->getBounds().translated (0, -19).withHeight (16), Justification::centredLeft, false);
     g.drawText ("scale", scaleStepper->getBounds().translated (0, -19).withHeight (16), Justification::centredLeft, false);
+    g.drawText ("keyboard", keySwitch.getBounds().translated (0, -19).withHeight (16), Justification::centredLeft, false);
     g.drawText (String ("season  ") + th.name, themeDots.getBounds().translated (themeDots.getWidth() + 6, 0).withWidth (140),
                 Justification::centredLeft, false);
 }
@@ -1177,7 +1194,7 @@ void LivePlanetEditor::paintScreen (Graphics& g)
         const auto pb = playButton.getBounds().toFloat();
         String hint;
         if (! proc.engine.uiRunning.load())
-            hint = proc.hostPlaying.load() ? "" : "press play, start your song, or hold a key";
+            hint = proc.hostPlaying.load() ? "" : "press play or start your song  -  your keys play notes any time";
         else if (! proc.hostPlaying.load() && proc.params.getRawParameterValue ("play")->load() > 0.5f)
             hint = "playing on its own";
         g.setFont (font (13.5f));
@@ -1197,6 +1214,12 @@ void LivePlanetEditor::paintScreen (Graphics& g)
     ColourGradient glare (Colours::white.withAlpha (0.045f), r.getX(), r.getY(), Colours::white.withAlpha (0.0f), r.getX() + r.getWidth() * 0.5f, r.getBottom(), false);
     g.setGradientFill (glare);
     g.fillRect (r);
+}
+
+void LivePlanetEditor::mouseDown (const MouseEvent& e)
+{
+    if (e.eventComponent != &cityBox && ! cityBox.isParentOf (e.eventComponent) && cityBox.hasKeyboardFocus (true))
+        cityBox.giveAwayKeyboardFocus();
 }
 
 void LivePlanetEditor::paintOverChildren (Graphics& g)
@@ -1243,8 +1266,10 @@ void LivePlanetEditor::resized()
         thunderToggle.setBounds (tg.removeFromTop (28).reduced (2, 0));
     }
     const int sw = (rw - 28 - 12) / 2;
-    keyStepper->setBounds (rx + 14, 438, sw, 30);
-    scaleStepper->setBounds (rx + 14 + sw + 12, 438, sw, 30);
+    const int sw3 = (rw - 28 - 16) / 3;
+    keyStepper->setBounds (rx + 14, 438, sw3, 30);
+    scaleStepper->setBounds (rx + 14 + sw3 + 8, 438, sw3, 30);
+    keySwitch.setBounds (rx + 14 + 2 * (sw3 + 8), 438, sw3, 30);
     playButton.setBounds (screen.getX() + 18, screen.getBottom() - 112 - 54, 42, 42);
     dragNotes.setBounds (screen.getRight() - 18 - 210, screen.getBottom() - 112 - 50, 210, 34);
     sampleView.setBounds (screen.getX(), screen.getBottom() - 112, screen.getWidth(), 112);

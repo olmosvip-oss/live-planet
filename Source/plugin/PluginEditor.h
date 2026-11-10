@@ -170,6 +170,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void paintOverChildren (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override; // clicking anywhere else hands the keyboard back to your DAW
     void resized() override;
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
@@ -227,7 +228,7 @@ private:
     bool haveCity = false;
 
     juce::TextEditor cityBox;
-    Segmented liveSwitch, pageSwitch;
+    Segmented liveSwitch, pageSwitch, keySwitch;
     SoundKeys keys;
     PlayButton playButton;
     PresetBrowser presetBrowser;

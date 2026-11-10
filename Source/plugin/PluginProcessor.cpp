@@ -35,6 +35,9 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "live", 1 }, "Live Weather", true));
     // plays without the DAW running (the play button on the screen)
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "play", 1 }, "Play", false));
+    // your MIDI keyboard: "play" = notes play the instrument directly, "chord" = your keys set the chord the weather plays
+    l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "keymode", 1 }, "Keyboard",
+                                                          juce::StringArray { "play", "chord" }, 0));
     l.add (knob ("temp", "Temperature", -20.0f, 40.0f, 16.0f, "C"));
     l.add (knob ("rain", "Rain", 0.0f, 12.0f, 0.8f, "mm", 2.0f));
     l.add (knob ("snow", "Snow", 0.0f, 4.0f, 0.0f, "cm", 0.8f));
@@ -103,6 +106,7 @@ bool LivePlanetProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
 void LivePlanetProcessor::prepareToPlay (double sampleRate, int)
 {
     engine.prepare (sampleRate);
+    keyEvents.reserve (1024);
 }
 
 lp::Weather LivePlanetProcessor::getManualWeather() const
@@ -157,13 +161,28 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const int n = buffer.getNumSamples();
     buffer.clear();
 
-    // Keys you hold become the chord
+    // Your keyboard: either play notes directly, or hold keys to set the chord
+    const bool chordMode = params.getRawParameterValue ("keymode")->load() > 0.5f;
+    keyEvents.clear();
     for (const auto m : midi)
     {
         const auto msg = m.getMessage();
-        if (msg.isNoteOn()) held.set ((size_t) msg.getNoteNumber());
-        else if (msg.isNoteOff()) held.reset ((size_t) msg.getNoteNumber());
-        else if (msg.isAllNotesOff() || msg.isAllSoundOff()) held.reset();
+        if (msg.isNoteOn())
+        {
+            held.set ((size_t) msg.getNoteNumber());
+            if (! chordMode) keyEvents.push_back ({ m.samplePosition, msg.getNoteNumber(), msg.getFloatVelocity(), true });
+        }
+        else if (msg.isNoteOff())
+        {
+            held.reset ((size_t) msg.getNoteNumber());
+            if (! chordMode) keyEvents.push_back ({ m.samplePosition, msg.getNoteNumber(), 0.0f, false });
+        }
+        else if (msg.isAllNotesOff() || msg.isAllSoundOff())
+        {
+            for (int nn = 0; nn < 128; ++nn)
+                if (held[(size_t) nn] && ! chordMode) keyEvents.push_back ({ m.samplePosition, nn, 0.0f, false });
+            held.reset();
+        }
     }
     midi.clear();
 
@@ -193,12 +212,15 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         }
     hostPlaying = t.hostPlaying;
     // only make sound when the song is playing, the play button is on, or you hold keys
-    t.shouldPlay = t.hostPlaying || params.getRawParameterValue ("play")->load() > 0.5f || held.any();
+    t.shouldPlay = t.hostPlaying || params.getRawParameterValue ("play")->load() > 0.5f || (chordMode && held.any());
+    t.keys = keyEvents.data();
+    t.numKeys = (int) keyEvents.size();
+    static const std::bitset<128> none;
 
     midiOut.clear();
     auto* L = buffer.getWritePointer (0);
     auto* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : L;
-    engine.process (L, R, n, readParams(), t, held, midiOut);
+    engine.process (L, R, n, readParams(), t, chordMode ? held : none, midiOut);
 
     // remember the notes played since you pressed play, so they can be dragged into the song
     {

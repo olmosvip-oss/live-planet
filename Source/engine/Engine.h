@@ -38,12 +38,17 @@ struct EngineParams
     float sampleTune = 0.0f; // semitones
 };
 
+// A key you pressed on your MIDI keyboard, at its exact position in the block.
+struct KeyEvent { int offset; int note; float velocity; bool on; };
+
 struct TransportInfo
 {
     bool   hostPlaying = false;
     double bpm = 0.0;   // 0 = use the weather's own tempo
     double ppq = 0.0;   // position in quarter notes when the host is playing
     bool   shouldPlay = true; // false: stay silent (DAW stopped, play button off, no keys held)
+    const KeyEvent* keys = nullptr; // notes to play directly, like a normal instrument
+    int numKeys = 0;
 };
 
 struct MidiOut
@@ -112,6 +117,7 @@ private:
         double bellPhase = 0;
         float bellEnv = 0;
         bool sparkleVoice = false;
+        bool direct = false;       // played by you on the keyboard
     };
 
     // a note played straight from the sound, start to finish (piano, guitar, music box)
@@ -133,6 +139,7 @@ private:
     void startDrop (int note, float vel, int offset, MidiOut& midi, float decaySec, bool withBell);
     void triggerThunder();
     void stopAll (int offset, MidiOut& midi);
+    void playKey (const KeyEvent& k);
     void spawnShot (const SourceSound& src, int note, float gain, float pan, int layer, float cents = 0.0f);
     void dampShots (int layer, int note, float seconds);
     void resolveSound (long bar, const EngineParams& p, int offset, MidiOut& midi);

@@ -84,6 +84,7 @@ private:
     std::deque<std::unique_ptr<lp::SourceSound>> loadedSamples;
 
     std::bitset<128> held;
+    std::vector<lp::KeyEvent> keyEvents;
 
     struct RecNote { double beat; int channel, note; float velocity; bool on; };
     std::vector<RecNote> recorded;

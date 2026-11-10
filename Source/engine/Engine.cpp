@@ -357,7 +357,7 @@ void Engine::changeChord (const std::vector<int>& padNotes, int bassNote, int of
         if (pr.padStruck || ! inChord (padNotes, n))
             midi.add (offset, 1, n, 0.0f, false);
     for (auto& v : padVoices)
-        if (v.active && v.stage != 2 && ! inChord (padNotes, v.note))
+        if (v.active && ! v.direct && v.stage != 2 && ! inChord (padNotes, v.note))
             v.stage = 2;
     dampShots (0, -1, 0.9f);
 
@@ -408,14 +408,14 @@ void Engine::startPad (int note, float vel, int offset, MidiOut& midi)
         pushVisual (note, vel, 0);
         // ...and a soft bloom of grains swelling up behind the strike
         for (auto& c : padVoices)
-            if (c.active && c.stage != 2 && c.note == note + pr.padOctave)
+            if (c.active && ! c.direct && c.stage != 2 && c.note == note + pr.padOctave)
                 c.stage = 2;
         bloom = true;
         vel *= 0.8f;
     }
     Voice* v = nullptr;
     for (auto& c : padVoices) if (! c.active) { v = &c; break; }
-    if (v == nullptr) // steal the quietest
+    if (v == nullptr) // steal the quietest (never one of your held notes)
     {
         v = &padVoices[0];
         for (auto& c : padVoices) if (c.env < v->env) v = &c;
@@ -577,6 +577,63 @@ void Engine::runStep (long step, int offset, const EngineParams& p, const std::b
 
 //==============================================================================
 
+void Engine::playKey (const KeyEvent& k)
+{
+    const auto& pr = profileFor (soundNow);
+    const auto& src = sourceFor (soundNow);
+    if (! k.on)
+    {
+        // let go: struck sounds are damped like a piano, others fade out
+        dampShots (3, k.note, 0.45f);
+        for (auto& v : padVoices)
+            if (v.active && v.direct && v.note == k.note && v.stage != 2)
+                v.stage = 2;
+        return;
+    }
+
+    const float vel = juce::jlimit (0.05f, 1.0f, k.velocity);
+    pushVisual (k.note, vel, 1);
+    if (pr.padStruck)
+    {
+        dampShots (3, k.note, 0.08f); // same key again: restrike it
+        spawnShot (src, k.note, vel * 0.9f * pr.padGain, 0.0f, 3);
+        for (auto& sh : shots)        // your own notes always start crisp, right on the key press
+            if (sh.active && sh.layer == 3 && sh.note == k.note && sh.age == 0)
+            {
+                sh.pos = 0.0;
+                sh.fadeIn = 48;
+            }
+        return;
+    }
+
+    // sustained sounds: an instant attack straight from the sound, which hands over
+    // to a grain voice that holds while the key is down
+    spawnShot (src, k.note, vel * 0.55f * pr.padGain, 0.0f, 3);
+    for (auto& sh : shots)
+        if (sh.active && sh.layer == 3 && sh.note == k.note && sh.age == 0)
+        {
+            sh.fadeIn = (int) (0.003 * sr);
+            sh.pos = 0.0;
+            sh.mul = decayMul (0.5f, sr);
+        }
+    Voice* v = nullptr;
+    for (auto& c : padVoices) if (! c.active) { v = &c; break; }
+    if (v == nullptr)
+    {
+        v = &padVoices[0];
+        for (auto& c : padVoices) if (! c.direct && c.env < v->env) v = &c;
+    }
+    *v = {};
+    v->active = true;
+    v->direct = true;
+    v->note = k.note;
+    v->vel = vel * 1.3f;
+    v->attackPerSample = 1.0f / (float) (0.06 * pr.attackMul * sr);
+    v->releaseMul = decayMul (1.2f, sr);
+    v->layer = 0;
+    v->pan = 0.0f;
+}
+
 void Engine::process (float* L, float* R, int n, const EngineParams& p, const TransportInfo& t,
                       const std::bitset<128>& held, MidiOut& midi)
 {
@@ -600,55 +657,65 @@ void Engine::process (float* L, float* R, int n, const EngineParams& p, const Tr
         }
     }
     uiRunning = running;
-    if (! running)
-    {
-        for (int off = 0; off < n; off += kChunk)
-            renderChunk (L + off, R + off, std::min (kChunk, n - off), p);
-        return;
-    }
+    p_padLevel = p.padLevel; p_dropLevel = p.dropLevel; p_bassLevel = p.bassLevel;
+    p_sparkle = p.sparkle; p_texture = p.texture; p_position = p.position;
+    if (! running && p.sound != lastRequested)
+        resolveSound (0, p, 0, midi); // keep the chosen instrument up to date for the keys you play while stopped
+
     const double ppq = t.hostPlaying ? t.ppq : freePpq;
     midi.blockPpq = ppq;
     midi.ppqPerSample = ppqPerSample;
-    midi.running = true;
+    midi.running = running;
 
+    int key = 0;
     for (int off = 0; off < n; off += kChunk)
     {
         const int len = std::min (kChunk, n - off);
-        const double cur = ppq + off * ppqPerSample;
-        const long step = (long) std::floor (cur * 4.0 + 1e-7);
-        if (step != lastStep)
-        {
-            lastStep = step;
-            uiStep = (int) (((step % 16) + 16) % 16);
-            runStep (step, off, p, held, midi);
-        }
 
-        for (size_t i = 0; i < pending.size();)
+        // the notes you play, at their moment in this chunk
+        while (key < t.numKeys && t.keys[key].offset < off + len)
+            playKey (t.keys[key++]);
+
+        if (running)
         {
-            auto& e = pending[i];
-            if (e.samplesLeft <= 0)
+            const double cur = ppq + off * ppqPerSample;
+            const long step = (long) std::floor (cur * 4.0 + 1e-7);
+            if (step != lastStep)
             {
-                if (e.kind == 0) startPad (e.note, e.vel, off, midi);
-                else if (e.kind == 2) midi.add (off, 2, e.note, 0.0f, false);
-                pending[i] = pending.back();
-                pending.pop_back();
+                lastStep = step;
+                uiStep = (int) (((step % 16) + 16) % 16);
+                runStep (step, off, p, held, midi);
             }
-            else
+
+            for (size_t i = 0; i < pending.size();)
             {
-                e.samplesLeft -= len;
-                ++i;
+                auto& e = pending[i];
+                if (e.samplesLeft <= 0)
+                {
+                    if (e.kind == 0) startPad (e.note, e.vel, off, midi);
+                    else if (e.kind == 2) midi.add (off, 2, e.note, 0.0f, false);
+                    pending[i] = pending.back();
+                    pending.pop_back();
+                }
+                else
+                {
+                    e.samplesLeft -= len;
+                    ++i;
+                }
             }
         }
 
         renderChunk (L + off, R + off, len, p);
     }
+    while (key < t.numKeys) playKey (t.keys[key++]);
 
-    freePpq = ppq + n * ppqPerSample;
+    if (running)
+        freePpq = ppq + n * ppqPerSample;
 }
 
 void Engine::stopAll (int offset, MidiOut& midi)
 {
-    for (auto& v : padVoices) if (v.active) v.stage = 2;
+    for (auto& v : padVoices) if (v.active && ! v.direct) v.stage = 2;
     dampShots (0, -1, 1.5f);
     dampShots (2, -1, 1.0f);
     for (auto n : currentPad) midi.add (offset, 1, n, 0.0f, false);

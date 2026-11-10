@@ -227,8 +227,56 @@ static int sampleTest (const juce::File& outDir)
     return 0;
 }
 
+// How fast does a key you press make sound? (time until the note reaches half its loudness)
+static int latencyTest()
+{
+    lp::Weather sky;
+    std::printf ("%-13s %s\n", "sound", "response");
+    for (int sId = 0; sId < lp::kNumBuiltIns; ++sId)
+    {
+        lp::Engine engine;
+        engine.prepare (48000.0);
+        engine.jumpToWeather (sky);
+        lp::EngineParams p;
+        p.sound = (lp::SoundId) sId;
+        p.space = 0.0f; p.echo = 0.0f; p.atmos = 0.0f; p.nostalgia = 0.0f;
+        const int block = 128, total = 48000;
+        std::vector<float> L ((size_t) total), R ((size_t) total);
+        lp::MidiOut midi;
+        std::bitset<128> held;
+        lp::KeyEvent key { 0, 64, 0.8f, true };
+        for (int pos = 0; pos < total; pos += block)
+        {
+            lp::TransportInfo t;
+            t.shouldPlay = false;          // the song is stopped: only your key plays
+            if (pos == block * 4) { t.keys = &key; t.numKeys = 1; }   // press at ~10.7 ms
+            midi.clear();
+            engine.process (L.data() + pos, R.data() + pos, block, p, t, held, midi);
+            lp::VisualEvent ve;
+            while (engine.popVisual (ve)) {}
+        }
+        // loudness in 2 ms frames
+        std::vector<double> env;
+        for (int i = 0; i + 96 <= total; i += 96)
+        {
+            double e = 0;
+            for (int j = 0; j < 96; ++j) e += (double) L[(size_t) (i + j)] * L[(size_t) (i + j)];
+            env.push_back (std::sqrt (e / 96));
+        }
+        double peak = 0;
+        for (auto e : env) peak = std::max (peak, e);
+        int hit = -1;
+        for (size_t i = 0; i < env.size(); ++i) if (env[i] >= peak * 0.5) { hit = (int) i; break; }
+        const double ms = hit * 2.0 - block * 4 / 48.0;
+        std::printf ("%-13s %5.0f ms %s\n", lp::profileFor ((lp::SoundId) sId).name, ms, peak < 1e-4 ? "(silent!)" : "");
+    }
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
+    if (argc > 1 && juce::String (argv[1]) == "--latency")
+        return latencyTest();
     if (argc > 2 && juce::String (argv[1]) == "--samples")
         return sampleTest (juce::File (juce::String (argv[2])));
     if (argc > 1 && juce::String (argv[1]) == "--knobs")
