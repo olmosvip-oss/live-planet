@@ -257,7 +257,7 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
         const double ratio = e.bpm / target.bpm;
         double best = 1e9;
         for (double m : { 0.5, 1.0, 2.0 }) best = std::min (best, std::abs (ratio * m - 1.0));
-        if (best > 0.06) continue;
+        if (best > 0.10) continue;
         float score = (sameKey ? 2.0f : 1.0f) + ((e.styles & styleBit) ? 1.5f : 0.0f) + (float) (0.06 - best) * 20.0f + rng.nextFloat();
         loops.push_back ({ score, &e });
     }
@@ -288,7 +288,7 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
         {
             if (e.kind != SampleKind::Loop || e.bpm <= 0) continue;
             bool tempoOk = false;
-            for (double m : { 0.5, 1.0, 2.0 }) tempoOk = tempoOk || std::abs (e.bpm * m / best - 1.0) < 0.015;
+            for (double m : { 0.5, 1.0, 2.0 }) tempoOk = tempoOk || std::abs (e.bpm * m / target.bpm - 1.0) < 0.10; // stretched to fit
             if (! tempoOk) continue;
             const bool tonal = e.loop != LoopKind::Drums;
             if (tonal && ! tuneFor)
@@ -322,7 +322,7 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
             std::vector<LoopOption> ok;
             for (auto& o : choice.options)
             {
-                const int bars = loopLengthBars ? loopLengthBars (o.entry->path, best) : 0;
+                const int bars = loopLengthBars ? loopLengthBars (o.entry->path, o.entry->bpm) : 0;
                 if (bars <= 0) continue;
                 int tune = 0;
                 if (kind != LoopKind::Drums && tuneFor)

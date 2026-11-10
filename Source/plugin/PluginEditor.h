@@ -162,10 +162,10 @@ public:
 private:
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
-    juce::ToggleButton newKey { "new key" }, useSamples { "my samples" }, playWith { "play it with my song" }, samplesOnly { "samples only" };
+    juce::ToggleButton newKey { "new key" }, useSamples { "my samples" }, playWith { "play it with my song" }, samplesOnly { "samples only" }, dawTempo { "daw tempo" };
     Segmented length;
     std::unique_ptr<Stepper> style;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> useSamplesAtt, playWithAtt, samplesOnlyAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> useSamplesAtt, playWithAtt, samplesOnlyAtt, dawTempoAtt;
     juce::TextButton write { "write a song" };
     bool full = true;
     std::unique_ptr<juce::FileChooser> chooser;

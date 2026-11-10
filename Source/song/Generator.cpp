@@ -93,6 +93,7 @@ Target chooseTarget (const Profile& ref, const lp::Weather& sky, const Options& 
     }
     if (t.style == Style::Trap && t.bpm < 100.0 && ! ref.valid) t.bpm *= 2.0; // trap counts in double time
     if (t.style == Style::House) t.bpm = juce::jlimit (116.0, 128.0, t.bpm);
+    if (o.dawBpm > 0.0) t.bpm = o.dawBpm; // your project's tempo wins
     return t;
 }
 

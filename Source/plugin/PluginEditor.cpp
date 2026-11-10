@@ -613,6 +613,10 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     playWithAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "songplay", playWith);
     addAndMakeVisible (samplesOnly);
     samplesOnlyAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "samplesonly", samplesOnly);
+    addAndMakeVisible (dawTempo);
+    dawTempo.setWantsKeyboardFocus (false);
+    dawTempo.setTooltip ("write the song at your project's tempo so every loop lines up");
+    dawTempoAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "dawtempo", dawTempo);
     write.onClick = [this] { proc.makeSong (full, newKey.getToggleState()); repaint(); };
     addAndMakeVisible (write);
 }
@@ -622,8 +626,10 @@ void SongPanel::resized()
     auto r = getLocalBounds();
     r.removeFromTop (56);
     auto row1 = r.removeFromTop (28);
-    newKey.setBounds (row1.removeFromLeft (104));
-    row1.removeFromLeft (8);
+    newKey.setBounds (row1.removeFromLeft (88));
+    row1.removeFromLeft (4);
+    dawTempo.setBounds (row1.removeFromLeft (96));
+    row1.removeFromLeft (4);
     style->setBounds (row1);
     r.removeFromTop (6);
     auto row2 = r.removeFromTop (28);

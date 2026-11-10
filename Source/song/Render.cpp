@@ -185,6 +185,89 @@ namespace
         }
     };
 
+    // stretch audio to a new length without changing its pitch (WSOLA: overlapping slices,
+    // each nudged to where it lines up best with the last one, so it stays smooth)
+    juce::AudioBuffer<float> timeStretch (const juce::AudioBuffer<float>& in, int outLen)
+    {
+        const int inLen = in.getNumSamples();
+        constexpr int N = 2048, H = N / 2, search = 384;
+        if (inLen < N * 2 || outLen <= 0) return in;
+        juce::AudioBuffer<float> out (2, outLen + N);
+        out.clear();
+        std::vector<float> norm ((size_t) (outLen + N), 0.0f), win ((size_t) N), mono ((size_t) inLen);
+        for (int i = 0; i < N; ++i) win[(size_t) i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * (float) i / (float) N);
+        for (int i = 0; i < inLen; ++i) mono[(size_t) i] = in.getSample (0, i) + in.getSample (1, i);
+        const double alpha = (double) inLen / outLen;
+        int prev = 0;
+        for (int o = 0; o * H < outLen; ++o)
+        {
+            const int ideal = (int) (o * H * alpha);
+            int best = ideal;
+            const int natural = prev + H; // where the last slice would naturally carry on
+            if (o > 0 && natural + N / 2 < inLen)
+            {
+                double bestC = -1e30;
+                for (int d = -search; d <= search; d += 4)
+                {
+                    const int cand = ideal + d;
+                    if (cand < 0 || cand + N / 2 >= inLen) continue;
+                    double c = 0;
+                    for (int k = 0; k < N / 2; k += 2) c += (double) mono[(size_t) (natural + k)] * mono[(size_t) (cand + k)];
+                    if (c > bestC) { bestC = c; best = cand; }
+                }
+            }
+            best = juce::jlimit (0, inLen - 1, best);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float* src = in.getReadPointer (ch);
+                float* dst = out.getWritePointer (ch);
+                for (int k = 0; k < N; ++k)
+                {
+                    const int si = best + k;
+                    // wrap round: a loop's end leads back into its start
+                    dst[o * H + k] += src[si < inLen ? si : si - inLen] * win[(size_t) k];
+                }
+            }
+            for (int k = 0; k < N; ++k) norm[(size_t) (o * H + k)] += win[(size_t) k];
+            prev = best;
+        }
+        juce::AudioBuffer<float> res (2, outLen);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < outLen; ++i)
+                res.setSample (ch, i, out.getSample (ch, i) / std::max (0.5f, norm[(size_t) i]));
+        return res;
+    }
+
+    // like a "beats" warp: cut the loop at each 16th (or 8th), pin every slice to its spot on the
+    // song's grid, and stretch each slice on its own, so hits land exactly in time
+    juce::AudioBuffer<float> beatStretch (const juce::AudioBuffer<float>& in, int outLen, int bars)
+    {
+        const int inLen = in.getNumSamples();
+        int slices = bars * 16;
+        while (slices > bars && inLen / slices < 4096 + 64) slices /= 2;
+        if (inLen / slices < 4096 + 64) return timeStretch (in, outLen);
+        juce::AudioBuffer<float> out (2, outLen);
+        out.clear();
+        constexpr int fade = 96;
+        for (int k = 0; k < slices; ++k)
+        {
+            const int s0 = (int) ((juce::int64) inLen * k / slices), s1 = (int) ((juce::int64) inLen * (k + 1) / slices);
+            const int o0 = (int) ((juce::int64) outLen * k / slices), o1 = (int) ((juce::int64) outLen * (k + 1) / slices);
+            juce::AudioBuffer<float> piece (2, s1 - s0);
+            for (int ch = 0; ch < 2; ++ch) piece.copyFrom (ch, 0, in, ch, s0, s1 - s0);
+            auto fitted = timeStretch (piece, o1 - o0);
+            const int n = std::min (fitted.getNumSamples(), outLen - o0);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < n; ++i)
+                {
+                    // short fade out at the slice end so the next one starts clean on its beat
+                    const float g = std::min (1.0f, (float) (n - i) / fade);
+                    out.getWritePointer (ch)[o0 + i] += fitted.getSample (ch, i) * g;
+                }
+        }
+        return out;
+    }
+
     // ---------- audio files from your library
     juce::AudioBuffer<float> loadAudio (const juce::String& path, double targetRate, double stretch = 1.0)
     {
@@ -391,7 +474,12 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
         if (probe.getNumSamples() > 0 && part.loopBars > 0)
         {
             const double stretch = (double) probe.getNumSamples() / (part.loopBars * barSamples);
-            auto loop = loadAudio (part.samplePath, sr, stretch);
+            // tiny differences: a resample is cleanest. bigger ones: stretch the time, keep the pitch,
+            // so every loop lands exactly on the song's (your DAW's) tempo
+            auto loop = std::abs (stretch - 1.0) < 0.012 ? loadAudio (part.samplePath, sr, stretch)
+                         : (juce::String (part.name).containsIgnoreCase ("drum")
+                                ? beatStretch (probe, (int) std::round (part.loopBars * barSamples), part.loopBars) // crisp hits
+                                : timeStretch (probe, (int) std::round (part.loopBars * barSamples)));              // smooth notes
             if (part.reversed) reverse (loop);
             const int ln = loop.getNumSamples();
             for (int startBar : part.loopStartBars)

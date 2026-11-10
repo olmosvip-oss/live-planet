@@ -42,6 +42,11 @@ public:
 
     // Understands one file name. Public so it can be tested.
     static LibraryEntry parse (const juce::File& file, const juce::File& root);
+    const LibraryEntry* find (const juce::String& path) const
+    {
+        for (auto& e : entries) if (e.path == path) return &e;
+        return nullptr;
+    }
 
 private:
     std::vector<LibraryEntry> entries;

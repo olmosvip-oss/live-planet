@@ -318,7 +318,7 @@ private:
                                                {}, [this, &target] (const juce::String& path) { return tuneFor (path, target.key, target.minor); });
             if (picks.loop != nullptr)
             {
-                opts.forceBpm = picks.loopBpm > 0 ? picks.loopBpm : picks.loop->bpm;
+                opts.forceBpm = o.dawBpm > 0.0 ? o.dawBpm : (picks.loopBpm > 0 ? picks.loopBpm : picks.loop->bpm);
                 opts.forceKey = target.key;          // same key or its relative: the notes match either way
                 opts.forceMinor = target.minor;
             }
@@ -364,7 +364,7 @@ private:
             for (auto& opt : choice.options) { loop.candidates.add (opt.entry->path); loop.candidateTunes.add (opt.tune); }
             loop.samplePath = loop.candidates[0];
             loop.autoTune = loop.candidateTunes[0];
-            loop.loopBars = loopBars (loop.samplePath, song.bpm);
+            loop.loopBars = songBars (loop.samplePath, choice.options[0].entry->bpm, song.bpm);
             if (loop.loopBars <= 0) return;
             for (auto& sec : song.sections)
                 for (auto want : sections)
@@ -481,7 +481,16 @@ private:
     juce::String remixText (const lp::song::Part& loop, double fitPercent, const lp::song::Song& song) const
     {
         juce::String t = "plays as recorded";
-        if (std::abs (fitPercent) > 0.05)
+        if (const auto* e = library.find (loop.samplePath); e != nullptr && e->bpm > 0)
+        {
+            double m = 1.0;
+            for (double mm : { 0.5, 1.0, 2.0 }) if (std::abs (e->bpm * mm - song.bpm) < std::abs (e->bpm * m - song.bpm)) m = mm;
+            fitPercent = (song.bpm / (e->bpm * m) - 1.0) * 100.0;
+            if (std::abs (fitPercent) > 1.2)
+                t = "stretched " + juce::String (juce::roundToInt (e->bpm)) + " > " + juce::String (song.bpm, 0) + " bpm, pitch kept"
+                    + (m != 1.0 ? juce::String (m > 1.0 ? " (half-time loop)" : " (double-time loop)") : juce::String());
+        }
+        if (t == "plays as recorded" && std::abs (fitPercent) > 0.05)
             t << ", fitted to " << juce::roundToInt (song.bpm) << " bpm (" << (fitPercent > 0 ? "+" : "") << juce::String (fitPercent, 1) << "%)";
         auto it = keyCache.find (loop.samplePath);
         const juce::String songKey = juce::String (lp::noteName (song.key)) + (song.minor ? " minor" : " major");
@@ -532,7 +541,8 @@ private:
                 part.candidate = (part.candidate + 1) % part.candidates.size();
                 part.samplePath = part.candidates[part.candidate];
                 part.autoTune = part.candidate < part.candidateTunes.size() ? part.candidateTunes[part.candidate] : 0;
-                const int bars = loopBars (part.samplePath, song.bpm);
+                const auto* entry = library.find (part.samplePath);
+                const int bars = songBars (part.samplePath, entry != nullptr ? entry->bpm : song.bpm, song.bpm);
                 if (bars > 0)
                 {
                     // keep the same placements, re-cut to the new loop's length
@@ -590,6 +600,17 @@ private:
     }
 
     int editCounter = 0;
+
+    // a loop's length in the SONG's bars: whole bars at its own tempo, at the nearest of half / normal / double speed
+    static int songBars (const juce::String& path, double fileBpm, double songBpm)
+    {
+        const int fileBars = loopBars (path, fileBpm);
+        if (fileBars <= 0 || fileBpm <= 0) return 0;
+        double m = 1.0;
+        for (double mm : { 0.5, 1.0, 2.0 }) if (std::abs (fileBpm * mm - songBpm) < std::abs (fileBpm * m - songBpm)) m = mm;
+        const double bars = fileBars * m;
+        return bars >= 1.0 && std::abs (bars - std::round (bars)) < 1e-6 ? (int) bars : 0;
+    }
 
     // how many whole bars a loop lasts at a tempo (0 if it isn't whole bars, within 1.5%)
     static int loopBars (const juce::String& path, double bpm)

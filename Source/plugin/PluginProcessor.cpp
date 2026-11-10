@@ -42,6 +42,7 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "usesamples", 1 }, "Use My Samples", true));
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "songplay", 1 }, "Play Song With DAW", true));
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "samplesonly", 1 }, "Samples Only", false));
+    l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "dawtempo", 1 }, "Song At DAW Tempo", true));
     // your MIDI keyboard: "play" = notes play the instrument directly, "chord" = your keys set the chord the weather plays
     l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "keymode", 1 }, "Keyboard",
                                                           juce::StringArray { "play", "chord" }, 0));
@@ -217,7 +218,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
         {
-            if (auto bpm = pos->getBpm()) t.bpm = *bpm;
+            if (auto bpm = pos->getBpm()) { t.bpm = *bpm; dawBpm = *bpm; }
             if (pos->getIsPlaying())
                 if (auto ppq = pos->getPpqPosition())
                 {
@@ -620,6 +621,8 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
     o.shiftKey = newKey;
     o.seed = (uint32_t) juce::Random::getSystemRandom().nextInt (1 << 30);
     o.style = (int) params.getRawParameterValue ("songstyle")->load() - 1;
+    if (params.getRawParameterValue ("dawtempo")->load() > 0.5f && dawBpm.load() > 30.0)
+        o.dawBpm = std::round (dawBpm.load() * 100.0) / 100.0;
     const int soundIdx = (int) params.getRawParameterValue ("sound")->load();
     o.mainSound = (soundIdx <= 0 || soundIdx >= kSampleChoice) ? lp::SoundId::Auto : (lp::SoundId) (soundIdx - 1);
 

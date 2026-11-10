@@ -439,6 +439,65 @@ static int libraryTest (const juce::File& outDir)
     return 0;
 }
 
+// a 2-bar loop at 155 bpm (tone + a click each beat), fitted into a 120 bpm song: beats must land on 120's grid
+int stretchTest (const juce::File& dir)
+{
+    const double sr = 48000.0, srcBpm = 155.0, songBpm = 120.0;
+    const int len = (int) std::round (8 * 60.0 / srcBpm * sr);
+    juce::AudioBuffer<float> b (2, len);
+    for (int i = 0; i < len; ++i)
+    {
+        const double beatPos = std::fmod (i / sr, 60.0 / srcBpm);
+        float v = 0.3f * (float) std::sin (2 * juce::MathConstants<double>::pi * 440.0 * i / sr);
+        if (beatPos < 0.004) v += 0.9f * (float) std::exp (-beatPos * 800.0);
+        b.setSample (0, i, v); b.setSample (1, i, v);
+    }
+    dir.createDirectory();
+    auto f = dir.getChildFile ("loop_155.wav");
+    f.deleteFile();
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (f), sr, 2, 24, {}, 0));
+        w->writeFromAudioSampleBuffer (b, 0, len);
+    }
+    lp::song::Song song;
+    song.bpm = songBpm;
+    song.sections.push_back ({ "verse", 0, 4, 0.6f });
+    lp::song::Part part;
+    part.name = "loop"; part.kind = lp::song::PartKind::Loop;
+    part.samplePath = f.getFullPathName(); part.loopBars = 2; part.loopStartBars = { 0, 2 };
+    lp::song::RenderSettings rs;
+    juce::AudioBuffer<float> out;
+    if (! lp::song::renderPart (song, part, rs, out)) { std::printf ("render failed\n"); return 1; }
+    // find clicks: peaks of the high-passed signal
+    const double beat = 60.0 / songBpm * sr;
+    double worst = 0; int found = 0;
+    for (int k = 1; k < 15; ++k)
+    {
+        const int c = (int) std::round (k * beat);
+        int bestI = c; float bestV = 0;
+        for (int i = std::max (1, c - 2400); i < std::min (out.getNumSamples(), c + 2400); ++i)
+        {
+            if (std::abs (out.getSample (0, i)) > 0.7f) { bestI = i; bestV = 1; break; }
+        }
+        std::printf ("%.1f ", (bestI - c) / sr * 1000.0);
+        worst = std::max (worst, std::abs (bestI - c) / sr * 1000.0);
+        ++found;
+    }
+    // pitch: zero crossings over a click-free stretch in bar 2
+    const int a = (int) (beat * 5.3), z = (int) (beat * 5.9);
+    int crossings = 0;
+    for (int i = a + 1; i < z; ++i) if ((out.getSample (0, i - 1) < 0) != (out.getSample (0, i) < 0)) ++crossings;
+    const double hz = crossings / 2.0 / ((z - a) / sr);
+    std::printf ("length %.3f s (want %.3f)  beats checked %d  worst beat offset %.1f ms  pitch %.1f Hz (want 440)\n",
+                 out.getNumSamples() / sr, 16 * 60.0 / songBpm, found, worst, hz);
+    juce::WavAudioFormat wav;
+    auto of = dir.getChildFile ("loop_at_120.wav"); of.deleteFile();
+    std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (of), sr, 2, 24, {}, 0));
+    w->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
+    return worst < 8.0 && std::abs (hz - 440.0) < 6.0 ? 0 : 1;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -453,6 +512,8 @@ int main (int argc, char** argv)
         return latencyTest();
     if (argc > 2 && juce::String (argv[1]) == "--samples")
         return sampleTest (juce::File (juce::String (argv[2])));
+    if (argc > 2 && juce::String (argv[1]) == "--stretch")
+        return stretchTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--knobs")
         return knobTest();
 

@@ -128,6 +128,7 @@ struct Options
     uint32_t seed = 1;            // a different seed = a different song from the same reference
     int style = -1;               // -1 = pick from the reference / weather, else a Style
     double forceBpm = 0.0;        // set when a loop from your library decides the tempo
+    double dawBpm = 0.0;          // > 0: write the song at your DAW's tempo
     int forceKey = -1;            // ...and the key
     bool forceMinor = false;
 };
