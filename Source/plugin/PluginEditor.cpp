@@ -228,11 +228,9 @@ void LivePlanetLookAndFeel::drawToggleButton (Graphics& g, ToggleButton& b, bool
 //==============================================================================
 // Small parts
 
-Segmented::Segmented (String a, String b, std::function<int()> get, std::function<void (int)> set, const lp::ui::Theme*& theme)
-    : getter (std::move (get)), setter (std::move (set)), th (theme)
+Segmented::Segmented (StringArray names, std::function<int()> get, std::function<void (int)> set, const lp::ui::Theme*& theme)
+    : labels (std::move (names)), getter (std::move (get)), setter (std::move (set)), th (theme)
 {
-    labels[0] = a;
-    labels[1] = b;
 }
 
 void Segmented::paint (Graphics& g)
@@ -240,9 +238,10 @@ void Segmented::paint (Graphics& g)
     auto r = getLocalBounds().toFloat().reduced (1.0f);
     recess (g, r, 8.0f, *th);
     const int sel = getter();
-    for (int i = 0; i < 2; ++i)
+    const int n = labels.size();
+    for (int i = 0; i < n; ++i)
     {
-        auto half = r.withWidth (r.getWidth() * 0.5f).translated (i * r.getWidth() * 0.5f, 0.0f).reduced (2.0f);
+        auto half = r.withWidth (r.getWidth() / (float) n).translated ((float) i * r.getWidth() / (float) n, 0.0f).reduced (2.0f);
         if (i == sel)
         {
             // a raised pad sitting in the well
@@ -262,7 +261,7 @@ void Segmented::paint (Graphics& g)
 
 void Segmented::mouseUp (const MouseEvent& e)
 {
-    setter (e.position.x < (float) getWidth() * 0.5f ? 0 : 1);
+    setter (jlimit (0, labels.size() - 1, (int) (e.position.x / (float) getWidth() * (float) labels.size())));
     repaint();
 }
 
@@ -573,6 +572,237 @@ void DragNotes::mouseDrag (const MouseEvent& e)
     DragAndDropContainer::performExternalDragDropOfFiles ({ file.getFullPathName() }, false, this);
 }
 
+//==============================================================================
+// Song mode
+
+namespace
+{
+    Colour sectionColour (const std::string& name)
+    {
+        if (name.rfind ("chorus", 0) == 0)     return Colour (0xffe8b04a);
+        if (name.rfind ("pre-chorus", 0) == 0) return Colour (0xffc9d27a);
+        if (name.rfind ("verse", 0) == 0)      return Colour (0xff9fcb55);
+        if (name.rfind ("bridge", 0) == 0)     return Colour (0xffb7a3e0);
+        return Colour (0xff8fb6cf); // intro, outro
+    }
+
+    String timeText (double seconds)
+    {
+        const int s = roundToInt (seconds);
+        return String (s / 60) + ":" + String (s % 60).paddedLeft ('0', 2);
+    }
+}
+
+SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
+    : proc (p), th (theme),
+      length ({ "full song", "sketch" }, [this] { return full ? 0 : 1; }, [this] (int i) { full = i == 0; }, theme)
+{
+    newKey.setToggleState (true, dontSendNotification);
+    addAndMakeVisible (newKey);
+    addAndMakeVisible (length);
+    write.onClick = [this] { proc.makeSong (full, newKey.getToggleState()); repaint(); };
+    addAndMakeVisible (write);
+}
+
+void SongPanel::resized()
+{
+    auto r = getLocalBounds();
+    r.removeFromTop (64);
+    auto row = r.removeFromTop (30);
+    newKey.setBounds (row.removeFromLeft (118));
+    length.setBounds (row.removeFromRight (160));
+    r.removeFromTop (8);
+    write.setBounds (r.removeFromTop (32));
+}
+
+void SongPanel::paint (Graphics& g)
+{
+    const auto st = proc.songJob.getStatus();
+    auto z = dropZone().toFloat().reduced (1.0f);
+    Path outline;
+    outline.addRoundedRectangle (z, 10.0f);
+    Path dashed;
+    const float dashes[] = { 5.0f, 4.0f };
+    PathStrokeType (1.2f).createDashedStroke (dashed, outline, dashes, 2);
+    g.setColour (th->ink.withAlpha (0.35f));
+    g.fillPath (dashed);
+
+    auto in = z.reduced (12.0f, 8.0f);
+    if (st.stage == SongJob::Stage::Listening)
+    {
+        g.setFont (font (13.5f));
+        g.setColour (th->ink);
+        g.drawText (st.message, in, Justification::centredLeft, true);
+    }
+    else if (st.haveReference)
+    {
+        const auto& pr = st.profile;
+        g.setFont (font (13.5f, lp::ui::Medium));
+        g.setColour (th->ink);
+        g.drawText ("like: " + st.referenceName.toLowerCase(), in.removeFromTop (20.0f).withTrimmedRight (24.0f), Justification::centredLeft, true);
+        g.setFont (font (12.5f));
+        g.setColour (th->inkDim);
+        g.drawText (String (roundToInt (pr.bpm)) + " bpm  -  " + lp::noteName (pr.key) + (pr.minor ? " minor" : " major")
+                        + "  -  " + String ((int) pr.sections.size()) + " sections  -  " + timeText (pr.lengthSeconds),
+                    in.removeFromTop (18.0f), Justification::centredLeft, true);
+        g.drawText ("x", z.removeFromRight (26.0f).removeFromTop (26.0f), Justification::centred, false);
+    }
+    else
+    {
+        g.setFont (font (13.5f, lp::ui::Medium));
+        g.setColour (th->ink);
+        g.drawText ("drop a song you love here", in.removeFromTop (20.0f), Justification::centredLeft, false);
+        g.setFont (font (12.0f));
+        g.setColour (th->inkDim);
+        g.drawText ("it learns the feel, never the melody. or skip it and let the weather lead.", in.removeFromTop (18.0f), Justification::centredLeft, true);
+    }
+
+    // status under the button
+    auto status = getLocalBounds().toFloat().withTrimmedTop ((float) write.getBottom() + 6.0f);
+    const bool busy = st.stage == SongJob::Stage::Writing || st.stage == SongJob::Stage::Rendering;
+    write.setEnabled (! busy && st.stage != SongJob::Stage::Listening);
+    write.setButtonText (st.haveSong ? "write another" : "write a song");
+    if (busy)
+    {
+        auto bar = status.removeFromTop (5.0f).withTrimmedTop (1.0f);
+        g.setColour (th->ink.withAlpha (0.12f));
+        g.fillRoundedRectangle (bar, 2.0f);
+        g.setColour (th->grass);
+        g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * st.progress), 2.0f);
+        status.removeFromTop (2.0f);
+    }
+    g.setFont (font (12.0f));
+    g.setColour (st.stage == SongJob::Stage::Failed ? Colour (0xffb5482b) : th->inkDim);
+    g.drawText (st.message.toLowerCase(), status, Justification::centredLeft, true);
+}
+
+void SongPanel::mouseUp (const MouseEvent& e)
+{
+    if (! dropZone().contains (e.getPosition())) return;
+    const auto st = proc.songJob.getStatus();
+    if (st.haveReference && e.position.x > (float) getWidth() - 30.0f && e.position.y < 30.0f)
+    {
+        proc.songJob.clearReference();
+        repaint();
+        return;
+    }
+    chooser = std::make_unique<FileChooser> ("Choose a song for Live Planet to learn the feel of", File(),
+                                             "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+    chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                          [this] (const FileChooser& fc)
+                          {
+                              if (fc.getResult().existsAsFile()) proc.songJob.setReference (fc.getResult());
+                          });
+}
+
+void SongView::paint (Graphics& g)
+{
+    auto b = getLocalBounds().toFloat();
+    g.setColour (Colour (0xf0060609));
+    g.fillRect (b);
+    g.setColour (Colours::white.withAlpha (0.1f));
+    g.drawLine (b.getX(), b.getY(), b.getRight(), b.getY(), 1.0f);
+    const auto st = proc.songJob.getStatus();
+    auto r = b.reduced (16.0f, 10.0f);
+    auto head = r.removeFromTop (20.0f);
+
+    struct Block { std::string name; int start, bars; float energy; };
+    std::vector<Block> blocks;
+    int totalBars = 0;
+    String title;
+    if (st.haveSong)
+    {
+        for (auto& s : st.song.sections) blocks.push_back ({ s.name, s.startBar, s.bars, s.energy });
+        totalBars = st.song.totalBars();
+        title = st.song.title + "  -  " + String (roundToInt (st.song.bpm)) + " bpm  -  " + lp::noteName (st.song.key)
+              + (st.song.minor ? " minor" : " major") + "  -  " + timeText (st.song.lengthSeconds());
+    }
+    else if (st.haveReference)
+    {
+        float maxE = 0.01f;
+        for (auto& s : st.profile.sections) maxE = std::max (maxE, s.energy);
+        for (auto& s : st.profile.sections) blocks.push_back ({ s.label, s.startBar, s.bars, s.energy / maxE });
+        for (auto& bl : blocks) totalBars = std::max (totalBars, bl.start + bl.bars);
+        title = "the shape of \"" + st.referenceName.toLowerCase() + "\"";
+    }
+
+    g.setFont (font (13.0f));
+    g.setColour (Colours::white.withAlpha (0.75f));
+    const bool busy = st.stage == SongJob::Stage::Writing || st.stage == SongJob::Stage::Rendering || st.stage == SongJob::Stage::Listening;
+    g.drawText (busy ? st.message.toLowerCase() : title, head, Justification::centredLeft, true);
+
+    if (blocks.empty() || totalBars == 0)
+    {
+        g.setColour (Colours::white.withAlpha (0.45f));
+        g.drawText ("drop a song you love on the right, or press \"write a song\" and the weather leads", r, Justification::centred, true);
+    }
+    else
+    {
+        auto lane = r.withTrimmedTop (6.0f);
+        for (auto& bl : blocks)
+        {
+            const float x0 = lane.getX() + lane.getWidth() * (float) bl.start / (float) totalBars;
+            const float x1 = lane.getX() + lane.getWidth() * (float) (bl.start + bl.bars) / (float) totalBars;
+            const float h = lane.getHeight() * (0.35f + 0.65f * jlimit (0.0f, 1.0f, bl.energy));
+            auto rect = Rectangle<float> (x0 + 1.0f, lane.getBottom() - h, x1 - x0 - 2.0f, h);
+            const auto c = sectionColour (bl.name);
+            ColourGradient grad (c.withAlpha (0.85f), 0, rect.getY(), c.withAlpha (0.35f), 0, rect.getBottom(), false);
+            g.setGradientFill (grad);
+            g.fillRoundedRectangle (rect, 4.0f);
+            if (rect.getWidth() > 34.0f)
+            {
+                g.setFont (font (11.0f));
+                g.setColour (Colour (0xff111111).withAlpha (0.85f));
+                g.drawFittedText (String (bl.name), rect.reduced (4.0f, 3.0f).toNearestInt(), Justification::topLeft, 2, 0.7f);
+            }
+        }
+    }
+    if (busy)
+    {
+        auto bar = Rectangle<float> (b.getX() + 16.0f, b.getBottom() - 6.0f, b.getWidth() - 32.0f, 3.0f);
+        g.setColour (Colours::white.withAlpha (0.12f));
+        g.fillRoundedRectangle (bar, 1.5f);
+        g.setColour (Colour (0xff9fcb55));
+        g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * st.progress), 1.5f);
+    }
+}
+
+void FilePill::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (2.0f);
+    const bool ready = ! getFiles().isEmpty();
+    const bool over = isMouseOver() && ready;
+    g.setColour (Colours::white.withAlpha (ready ? (over ? 0.2f : 0.12f) : 0.04f));
+    g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
+    g.setColour (Colours::white.withAlpha (ready ? 0.4f : 0.12f));
+    g.drawRoundedRectangle (r, r.getHeight() * 0.5f, 1.0f);
+    g.setColour (Colours::white.withAlpha (ready ? 0.9f : 0.3f));
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 2; ++j)
+            g.fillEllipse (r.getX() + 12.0f + (float) j * 5.0f, r.getCentreY() - 6.0f + (float) i * 5.0f, 2.5f, 2.5f);
+    g.setFont (font (12.5f));
+    g.drawText (label, r.withTrimmedLeft (26.0f), Justification::centredLeft, false);
+}
+
+void FilePill::mouseDrag (const MouseEvent& e)
+{
+    if (dragged || e.getDistanceFromDragStart() < 6) return;
+    const auto files = getFiles();
+    if (files.isEmpty()) return;
+    dragged = true;
+    DragAndDropContainer::performExternalDragDropOfFiles (files, false, this);
+}
+
+void FilePill::mouseUp (const MouseEvent&)
+{
+    if (! dragged)
+    {
+        const auto files = getFiles();
+        if (! files.isEmpty()) File (files[0]).revealToUser(); // a click shows it in Finder
+    }
+    dragged = false;
+}
+
 void ThemeDots::paint (Graphics& g)
 {
     const int cur = proc.themeIndex.load();
@@ -603,12 +833,12 @@ void ThemeDots::mouseUp (const MouseEvent& e)
 
 LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     : AudioProcessorEditor (p), proc (p),
-      liveSwitch ("live", "manual",
+      liveSwitch ({ "live", "manual" },
                   [&p] { return p.params.getRawParameterValue ("live")->load() > 0.5f ? 0 : 1; },
                   [&p] (int i) { if (auto* q = p.params.getParameter ("live")) { q->beginChangeGesture(); q->setValueNotifyingHost (i == 0 ? 1.0f : 0.0f); q->endChangeGesture(); } },
                   lnf.th),
-      pageSwitch ("instrument", "sky", [this] { return page; }, [this] (int i) { setPage (i); }, lnf.th),
-      keySwitch ("play", "chord",
+      pageSwitch ({ "sound", "sky", "song" }, [this] { return page; }, [this] (int i) { setPage (i); }, lnf.th),
+      keySwitch ({ "play", "chord" },
                  [&p] { return p.params.getRawParameterValue ("keymode")->load() > 0.5f ? 1 : 0; },
                  [&p] (int i) { if (auto* q = p.params.getParameter ("keymode")) { q->beginChangeGesture(); q->setValueNotifyingHost ((float) i); q->endChangeGesture(); } },
                  lnf.th),
@@ -617,6 +847,13 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       presetBrowser (p, lnf.th),
       sampleView (p),
       dragNotes (p),
+      songPanel (p, lnf.th),
+      songView (p),
+      pillMidi ("drag midi", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.midiFile.getFullPathName()) : StringArray(); }),
+      pillStems ("drag stems", [&p] { auto st = p.songJob.getStatus(); StringArray a; if (st.haveSong) for (auto& f : st.files.stems) a.add (f.getFullPathName()); return a; }),
+      pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray(); }),
+      pillHelper ("locators", [&p] { auto st = p.songJob.getStatus(); return st.abletonSet.existsAsFile() ? StringArray (st.abletonSet.getFullPathName()) : StringArray(); }),
+      pillFolder ("folder", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.folder.getFullPathName()) : StringArray(); }),
       themeDots (p, [this] { applyTheme(); })
 {
     setLookAndFeel (&lnf);
@@ -641,6 +878,10 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addAndMakeVisible (presetBrowser);
     addChildComponent (sampleView);
     addAndMakeVisible (dragNotes);
+    addChildComponent (songPanel);
+    addChildComponent (songView);
+    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        addChildComponent (pill);
     addAndMakeVisible (themeDots);
 
     keyStepper = std::make_unique<Stepper> (*p.params.getParameter ("key"), lnf.th);
@@ -757,6 +998,12 @@ void LivePlanetEditor::setPage (int p)
         knobById[id]->slider.setVisible (p == 1);
     dayToggle.setVisible (p == 1);
     thunderToggle.setVisible (p == 1);
+    // song mode: its own panel, and the screen shows the song instead of the step lane
+    songPanel.setVisible (p == 2);
+    songView.setVisible (p == 2);
+    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        pill->setVisible (p == 2);
+    dragNotes.setVisible (p != 2);
     pageSwitch.repaint();
     repaint();
 }
@@ -873,8 +1120,7 @@ void LivePlanetEditor::timerCallback()
     if (usingLive)
     {
         const auto mins = (int) (Time::getCurrentTime() - status.fetchedAt).inMinutes();
-        statusText = mins < 1 ? "live" : "live \xc2\xb7 " + String (mins) + " min ago";
-        statusText = String (CharPointer_UTF8 (statusText.toRawUTF8()));
+        statusText = mins < 1 ? String ("live") : String (CharPointer_UTF8 ("live \xc2\xb7 ")) + String (mins) + " min ago";
     }
     else
         statusText = status.live ? "connecting" : "manual";
@@ -904,7 +1150,14 @@ void LivePlanetEditor::timerCallback()
     presetBrowser.repaint();
     dragNotes.repaint();
     // the sample editor replaces the step lane while your own sample is playing
-    const bool sampleMode = (int) proc.params.getRawParameterValue ("sound")->load() == LivePlanetProcessor::kSampleChoice;
+    const bool sampleMode = page != 2 && (int) proc.params.getRawParameterValue ("sound")->load() == LivePlanetProcessor::kSampleChoice;
+    if (page == 2)
+    {
+        songPanel.repaint();
+        songView.repaint();
+        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+            pill->repaint();
+    }
     if (sampleView.isVisible() != sampleMode) sampleView.setVisible (sampleMode);
     if (sampleMode) sampleView.repaint();
 }
@@ -1077,7 +1330,8 @@ void LivePlanetEditor::paint (Graphics& g)
     {
         auto r = pageCard.toFloat();
         recess (g, r, 14.0f, th);
-        if (page == 0)
+        if (page == 2) {}
+        else if (page == 0)
         {
             g.setFont (font (12.5f));
             g.setColour (th.inkDim);
@@ -1193,7 +1447,9 @@ void LivePlanetEditor::paintScreen (Graphics& g)
     {
         const auto pb = playButton.getBounds().toFloat();
         String hint;
-        if (! proc.engine.uiRunning.load())
+        if (page == 2)
+            hint = {};
+        else if (! proc.engine.uiRunning.load())
             hint = proc.hostPlaying.load() ? "" : "press play or start your song  -  your keys play notes any time";
         else if (! proc.hostPlaying.load() && proc.params.getRawParameterValue ("play")->load() > 0.5f)
             hint = "playing on its own";
@@ -1230,7 +1486,7 @@ void LivePlanetEditor::paintOverChildren (Graphics& g)
         g.fillAll();
         g.setColour (Colours::white);
         g.setFont (font (26.0f));
-        g.drawText ("drop to let the weather play this sound", getLocalBounds(), Justification::centred);
+        g.drawText (page == 2 ? "drop to learn the feel of this song" : "drop to let the weather play this sound", getLocalBounds(), Justification::centred);
     }
 }
 
@@ -1273,6 +1529,17 @@ void LivePlanetEditor::resized()
     playButton.setBounds (screen.getX() + 18, screen.getBottom() - 112 - 54, 42, 42);
     dragNotes.setBounds (screen.getRight() - 18 - 210, screen.getBottom() - 112 - 50, 210, 34);
     sampleView.setBounds (screen.getX(), screen.getBottom() - 112, screen.getWidth(), 112);
+    songView.setBounds (screen.getX(), screen.getBottom() - 112, screen.getWidth(), 112);
+    songPanel.setBounds (pageCard.reduced (12, 10));
+    {
+        int px = screen.getX() + 70;
+        const int pw = (screen.getRight() - 14 - px) / 5;
+        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        {
+            pill->setBounds (px, screen.getBottom() - 112 - 50, pw - 6, 34);
+            px += pw;
+        }
+    }
     presetBrowser.setBounds (rx + 18, 56 + 40, rw - 36, 28);
 
     // three bark slabs of knobs
@@ -1417,6 +1684,12 @@ bool LivePlanetEditor::isInterestedInFileDrag (const StringArray& files)
 void LivePlanetEditor::filesDropped (const StringArray& files, int, int)
 {
     dragging = false;
+    if (page == 2) // song mode: the dropped song becomes the reference
+    {
+        if (! files.isEmpty()) proc.songJob.setReference (File (files[0]));
+        repaint();
+        return;
+    }
     for (auto& f : files)
         if (proc.loadSample (File (f)))
             break;

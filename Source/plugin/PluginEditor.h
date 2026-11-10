@@ -43,13 +43,13 @@ public:
 class Segmented : public juce::Component
 {
 public:
-    Segmented (juce::String a, juce::String b, std::function<int()> get, std::function<void (int)> set,
+    Segmented (juce::StringArray names, std::function<int()> get, std::function<void (int)> set,
                const lp::ui::Theme*& theme);
     void paint (juce::Graphics&) override;
     void mouseUp (const juce::MouseEvent&) override;
 
 private:
-    juce::String labels[2];
+    juce::StringArray labels;
     std::function<int()> getter;
     std::function<void (int)> setter;
     const lp::ui::Theme*& th;
@@ -147,6 +147,54 @@ private:
     bool started = false;
 };
 
+// Song mode, right panel: drop a reference song, pick options, write a song
+class SongPanel : public juce::Component
+{
+public:
+    SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseUp (const juce::MouseEvent&) override;
+    juce::Rectangle<int> dropZone() const { return getLocalBounds().removeFromTop (58); }
+
+private:
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    juce::ToggleButton newKey { "new key" };
+    Segmented length;
+    juce::TextButton write { "write a song" };
+    bool full = true;
+    std::unique_ptr<juce::FileChooser> chooser;
+};
+
+// Song mode, on the screen: the song's sections as a timeline, and progress
+class SongView : public juce::Component
+{
+public:
+    explicit SongView (LivePlanetProcessor& p) : proc (p) {}
+    void paint (juce::Graphics&) override;
+
+private:
+    LivePlanetProcessor& proc;
+};
+
+// A pill you drag into your DAW (or click to show in Finder)
+class FilePill : public juce::Component
+{
+public:
+    FilePill (juce::String text, std::function<juce::StringArray()> files) : label (std::move (text)), getFiles (std::move (files)) {}
+    void paint (juce::Graphics&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+
+private:
+    juce::String label;
+    std::function<juce::StringArray()> getFiles;
+    bool dragged = false;
+};
+
 class ThemeDots : public juce::Component
 {
 public:
@@ -234,6 +282,9 @@ private:
     PresetBrowser presetBrowser;
     SampleView sampleView;
     DragNotes dragNotes;
+    SongPanel songPanel;
+    SongView songView;
+    FilePill pillMidi, pillStems, pillMix, pillHelper, pillFolder;
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;
     juce::TextButton loadButton { "load sample" };

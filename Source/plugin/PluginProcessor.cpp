@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "Presets.h"
+#include "AbletonHelper.h"
 
 using APVTS = juce::AudioProcessorValueTreeState;
 
@@ -87,10 +88,17 @@ LivePlanetProcessor::LivePlanetProcessor()
     engine.jumpToWeather (getManualWeather());
     weatherService.requestCoordinates (city, lat, lon);
     startTimerHz (2);
+    songJob.writeAbletonSet = [] (const lp::song::Song&, const lp::song::Rendered&)
+    {
+        return lp::ableton::installHelper (SongJob::latestPointer());
+    };
 
     // for testing: LP_LOAD_SAMPLE=/path/to/file.wav loads a sample at start-up
     if (auto* path = std::getenv ("LP_LOAD_SAMPLE"))
         loadSample (juce::File (juce::String (path)));
+    // for testing: LP_SONG_REF=/path/to/song.wav gives song mode a reference at start-up
+    if (auto* ref = std::getenv ("LP_SONG_REF"))
+        songJob.setReference (juce::File (juce::String (ref)));
 }
 
 LivePlanetProcessor::~LivePlanetProcessor()
@@ -541,4 +549,25 @@ juce::File LivePlanetProcessor::exportRecentNotes (int bars)
     juce::FileOutputStream os (file);
     if (! os.openedOk() || ! mf.writeTo (os)) return {};
     return file;
+}
+
+//==============================================================================
+// Song mode
+
+void LivePlanetProcessor::makeSong (bool full, bool newKey)
+{
+    lp::song::Options o;
+    o.full = full;
+    o.shiftKey = newKey;
+    o.seed = (uint32_t) juce::Random::getSystemRandom().nextInt (1 << 30);
+    const int soundIdx = (int) params.getRawParameterValue ("sound")->load();
+    o.mainSound = (soundIdx <= 0 || soundIdx >= kSampleChoice) ? lp::SoundId::Auto : (lp::SoundId) (soundIdx - 1);
+
+    lp::song::RenderSettings rs;
+    rs.nostalgia = params.getRawParameterValue ("nostalgia")->load();
+    rs.space = params.getRawParameterValue ("space")->load();
+    rs.warmth = params.getRawParameterValue ("warmth")->load();
+    rs.echo = params.getRawParameterValue ("echo")->load();
+    rs.sampleRate = 48000.0;
+    songJob.makeSong (o, rs, engine.getTargetWeather());
 }

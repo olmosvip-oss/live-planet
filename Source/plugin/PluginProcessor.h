@@ -4,6 +4,7 @@
 #include <deque>
 #include "../engine/Engine.h"
 #include "WeatherService.h"
+#include "SongJob.h"
 
 class LivePlanetProcessor : public juce::AudioProcessor, private juce::Timer
 {
@@ -47,6 +48,10 @@ public:
     // you can drag into your song. Returns an empty File if nothing was played yet.
     juce::File exportRecentNotes (int bars = 8);
     int recordedNoteCount() const { return recordedOnCount.load(); }
+
+    // song mode
+    SongJob songJob;
+    void makeSong (bool full, bool newKey);
     juce::String getSampleName() const { return sampleName; }
 
     struct SkyStatus

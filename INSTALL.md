@@ -31,3 +31,12 @@ then hold Option and click Rescan. Live Planet appears under the maker name **Li
 2. Type a city in the search box and press Go. It starts playing that city's weather.
 3. Hold a few keys on your MIDI keyboard to choose the chord yourself. The weather keeps playing it.
 4. To play another instrument with Live Planet's notes, route its MIDI output to that track.
+
+## Song mode (Ableton)
+1. In Live Planet open the **song** tab. Drop a song you love on the plugin (optional), then press **write a song**.
+2. Songs are saved in `~/Music/Live Planet/Songs/`.
+3. **Locators:** the first song also creates `~/Music/Live Planet/Ableton Helper/Live Planet Song Helper.amxd`
+   (needs Live Suite / Max for Live). Drag the **locators** pill (or that file) onto any track once, then press
+   **place song locators**: it sets the tempo and adds a named locator at every section.
+4. **Parts:** drag **stems** into the arrangement at bar 1 (hold Cmd while dropping so each part gets its own track),
+   or drag **midi** to get the notes, to play them with any instrument.
