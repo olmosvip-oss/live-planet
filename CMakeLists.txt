@@ -39,6 +39,11 @@ juce_add_plugin(LivePlanet
     AU_MAIN_TYPE kAudioUnitType_MusicDevice
     MICROPHONE_PERMISSION_ENABLED FALSE)
 
+juce_add_binary_data(LivePlanetAssets SOURCES
+    Resources/fonts/SpaceGrotesk-Light.ttf
+    Resources/fonts/SpaceGrotesk-Medium.ttf
+    Resources/fonts/SpaceGrotesk-Bold.ttf)
+
 target_sources(LivePlanet PRIVATE
     ${LP_ENGINE_SOURCES}
     Source/plugin/PluginProcessor.cpp
@@ -55,6 +60,8 @@ target_link_libraries(LivePlanet
     PRIVATE
         juce::juce_audio_utils
         juce::juce_audio_formats
+        juce::juce_opengl
+        LivePlanetAssets
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags

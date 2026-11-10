@@ -5,3 +5,4 @@ renders/*.wav
 *.user
 .vs/
 renders/*.mp4
+renders/*.png

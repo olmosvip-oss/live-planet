@@ -36,6 +36,7 @@ public:
 
     // --- used by the editor (message thread)
     juce::AudioProcessorValueTreeState params;
+    std::atomic<int> themeIndex { 0 }; // the colour of the device (saved with the song)
     lp::Engine engine;
 
     void searchCity (const juce::String& name);
@@ -46,6 +47,7 @@ public:
     {
         juce::String city, country, message;
         bool live = false, haveLive = false, busy = false;
+        double lat = 0, lon = 0;
         juce::Time fetchedAt;
     };
     SkyStatus getSkyStatus() const;

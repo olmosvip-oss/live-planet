@@ -10,8 +10,19 @@ namespace
     {
         juce::NormalisableRange<float> range (lo, hi);
         if (skewCentre > lo) range.setSkewForCentre (skewCentre);
+        const juce::String u (unit);
+        auto toText = [u, hi] (float v, int)
+        {
+            if (u.isEmpty() && hi <= 1.0f) return juce::String (juce::roundToInt (v * 100.0f)) + " %";
+            if (u == "mm" || u == "cm")    return juce::String (v, 1) + " " + u;
+            if (u == "C")                  return juce::String (juce::roundToInt (v)) + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0")) + "c";
+            if (u == "dB")                 return (v > 0.05f ? "+" : "") + juce::String (v, 1) + " db";
+            if (u == "hPa")                return juce::String (juce::roundToInt (v)) + " hpa";
+            return juce::String (juce::roundToInt (v)) + " " + u;
+        };
         return std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id, 1 }, name, range, def,
-                                                            juce::AudioParameterFloatAttributes().withLabel (unit));
+                                                            juce::AudioParameterFloatAttributes().withLabel (unit)
+                                                                .withStringFromValueFunction (toText));
     }
 }
 
@@ -223,6 +234,8 @@ LivePlanetProcessor::SkyStatus LivePlanetProcessor::getSkyStatus() const
     s.haveLive = haveLive;
     s.busy = weatherService.isBusy();
     s.fetchedAt = fetchedAt;
+    s.lat = lat;
+    s.lon = lon;
     return s;
 }
 
@@ -281,6 +294,7 @@ void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
         state.setProperty ("lon", lon, nullptr);
     }
     state.setProperty ("samplePath", samplePath, nullptr);
+    state.setProperty ("theme", themeIndex.load(), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -293,6 +307,7 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
     if (! state.isValid()) return;
 
     params.replaceState (state);
+    themeIndex = (int) state.getProperty ("theme", 0);
     {
         const juce::SpinLock::ScopedLockType sl (skyLock);
         city = state.getProperty ("city", city).toString();

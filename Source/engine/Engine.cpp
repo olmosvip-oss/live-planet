@@ -562,6 +562,7 @@ void Engine::process (float* L, float* R, int n, const EngineParams& p, const Tr
         if (step != lastStep)
         {
             lastStep = step;
+            uiStep = (int) (((step % 16) + 16) % 16);
             runStep (step, off, p, held, midi);
         }
 
