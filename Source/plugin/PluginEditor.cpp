@@ -49,17 +49,17 @@ namespace
         g.drawLine (r.getX() + radius, r.getBottom() - 0.5f, r.getRight() - radius, r.getBottom() - 0.5f, 1.0f);
     }
 
-    // a dark hardware key with a soft shadow
-    void hardwareKey (Graphics& g, Rectangle<float> r, bool lit, bool dark)
+    // a clean rounded button; the selected one turns dark like the knob faces
+    void hardwareKey (Graphics& g, Rectangle<float> r, bool lit, bool)
     {
-        g.setColour (Colours::black.withAlpha (dark ? 0.5f : 0.22f));
-        g.fillRoundedRectangle (r.translated (0.0f, 2.5f).expanded (0.5f), 7.0f);
-        ColourGradient body (lit ? Colour (0xff5d5b56) : Colour (0xff2d2c29), r.getX(), r.getY(),
-                             lit ? Colour (0xff3f3d39) : Colour (0xff171614), r.getX(), r.getBottom(), false);
+        g.setColour (Colours::black.withAlpha (0.12f));
+        g.fillRoundedRectangle (r.translated (0.0f, 1.5f).expanded (0.5f), 8.0f);
+        ColourGradient body (lit ? Colour (0xff33414c) : Colour (0xffffffff), r.getX(), r.getY(),
+                             lit ? Colour (0xff121a20) : Colour (0xffe4e8ec), r.getX(), r.getBottom(), false);
         g.setGradientFill (body);
-        g.fillRoundedRectangle (r, 7.0f);
-        g.setColour (Colours::white.withAlpha (lit ? 0.18f : 0.08f));
-        g.drawLine (r.getX() + 6.0f, r.getY() + 1.0f, r.getRight() - 6.0f, r.getY() + 1.0f, 1.0f);
+        g.fillRoundedRectangle (r, 8.0f);
+        g.setColour (Colours::black.withAlpha (lit ? 0.3f : 0.08f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.0f);
     }
 }
 
@@ -78,11 +78,11 @@ const lp::ui::Theme& lp::ui::theme (int i)
 {
     static const Theme themes[] = {
         //  name        body          light         dark          ink           inkDim        line          dark?
-        //  name   bark body / light / dark                                    ink                 inkDim              line                dark   grass light / base / dark                                   sky top / bottom
-        { "spring", Colour (0xffdcd9d2), Colour (0xffeeece7), Colour (0xffbdb9b0), Colour (0xff2c2b27), Colour (0xff7a766c), Colour (0x222c2b27), false, Colour (0xff9fcb55), Colour (0xff5b8a2e), Colour (0xff27461a), Colour (0xffeef3f6), Colour (0xffc8dbe8) },
-        { "moss",   Colour (0xffd6d4cd), Colour (0xffe9e7e2), Colour (0xffb5b1a8), Colour (0xff2a2a26), Colour (0xff74716a), Colour (0x222a2a26), false, Colour (0xff7d9a4c), Colour (0xff45612c), Colour (0xff1c2c13), Colour (0xffe6ebe8), Colour (0xffbfcfca) },
-        { "autumn", Colour (0xffdcd5cc), Colour (0xffeee9e2), Colour (0xffbeb5a8), Colour (0xff2f2a24), Colour (0xff7e7466), Colour (0x222f2a24), false, Colour (0xffe8b04a), Colour (0xffb0652a), Colour (0xff5a2a12), Colour (0xfff5eee4), Colour (0xffe4d3bc) },
-        { "frost",  Colour (0xffdedfe0), Colour (0xffeff0f1), Colour (0xffbfc2c5), Colour (0xff2a2d31), Colour (0xff747a82), Colour (0x222a2d31), false, Colour (0xffd8ece4), Colour (0xff86a99d), Colour (0xff3b5a52), Colour (0xfff2f6fa), Colour (0xffd0e0ee) },
+        //  name    surface / light / shade                                   ink                 muted               line                dark   accent light / accent / deep                                 background top / bottom
+        { "sky",    Colour (0xffe8ebee), Colour (0xfff7f8fa), Colour (0xffcfd5db), Colour (0xff1e2731), Colour (0xff7d8896), Colour (0x221e2731), false, Colour (0xff7fdcff), Colour (0xff27b4ea), Colour (0xff0b6f99), Colour (0xfff3f5f7), Colour (0xffdfe3e8) },
+        { "mint",   Colour (0xffe8ecea), Colour (0xfff7f9f8), Colour (0xffcfd6d2), Colour (0xff1d2a26), Colour (0xff7a8a84), Colour (0x221d2a26), false, Colour (0xff8ef0c8), Colour (0xff2fcf95), Colour (0xff0d7d55), Colour (0xfff3f6f4), Colour (0xffdfe5e2) },
+        { "amber",  Colour (0xffece9e5), Colour (0xfff9f8f6), Colour (0xffd8d2cb), Colour (0xff2b241d), Colour (0xff8a8076), Colour (0x222b241d), false, Colour (0xffffd28a), Colour (0xfff2a33a), Colour (0xffa0600f), Colour (0xfff7f5f2), Colour (0xffe6e1db) },
+        { "violet", Colour (0xffeae9ee), Colour (0xfff8f7fa), Colour (0xffd3d0dc), Colour (0xff221f2d), Colour (0xff817c91), Colour (0x22221f2d), false, Colour (0xffc7b2ff), Colour (0xff8f6cf0), Colour (0xff4f31a8), Colour (0xfff5f4f8), Colour (0xffe2e0e8) },
     };
     return themes[jlimit (0, numThemes - 1, i)];
 }
@@ -103,92 +103,86 @@ void LivePlanetLookAndFeel::drawRotarySlider (Graphics& g, int x, int y, int w, 
                                               float start, float end, Slider& s)
 {
     const int size = (int) s.getProperties().getWithDefault ("size", 60);
-    const float hue = (float) (double) s.getProperties().getWithDefault ("hue", 0.5);
     const bool enabled = s.isEnabled();
-    const float alpha = enabled ? 1.0f : 0.35f;
+    const float alpha = enabled ? 1.0f : 0.4f;
     const bool small = size < 50;
-
     auto area = Rectangle<float> ((float) x, (float) y, (float) w, (float) h);
-    const float labelH = small ? 30.0f : 44.0f;
+    const float labelH = small ? 30.0f : 20.0f;
     const float r = (float) size * 0.5f;
-    const float ringPad = small ? 5.0f : 8.0f;
-    // knob and its labels sit together, centred in the cell
-    const float blockH = (r + ringPad) * 2.0f + 8.0f + labelH;
-    const Point<float> c (area.getCentreX(), area.getCentreY() - blockH * 0.5f + r + ringPad);
-    auto labels = Rectangle<float> (area.getX(), c.y + r + ringPad + 8.0f, area.getWidth(), labelH);
+    const float blockH = r * 2.0f + 10.0f + labelH;
+    const Point<float> c (area.getCentreX(), area.getCentreY() - blockH * 0.5f + r);
     const float angle = start + pos * (end - start);
+    const auto accent = th->grass.withMultipliedAlpha (alpha);
 
-    // coloured value ring on the body
-    const float ringR = r + ringPad;
+    // soft shadow under the knob
+    ColourGradient shadow (Colours::black.withAlpha (0.28f * alpha), c.x, c.y + r * 0.35f, Colours::black.withAlpha (0.0f), c.x, c.y + r * 1.45f, true);
+    g.setGradientFill (shadow);
+    g.fillEllipse (c.x - r * 1.25f, c.y - r * 0.9f, r * 2.5f, r * 2.5f);
+
+    // polished light rim
+    ColourGradient rim (Colours::white.withMultipliedAlpha (alpha), c.x - r * 0.4f, c.y - r, Colour (0xffaeb6be).withMultipliedAlpha (alpha), c.x + r * 0.4f, c.y + r, false);
+    g.setGradientFill (rim);
+    g.fillEllipse (c.x - r, c.y - r, r * 2.0f, r * 2.0f);
+    g.setColour (Colours::black.withAlpha (0.12f * alpha));
+    g.drawEllipse (c.x - r, c.y - r, r * 2.0f, r * 2.0f, 1.0f);
+
+    // dark face
+    const float rf = r * (small ? 0.8f : 0.84f);
+    ColourGradient face (Colour (0xff34424e).withMultipliedAlpha (alpha), c.x - rf * 0.5f, c.y - rf,
+                         Colour (0xff0e151b).withMultipliedAlpha (alpha), c.x + rf * 0.5f, c.y + rf, false);
+    g.setGradientFill (face);
+    g.fillEllipse (c.x - rf, c.y - rf, rf * 2.0f, rf * 2.0f);
+
+    // the arc, inside the face
+    const float ra = rf * 0.8f, aw = std::max (2.0f, rf * 0.1f);
     Path track;
-    track.addCentredArc (c.x, c.y, ringR, ringR, 0, start, end, true);
-    g.setColour (th->ink.withAlpha (0.1f * alpha));
-    g.strokePath (track, PathStrokeType (2.0f, PathStrokeType::curved, PathStrokeType::rounded));
+    track.addCentredArc (c.x, c.y, ra, ra, 0, start, end, true);
+    g.setColour (Colours::black.withAlpha (0.45f * alpha));
+    g.strokePath (track, PathStrokeType (aw, PathStrokeType::curved, PathStrokeType::rounded));
     if (pos > 0.002f)
     {
         Path arc;
-        arc.addCentredArc (c.x, c.y, ringR, ringR, 0, start, angle, true);
-        // the season's own green, from deep at the start to fresh at the tip
-        ignoreUnused (hue);
-        ColourGradient col (th->grassDark.withMultipliedAlpha (alpha), c.x - ringR, c.y + ringR,
-                            th->grass.brighter (0.15f).withMultipliedAlpha (alpha), c.x + ringR, c.y - ringR, false);
-        auto soft = col;
-        soft.multiplyOpacity (0.22f);
-        g.setGradientFill (soft);
-        g.strokePath (arc, PathStrokeType (6.0f, PathStrokeType::curved, PathStrokeType::rounded));
-        g.setGradientFill (col);
-        g.strokePath (arc, PathStrokeType (2.5f, PathStrokeType::curved, PathStrokeType::rounded));
+        arc.addCentredArc (c.x, c.y, ra, ra, 0, start, angle, true);
+        g.setColour (accent.withAlpha (0.25f * alpha));
+        g.strokePath (arc, PathStrokeType (aw * 2.6f, PathStrokeType::curved, PathStrokeType::rounded));
+        ColourGradient arcCol (th->grassDark.withMultipliedAlpha (alpha), c.x - ra, c.y + ra, th->grassLight.withMultipliedAlpha (alpha), c.x + ra, c.y - ra, false);
+        g.setGradientFill (arcCol);
+        g.strokePath (arc, PathStrokeType (aw, PathStrokeType::curved, PathStrokeType::rounded));
     }
 
-    // shadow on the slab
-    ColourGradient shadow (Colours::black.withAlpha (0.38f * alpha), c.x, c.y + r * 0.45f,
-                           Colours::black.withAlpha (0.0f), c.x, c.y + r * 1.5f, true);
-    g.setGradientFill (shadow);
-    g.fillEllipse (c.x - r * 1.3f, c.y - r * 0.85f, r * 2.6f, r * 2.6f);
-
-    // a little grass topiary ball (rendered once per size and season, then reused)
+    if (small)
     {
-        auto key = std::make_pair (th, size);
-        auto it = balls.find (key);
-        if (it == balls.end())
+        const Point<float> tip (c.x + ra * std::sin (angle), c.y - ra * std::cos (angle));
+        g.setColour (Colours::white.withAlpha (0.9f * alpha));
+        g.fillEllipse (tip.x - 2.0f, tip.y - 2.0f, 4.0f, 4.0f);
+    }
+    else
+    {
+        // the value, right in the middle
+        auto txt = s.getTextFromValue (s.getValue()).upToFirstOccurrenceOf (" ", false, false);
+        g.setColour (Colours::white.withAlpha (0.92f * alpha));
+        g.setFont (font (rf * (size > 90 ? 0.38f : 0.44f), lp::ui::Light));
+        g.drawText (txt, Rectangle<float> (c.x - rf, c.y - rf * 0.35f, rf * 2.0f, rf * 0.7f), Justification::centred, false);
+        auto unit = s.getTextFromValue (s.getValue()).fromFirstOccurrenceOf (" ", false, false);
+        if (unit.isNotEmpty())
         {
-            const int pad = 6;
-            lp::art::Grass gr { th->grassLight, th->grass, th->grassDark };
-            auto img = lp::art::makeTopiary (size + pad * 2, size + pad * 2,
-                                             { { (float) pad, (float) pad, (float) size, (float) size, (float) size * 0.5f } },
-                                             gr, (juce::uint32) size * 31u, displayScale, 0.35f);
-            it = balls.emplace (key, img).first;
+            g.setColour (Colours::white.withAlpha (0.45f * alpha));
+            g.setFont (font (rf * 0.2f, lp::ui::Medium));
+            g.drawText (unit, Rectangle<float> (c.x - rf, c.y + rf * 0.32f, rf * 2.0f, rf * 0.3f), Justification::centred, false);
         }
-        const float pad = 6.0f;
-        g.setOpacity (alpha);
-        g.drawImage (it->second, Rectangle<float> (c.x - r - pad, c.y - r - pad, r * 2.0f + pad * 2.0f, r * 2.0f + pad * 2.0f));
-        g.setOpacity (1.0f);
-        // round it off: soft highlight on top, shade underneath
-        ColourGradient hi (Colours::white.withAlpha (0.22f * alpha), c.x - r * 0.3f, c.y - r * 0.5f,
-                           Colours::white.withAlpha (0.0f), c.x - r * 0.3f + r, c.y - r * 0.5f, true);
-        g.setGradientFill (hi);
-        g.fillEllipse (c.x - r, c.y - r, r * 2.0f, r * 2.0f);
-        ColourGradient lo (Colours::black.withAlpha (0.0f), c.x, c.y, Colours::black.withAlpha (0.35f * alpha), c.x, c.y + r, false);
-        g.setGradientFill (lo);
-        g.fillEllipse (c.x - r, c.y - r, r * 2.0f, r * 2.0f);
     }
 
-    // indicator line
-    const float sn = std::sin (angle), cs = -std::cos (angle);
-    const float pw = size > 90 ? 5.0f : 3.5f;
-    const Line<float> peg (c.x + sn * r * 0.4f, c.y + cs * r * 0.4f, c.x + sn * r * 0.86f, c.y + cs * r * 0.86f);
-    g.setColour (Colour (0xff2a2a22).withAlpha (0.7f * alpha));
-    g.drawLine (peg, pw + 2.0f);
-    g.setColour (th->bodyLight.withAlpha (alpha));
-    g.drawLine (peg, pw);
-
-    // name and value
-    g.setFont (font (small ? 12.5f : 15.0f));
+    // name (and value for the small ones)
+    auto labels = Rectangle<float> (area.getX(), c.y + r + 8.0f, area.getWidth(), labelH);
+    g.setFont (font (small ? 12.0f : 13.5f, lp::ui::Medium));
     g.setColour (th->ink.withMultipliedAlpha (alpha));
-    g.drawText (s.getName(), labels.removeFromTop (small ? 15.0f : 21.0f), Justification::centred, false);
-    g.setFont (font (small ? 11.5f : 13.5f));
-    g.setColour (th->inkDim.withMultipliedAlpha (alpha));
-    g.drawText (s.getTextFromValue (s.getValue()), labels, Justification::centredTop, false);
+    g.drawText (s.getName(), labels.removeFromTop (small ? 15.0f : 18.0f), Justification::centred, false);
+    if (small)
+    {
+        g.setFont (font (11.0f));
+        g.setColour (th->inkDim.withMultipliedAlpha (alpha));
+        g.drawText (s.getTextFromValue (s.getValue()), labels, Justification::centredTop, false);
+    }
 }
 
 void LivePlanetLookAndFeel::drawButtonBackground (Graphics& g, Button& b, const Colour&, bool over, bool down)
@@ -332,7 +326,7 @@ void SoundKeys::paint (Graphics& g)
         const float glow = lit ? 1.0f : (picked ? 0.6f + 0.4f * std::sin (t * 4.0f) : 0.0f);
         led (g, { r.getX() + 9.0f, r.getCentreY() }, glow > 0.0f ? col : col.withMultipliedBrightness (0.35f), 4.0f, glow);
         g.setFont (font (11.0f));
-        g.setColour (Colour (0xffeeebe4).withAlpha (lit || picked ? 1.0f : 0.7f));
+        g.setColour (lit ? Colours::white : th->ink.withAlpha (picked ? 1.0f : 0.75f));
         g.drawFittedText (nameFor (i), r.withTrimmedLeft (15.0f).withTrimmedRight (2.0f).toNearestInt(), Justification::centred, 1, 0.75f);
     }
 }
@@ -954,20 +948,20 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addAndMakeVisible (loadButton);
 
     // knobs along the bottom, each ring its own colour
-    addKnob ("pad", "chords", 0.86f, 52);
-    addKnob ("drops", "melody", 0.78f, 52);
-    addKnob ("bass", "bass", 0.68f, 52);
-    addKnob ("grain", "grain", 0.08f, 112);
-    addKnob ("texture", "scatter", 0.12f, 44);
-    addKnob ("sparkle", "sparkle", 0.16f, 44);
-    addKnob ("position", "position", 0.2f, 52);
-    addKnob ("warmth", "warmth", 0.03f, 44);
-    addKnob ("echo", "echo", 0.45f, 44);
-    addKnob ("space", "space", 0.52f, 44);
-    addKnob ("shimmer", "shimmer", 0.58f, 44);
-    addKnob ("atmos", "atmos", 0.36f, 44);
-    addKnob ("gain", "output", 0.0f, 44);
-    addKnob ("nostalgia", "nostalgia", 0.1f, 44);
+    addKnob ("pad", "chords", 0.86f, 64);
+    addKnob ("drops", "melody", 0.78f, 64);
+    addKnob ("bass", "bass", 0.68f, 64);
+    addKnob ("grain", "grain", 0.08f, 124);
+    addKnob ("texture", "scatter", 0.12f, 54);
+    addKnob ("sparkle", "sparkle", 0.16f, 54);
+    addKnob ("position", "position", 0.2f, 64);
+    addKnob ("warmth", "warmth", 0.03f, 56);
+    addKnob ("echo", "echo", 0.45f, 56);
+    addKnob ("space", "space", 0.52f, 56);
+    addKnob ("shimmer", "shimmer", 0.58f, 56);
+    addKnob ("atmos", "atmos", 0.36f, 56);
+    addKnob ("gain", "output", 0.0f, 56);
+    addKnob ("nostalgia", "nostalgia", 0.1f, 56);
     knobById["gain"]->slider.getProperties().set ("hue", 0.95);
 
     // manual sky
@@ -1224,143 +1218,87 @@ void LivePlanetEditor::paint (Graphics& g)
     const auto& th = *lnf.th;
     auto bounds = getLocalBounds().toFloat();
 
-    // the grass topiary is rendered once per season and size, then reused
-    const float scale = lnf.displayScale;
-    if (topiaryTheme != lnf.th || topiary.getWidth() != roundToInt ((float) getWidth() * scale))
     {
-        lp::art::Grass gr { th.grassLight, th.grass, th.grassDark };
-        const float W = (float) getWidth(), H = (float) getHeight();
-        topiary = lp::art::makeTopiary (getWidth(), getHeight(), {
-                        { 14.0f, 30.0f, W - 28.0f, H - 44.0f, 34.0f },   // the main block
-                        { 520.0f, 10.0f, 210.0f, 70.0f, 30.0f },          // bumps along the top
-                        { 860.0f, 16.0f, 170.0f, 60.0f, 26.0f },
-                        { 70.0f, 8.0f, 64.0f, 64.0f, 32.0f },
-                        { 1040.0f, 520.0f, 70.0f, 120.0f, 30.0f },
-                    }, gr, 1234u, scale, 0.16f);
-        topiaryTheme = lnf.th;
-        // leave the screen window empty so the planet shows through
-        topiary.clear (screen.toFloat().transformedBy (AffineTransform::scale (scale)).getSmallestIntegerContainer(), Colours::transparentBlack);
-        if (auto* dump = std::getenv ("LP_DUMP_TOPIARY"))
-        {
-            File f (dump);
-            f.deleteFile();
-            FileOutputStream os (f);
-            PNGImageFormat().writeImageToStream (topiary, os);
-        }
-    }
-
-    {
-        // sky everywhere except the screen window
-        Path skyArea;
-        skyArea.addRectangle (bounds);
-        skyArea.addRectangle (screen.toFloat());
-        skyArea.setUsingNonZeroWinding (false);
-        ColourGradient sky (th.skyTop, 0, 0, th.skyBottom, 0, bounds.getBottom(), false);
-        g.setGradientFill (sky);
-        g.fillPath (skyArea);
-        ColourGradient sun (Colours::white.withAlpha (0.7f), bounds.getRight() * 0.82f, 0.0f,
-                            Colours::white.withAlpha (0.0f), bounds.getRight() * 0.82f + 420.0f, 0.0f, true);
-        g.setGradientFill (sun);
-        g.fillPath (skyArea);
-
-        // soft contact shadow, then the topiary
-        g.setColour (Colours::black.withAlpha (0.18f));
-        g.fillEllipse (40.0f, bounds.getBottom() - 26.0f, bounds.getWidth() - 80.0f, 30.0f);
-        g.setOpacity (1.0f); // drawImage uses the current colour's opacity
-        g.drawImage (topiary, bounds);
+        // a clean, soft-lit surface everywhere except the screen window
+        Path surface;
+        surface.addRectangle (bounds);
+        surface.addRoundedRectangle (screen.toFloat(), 18.0f);
+        surface.setUsingNonZeroWinding (false);
+        ColourGradient bg (th.skyTop, 0, 0, th.skyBottom, 0, bounds.getBottom(), false);
+        g.setGradientFill (bg);
+        g.fillPath (surface);
+        ColourGradient sheen (Colours::white.withAlpha (0.6f), bounds.getWidth() * 0.25f, 0.0f,
+                              Colours::white.withAlpha (0.0f), bounds.getWidth() * 0.25f + 700.0f, 0.0f, true);
+        g.setGradientFill (sheen);
+        g.fillPath (surface);
     }
 
     if (shaderFailed)
     {
         g.setColour (Colour (0xff050608));
-        g.fillRoundedRectangle (screen.toFloat(), 22.0f);
+        g.fillRoundedRectangle (screen.toFloat(), 18.0f);
     }
 
-    // a slab of birch bark resting on the grass
-    auto bark = [&g, &th] (Rectangle<int> rect, int seed)
+    // raised cards: light top edge, soft shadow below, nothing else
+    auto card = [&g, &th] (Rectangle<int> rect)
     {
         auto r = rect.toFloat();
-        for (int i = 3; i >= 1; --i)
+        for (int i = 4; i >= 1; --i)
         {
-            g.setColour (Colours::black.withAlpha (0.09f));
-            g.fillRoundedRectangle (r.translated (0.0f, 2.0f + (float) i * 2.0f).expanded ((float) i), 16.0f + (float) i);
+            g.setColour (Colours::black.withAlpha (0.035f));
+            g.fillRoundedRectangle (r.translated (0.0f, 1.0f + (float) i * 1.5f).expanded ((float) i * 0.8f), 18.0f + (float) i);
         }
-        ColourGradient body (th.bodyLight, 0, r.getY(), th.bodyDark, 0, r.getBottom(), false);
-        body.addColour (0.35, th.body);
+        ColourGradient body (th.bodyLight, 0, r.getY(), th.body, 0, r.getBottom(), false);
         g.setGradientFill (body);
-        g.fillRoundedRectangle (r, 16.0f);
-        {
-            Graphics::ScopedSaveState ss (g);
-            Path clip;
-            clip.addRoundedRectangle (r, 16.0f);
-            g.reduceClipRegion (clip);
-            Random rng (seed);
-            const int marks = (int) (r.getWidth() * r.getHeight() / 2600.0f);
-            for (int i = 0; i < marks; ++i)
-            {
-                const float w = 5.0f + rng.nextFloat() * 26.0f, h = 1.0f + rng.nextFloat() * 2.2f;
-                g.setColour (th.ink.withAlpha (0.05f + rng.nextFloat() * 0.13f));
-                g.fillRoundedRectangle (r.getX() + rng.nextFloat() * r.getWidth(), r.getY() + rng.nextFloat() * r.getHeight(), w, h, h * 0.5f);
-            }
-        }
-        g.setColour (Colours::white.withAlpha (0.7f));
-        g.drawLine (r.getX() + 16.0f, r.getY() + 0.75f, r.getRight() - 16.0f, r.getY() + 0.75f, 1.2f);
-        g.setColour (Colours::black.withAlpha (0.12f));
-        g.drawRoundedRectangle (r.reduced (0.5f), 16.0f, 1.0f);
+        g.fillRoundedRectangle (r, 18.0f);
+        g.setColour (Colours::white);
+        g.drawLine (r.getX() + 18.0f, r.getY() + 0.75f, r.getRight() - 18.0f, r.getY() + 0.75f, 1.2f);
+        g.setColour (Colours::black.withAlpha (0.06f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 18.0f, 1.0f);
     };
-    bark (rightPlate, 3);
-    bark (plateMix, 5);
-    bark (plateTex, 8);
-    bark (plateFx, 13);
+    card (rightPlate);
+    card (plateMix);
+    card (plateTex);
+    card (plateFx);
+    card (infoCard);
 
-    // black glass bezel around the screen
+    // a slim dark bezel around the planet's screen
     {
         Path ring;
-        ring.addRoundedRectangle (bezel.toFloat(), 30.0f);
-        ring.addRoundedRectangle (screen.toFloat(), 22.0f);
+        ring.addRoundedRectangle (bezel.toFloat(), 24.0f);
+        ring.addRoundedRectangle (screen.toFloat(), 18.0f);
         ring.setUsingNonZeroWinding (false);
-        for (int i = 3; i >= 1; --i)
+        for (int i = 4; i >= 1; --i)
         {
-            g.setColour (Colours::black.withAlpha (0.1f));
-            g.fillRoundedRectangle (bezel.toFloat().translated (0, 3.0f + (float) i * 2.0f).expanded ((float) i), 31.0f + (float) i);
+            g.setColour (Colours::black.withAlpha (0.05f));
+            g.fillRoundedRectangle (bezel.toFloat().translated (0, 2.0f + (float) i * 2.0f).expanded ((float) i), 25.0f + (float) i);
         }
-        ColourGradient bz (Colour (0xff222224), 0, (float) bezel.getY(), Colour (0xff0a0a0b), 0, (float) bezel.getBottom(), false);
+        ColourGradient bz (Colour (0xff2b333a), 0, (float) bezel.getY(), Colour (0xff10151a), 0, (float) bezel.getBottom(), false);
         g.setGradientFill (bz);
         g.fillPath (ring);
-        ColourGradient lip (Colours::white.withAlpha (0.25f), 0, (float) bezel.getY(), Colours::white.withAlpha (0.02f), 0, (float) bezel.getBottom(), false);
-        g.setGradientFill (lip);
-        g.drawRoundedRectangle (bezel.toFloat().reduced (0.75f), 30.0f, 1.2f);
+        g.setColour (Colours::white.withAlpha (0.18f));
+        g.drawRoundedRectangle (bezel.toFloat().reduced (0.75f), 24.0f, 1.0f);
     }
 
     paintScreen (g);
 
-    // info card: a pane of pale sky glass
+    // info card: the name, presets, the city
     {
         auto r = infoCard.toFloat();
-        for (int i = 3; i >= 1; --i)
-        {
-            g.setColour (Colours::black.withAlpha (0.08f));
-            g.fillRoundedRectangle (r.translated (0, 2.0f + (float) i * 2.0f).expanded ((float) i), 16.0f + (float) i);
-        }
-        ColourGradient glass (th.skyTop.brighter (0.05f), 0, r.getY(), th.skyBottom, 0, r.getBottom(), false);
-        g.setGradientFill (glass);
-        g.fillRoundedRectangle (r, 16.0f);
-        g.setColour (Colours::white.withAlpha (0.85f));
-        g.drawLine (r.getX() + 16.0f, r.getY() + 0.75f, r.getRight() - 16.0f, r.getY() + 0.75f, 1.2f);
-        g.setColour (Colours::black.withAlpha (0.1f));
-        g.drawRoundedRectangle (r.reduced (0.5f), 16.0f, 1.0f);
-
         auto in = r.reduced (18.0f, 14.0f);
         auto head = in.removeFromTop (24.0f);
-        const float cx = head.getX() + 9.0f, cy = head.getCentreY();
-        ColourGradient orb (th.grassLight, cx - 5, cy - 5, th.grass, cx + 5, cy + 5, false);
-        g.setGradientFill (orb);
-        g.fillEllipse (cx - 7, cy - 7, 14, 14);
-        g.setColour (th.ink.withAlpha (0.6f));
-        g.drawEllipse (cx - 11.0f, cy - 3.5f, 22.0f, 7.0f, 1.0f);
-        g.setFont (font (19.0f, lp::ui::Light, -0.01f));
-        g.setColour (th.ink);
-        g.drawText ("liveplanet", head.withTrimmedLeft (26.0f), Justification::centredLeft, false);
+        {
+            const auto bold = font (21.0f, lp::ui::Bold, -0.01f), light = font (21.0f, lp::ui::Light, -0.01f);
+            const float w1 = GlyphArrangement::getStringWidth (bold, "live");
+            g.setColour (th.ink);
+            g.setFont (bold);
+            g.drawText ("live", head, Justification::centredLeft, false);
+            g.setColour (th.inkDim.withAlpha (0.6f));
+            g.drawLine (head.getX() + w1 + 7.0f, head.getY() + 3.0f, head.getX() + w1 + 7.0f, head.getBottom() - 3.0f, 1.2f);
+            g.setColour (th.ink);
+            g.setFont (light);
+            g.drawText ("planet", head.withTrimmedLeft (w1 + 14.0f), Justification::centredLeft, false);
+        }
         g.setFont (font (13.5f));
         g.setColour (th.inkDim);
         in.removeFromTop (22.0f); // the preset browser sits here
@@ -1421,7 +1359,7 @@ void LivePlanetEditor::paint (Graphics& g)
     g.drawText ("scale", scaleStepper->getBounds().translated (0, -19).withHeight (16), Justification::centredLeft, false);
     if (page != 2)
     g.drawText ("keyboard", keySwitch.getBounds().translated (0, -19).withHeight (16), Justification::centredLeft, false);
-    g.drawText (String ("season  ") + th.name, themeDots.getBounds().translated (themeDots.getWidth() + 6, 0).withWidth (140),
+    g.drawText (String ("colour  ") + th.name, themeDots.getBounds().translated (themeDots.getWidth() + 6, 0).withWidth (140),
                 Justification::centredLeft, false);
 }
 
@@ -1607,9 +1545,9 @@ void LivePlanetEditor::resized()
     plateFx  = { 694, py, 386, ph };
 
     // mix: three knobs in a gentle arc, the season picker underneath
-    k ("pad")->setBounds   (plateMix.getX() + 6,   py + 34, 74, 132);
-    k ("drops")->setBounds (plateMix.getX() + 81,  py + 20, 74, 132);
-    k ("bass")->setBounds  (plateMix.getX() + 156, py + 34, 74, 132);
+    k ("pad")->setBounds   (plateMix.getX() + 4,   py + 24, 76, 140);
+    k ("drops")->setBounds (plateMix.getX() + 80,  py + 24, 76, 140);
+    k ("bass")->setBounds  (plateMix.getX() + 156, py + 24, 76, 140);
     themeDots.setBounds (plateMix.getX() + 16, py + ph - 38, lp::ui::numThemes * 22 + 4, 24);
 
     // texture: the big grain knob in the middle, small ones around it

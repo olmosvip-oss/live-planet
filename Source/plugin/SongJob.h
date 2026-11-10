@@ -28,7 +28,7 @@ public:
         juce::String usedSamples; // what this song took from your library
     };
 
-    SongJob() : juce::Thread ("Live Planet song mode", 16 * 1024 * 1024) {}
+    SongJob() : juce::Thread ("Live Planet song mode", 16 * 1024 * 1024) { startThread (juce::Thread::Priority::low); } // loads your sample library right away
     ~SongJob() override { signalThreadShouldExit(); notify(); stopThread (20000); }
 
     void setReference (const juce::File& file)
