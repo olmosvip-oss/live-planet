@@ -4,6 +4,7 @@
 //   city_XX_<city>.wav  : different skies in Auto mode (the weather picks the sound)
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../Source/engine/Engine.h"
+#include "../Source/song/Song.h"
 
 namespace
 {
@@ -273,8 +274,61 @@ static int latencyTest()
     return 0;
 }
 
+// Song mode round trip: make a reference song with a known tempo/key/shape, analyse it,
+// then write a new song from what was learned.
+static int songTest (const juce::File& outDir)
+{
+    using namespace lp::song;
+    lp::Weather sky;
+    sky.temperatureC = 14; sky.windKmh = 10; sky.cloudPct = 60; sky.rainMm = 0.6f; sky.isDay = true;
+
+    Options o; o.seed = 11; o.mainSound = lp::SoundId::FeltPiano;
+    Song truth = generate (Profile {}, sky, o);
+    truth.bpm = 96; truth.title = "reference";
+    std::printf ("REFERENCE (made here, so we know the truth)\n  %.0f bpm, %s %s, %d bars\n  sections:",
+                 truth.bpm, lp::noteName (truth.key), truth.minor ? "minor" : "major", truth.totalBars());
+    for (auto& sct : truth.sections) std::printf (" %s(%d)", sct.name.c_str(), sct.bars);
+    // rebuild note times for the new tempo is not needed: beats are tempo-free
+    Rendered refOut;
+    auto t0 = juce::Time::getMillisecondCounterHiRes();
+    if (! render (truth, {}, outDir.getChildFile ("reference"), refOut)) return 1;
+    std::printf ("\n  rendered in %.1f s\n\n", (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0);
+
+    // analyse its mix, as if you had dropped it on the plugin
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (refOut.mixFile));
+    juce::AudioBuffer<float> b (2, (int) rd->lengthInSamples);
+    rd->read (&b, 0, b.getNumSamples(), 0, true, true);
+    std::vector<float> mono ((size_t) b.getNumSamples());
+    for (int i = 0; i < b.getNumSamples(); ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+    t0 = juce::Time::getMillisecondCounterHiRes();
+    const Profile prof = analyse (mono.data(), (int) mono.size(), rd->sampleRate);
+    std::printf ("ANALYSIS (%.1f s)\n  %.1f bpm, %s %s, density %.2f, brightness %.2f\n  sections:",
+                 (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0, prof.bpm, lp::noteName (prof.key),
+                 prof.minor ? "minor" : "major", prof.density, prof.brightness);
+    for (auto& sct : prof.sections) std::printf (" %s@%d(%d)", sct.label.c_str(), sct.startBar, sct.bars);
+
+    // a new song with a similar shape
+    o.seed = 2024; o.mainSound = lp::SoundId::Rhodes;
+    Song fresh = generate (prof, sky, o);
+    std::printf ("\n\nNEW SONG \"%s\"\n  %.0f bpm, %s %s, %d bars (%.1f min)\n  sections:",
+                 fresh.title.toRawUTF8(), fresh.bpm, lp::noteName (fresh.key), fresh.minor ? "minor" : "major",
+                 fresh.totalBars(), fresh.lengthSeconds() / 60.0);
+    for (auto& sct : fresh.sections) std::printf (" %s(%d)", sct.name.c_str(), sct.bars);
+    std::printf ("\n  parts:");
+    for (auto& pt : fresh.parts) std::printf (" %s[%s, %d notes]", pt.name.c_str(), lp::profileFor (pt.sound).name, (int) pt.notes.size());
+    Rendered out;
+    t0 = juce::Time::getMillisecondCounterHiRes();
+    if (! render (fresh, {}, outDir.getChildFile ("new song"), out)) return 1;
+    std::printf ("\n  rendered %d stems + mix + midi in %.1f s\n  %s\n", out.stems.size(),
+                 (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0, out.folder.getFullPathName().toRawUTF8());
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
+    if (argc > 2 && juce::String (argv[1]) == "--song")
+        return songTest (juce::File (juce::String (argv[2])));
     if (argc > 1 && juce::String (argv[1]) == "--latency")
         return latencyTest();
     if (argc > 2 && juce::String (argv[1]) == "--samples")

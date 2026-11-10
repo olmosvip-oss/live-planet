@@ -20,6 +20,9 @@ endif()
 
 set(LP_ENGINE_SOURCES
     Source/engine/Engine.cpp
+    Source/song/Analysis.cpp
+    Source/song/Generator.cpp
+    Source/song/Render.cpp
 )
 
 option(LP_BUILD_PLUGIN "Build the plugin" ON)
