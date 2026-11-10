@@ -33,6 +33,9 @@ struct EngineParams
     float dropLevel = 0.7f;
     float bassLevel = 0.45f;
     float gainDb    = 0.0f;
+    float nostalgia = 0.0f;  // vinyl crackle, tape hiss and wobble, worn tone
+    float sampleStart = 0.0f, sampleEnd = 1.0f; // the part of your sample to play
+    float sampleTune = 0.0f; // semitones
 };
 
 struct TransportInfo
@@ -48,6 +51,8 @@ struct MidiOut
     struct Ev { int offset; int channel; int note; float velocity; bool on; };
     std::array<Ev, 512> events {};
     int count = 0;
+    double blockPpq = 0.0, ppqPerSample = 0.0; // where in the song this block is (for recording the notes)
+    bool running = false;
     void clear() { count = 0; }
     void add (int offset, int ch, int note, float vel, bool on)
     {
@@ -150,6 +155,8 @@ private:
     bool running = false;
     float p_padLevel = 0.75f, p_dropLevel = 0.7f, p_bassLevel = 0.45f, p_sparkle = 0.3f, p_texture = 0.35f, p_position = 0.3f;
     float atmosGate = 0.0f;
+    dsp::SVF hpL, hpR, hissFilt;
+    float crackleHp = 0.0f, crackleLast = 0.0f, nostPhase = 0.0f;
     std::atomic<const SourceSound*> userSource { nullptr };
 
     std::vector<Grain> padGrains, dropGrains;

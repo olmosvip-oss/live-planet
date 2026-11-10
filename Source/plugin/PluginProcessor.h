@@ -25,10 +25,10 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 8.0; }
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
+    int getNumPrograms() override;
+    int getCurrentProgram() override { return currentPreset.load(); }
+    void setCurrentProgram (int index) override;
+    const juce::String getProgramName (int index) override;
     void changeProgramName (int, const juce::String&) override {}
 
     void getStateInformation (juce::MemoryBlock& destData) override;
@@ -41,6 +41,12 @@ public:
 
     void searchCity (const juce::String& name);
     bool loadSample (const juce::File& file);
+    std::vector<float> getSamplePeaks() const { const juce::SpinLock::ScopedLockType sl (peaksLock); return samplePeaks; }
+
+    // The notes Live Planet played since you pressed play, written to a MIDI file
+    // you can drag into your song. Returns an empty File if nothing was played yet.
+    juce::File exportRecentNotes (int bars = 8);
+    int recordedNoteCount() const { return recordedOnCount.load(); }
     juce::String getSampleName() const { return sampleName; }
 
     struct SkyStatus
@@ -78,6 +84,16 @@ private:
     std::deque<std::unique_ptr<lp::SourceSound>> loadedSamples;
 
     std::bitset<128> held;
+
+    struct RecNote { double beat; int channel, note; float velocity; bool on; };
+    std::vector<RecNote> recorded;
+    juce::SpinLock recLock;
+    std::atomic<int> recordedOnCount { 0 };
+    bool wasRunning = false, exportTested = false;
+    int exportTicks = 0;
+    std::atomic<int> currentPreset { 0 };
+    std::vector<float> samplePeaks;
+    mutable juce::SpinLock peaksLock;
     lp::MidiOut midiOut;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivePlanetProcessor)

@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "Presets.h"
 
 using APVTS = juce::AudioProcessorValueTreeState;
 
@@ -66,6 +67,12 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
     l.add (knob ("shimmer", "Shimmer", 0.0f, 1.0f, 0.35f));
     l.add (knob ("atmos", "Atmosphere", 0.0f, 1.0f, 0.2f));
     l.add (knob ("gain", "Volume", -24.0f, 6.0f, 0.0f, "dB"));
+    l.add (knob ("nostalgia", "Nostalgia", 0.0f, 1.0f, 0.2f));
+
+    // your sample: which part to play, and its tuning
+    l.add (knob ("smpStart", "Sample Start", 0.0f, 1.0f, 0.0f));
+    l.add (knob ("smpEnd", "Sample End", 0.0f, 1.0f, 1.0f));
+    l.add (knob ("smpTune", "Sample Tune", -12.0f, 12.0f, 0.0f, "st"));
     return l;
 }
 
@@ -77,6 +84,10 @@ LivePlanetProcessor::LivePlanetProcessor()
     engine.jumpToWeather (getManualWeather());
     weatherService.requestCoordinates (city, lat, lon);
     startTimerHz (2);
+
+    // for testing: LP_LOAD_SAMPLE=/path/to/file.wav loads a sample at start-up
+    if (auto* path = std::getenv ("LP_LOAD_SAMPLE"))
+        loadSample (juce::File (juce::String (path)));
 }
 
 LivePlanetProcessor::~LivePlanetProcessor()
@@ -133,6 +144,10 @@ lp::EngineParams LivePlanetProcessor::readParams() const
     p.shimmer = v ("shimmer");
     p.atmos = v ("atmos");
     p.gainDb = v ("gain");
+    p.nostalgia = v ("nostalgia");
+    p.sampleStart = std::min (v ("smpStart"), v ("smpEnd") - 0.02f);
+    p.sampleEnd = std::max (v ("smpEnd"), v ("smpStart") + 0.02f);
+    p.sampleTune = v ("smpTune");
     return p;
 }
 
@@ -185,6 +200,23 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     auto* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : L;
     engine.process (L, R, n, readParams(), t, held, midiOut);
 
+    // remember the notes played since you pressed play, so they can be dragged into the song
+    {
+        const juce::SpinLock::ScopedTryLockType tl (recLock);
+        if (tl.isLocked())
+        {
+            if (midiOut.running && ! wasRunning) { recorded.clear(); recordedOnCount = 0; }
+            for (int i = 0; i < midiOut.count && midiOut.running; ++i)
+            {
+                const auto& e = midiOut.events[(size_t) i];
+                if (recorded.size() >= 20000) recorded.erase (recorded.begin(), recorded.begin() + 10000);
+                recorded.push_back ({ midiOut.blockPpq + e.offset * midiOut.ppqPerSample, e.channel, e.note, e.velocity, e.on });
+                if (e.on) ++recordedOnCount;
+            }
+            wasRunning = midiOut.running;
+        }
+    }
+
     // Send the notes out so they can play any other instrument too
     for (int i = 0; i < midiOut.count; ++i)
     {
@@ -206,6 +238,14 @@ void LivePlanetProcessor::searchCity (const juce::String& name)
 
 void LivePlanetProcessor::timerCallback()
 {
+    // for testing: LP_EXPORT_TEST=1 writes the recorded notes to a MIDI file once 10 seconds have played
+    if (std::getenv ("LP_EXPORT_TEST") != nullptr && ! exportTested && recordedOnCount.load() > 0 && ++exportTicks > 20)
+    {
+        exportTested = true;
+        const auto f = exportRecentNotes (8);
+        std::printf ("LP_EXPORT_TEST %s %d\n", f.getFullPathName().toRawUTF8(), (int) f.getSize());
+        std::fflush (stdout);
+    }
     WeatherService::Result r;
     if (! weatherService.takeResult (r)) return;
 
@@ -309,6 +349,21 @@ bool LivePlanetProcessor::loadSample (const juce::File& file)
 
     samplePath = file.getFullPathName();
     sampleName = file.getFileNameWithoutExtension();
+    {
+        // a small overview of the waveform for the screen
+        std::vector<float> peaks (400, 0.0f);
+        const auto& d = loadedSamples.back()->data;
+        for (size_t i = 0; i < d.size(); ++i)
+        {
+            auto& pk = peaks[std::min<size_t> (399, i * 400 / d.size())];
+            pk = std::max (pk, std::abs (d[i]));
+        }
+        const juce::SpinLock::ScopedLockType sl (peaksLock);
+        samplePeaks = std::move (peaks);
+    }
+    for (auto id : { "smpStart", "smpEnd", "smpTune" })
+        if (auto* q = params.getParameter (id))
+            q->setValueNotifyingHost (q->getDefaultValue());
     if (auto* p = params.getParameter ("sound"))
         p->setValueNotifyingHost (p->convertTo0to1 ((float) kSampleChoice));
     return true;
@@ -328,6 +383,7 @@ void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
     }
     state.setProperty ("samplePath", samplePath, nullptr);
     state.setProperty ("theme", themeIndex.load(), nullptr);
+    state.setProperty ("preset", currentPreset.load(), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -341,6 +397,7 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
 
     params.replaceState (state);
     themeIndex = (int) state.getProperty ("theme", 0);
+    currentPreset = (int) state.getProperty ("preset", 0);
     {
         const juce::SpinLock::ScopedLockType sl (skyLock);
         city = state.getProperty ("city", city).toString();
@@ -359,4 +416,107 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new LivePlanetProcessor();
+}
+
+//==============================================================================
+// Presets
+
+int LivePlanetProcessor::getNumPrograms() { return lp::presets::count; }
+
+const juce::String LivePlanetProcessor::getProgramName (int index)
+{
+    return lp::presets::all[juce::jlimit (0, lp::presets::count - 1, index)].name;
+}
+
+void LivePlanetProcessor::setCurrentProgram (int index)
+{
+    index = juce::jlimit (0, lp::presets::count - 1, index);
+    const auto& preset = lp::presets::all[index];
+    for (auto id : lp::presets::controlled)
+    {
+        auto* p = params.getParameter (id);
+        if (p == nullptr) continue;
+        float value = p->getDefaultValue();
+        for (auto& [pid, v] : preset.values)
+            if (juce::String (pid) == id)
+                value = p->convertTo0to1 (v);
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (value);
+        p->endChangeGesture();
+    }
+    currentPreset = index;
+}
+
+//==============================================================================
+// Recording the notes
+
+juce::File LivePlanetProcessor::exportRecentNotes (int bars)
+{
+    std::vector<RecNote> notes;
+    {
+        const juce::SpinLock::ScopedLockType sl (recLock);
+        notes = recorded;
+    }
+    if (notes.empty()) return {};
+
+    double last = 0;
+    for (auto& e : notes) last = std::max (last, e.beat);
+    const double end = std::ceil ((last + 0.001) / 4.0) * 4.0;      // end of the bar
+    const double start = std::max (std::floor (notes.front().beat / 4.0) * 4.0, end - bars * 4.0);
+
+    constexpr int tpq = 960;
+    juce::MidiMessageSequence seq;
+    for (auto& e : notes)
+    {
+        if (e.beat < start || e.beat >= end) continue;
+        const double ticks = (e.beat - start) * tpq;
+        auto m = e.on ? juce::MidiMessage::noteOn (e.channel, e.note, juce::jlimit (0.05f, 1.0f, e.velocity))
+                      : juce::MidiMessage::noteOff (e.channel, e.note);
+        m.setTimeStamp (ticks);
+        seq.addEvent (m);
+    }
+    seq.updateMatchedPairs();
+    // notes still sounding at the end get closed there
+    const double endTicks = (end - start) * tpq;
+    for (int i = seq.getNumEvents(); --i >= 0;)
+        if (auto* ev = seq.getEventPointer (i); ev->message.isNoteOn() && ev->noteOffObject == nullptr)
+        {
+            auto off = juce::MidiMessage::noteOff (ev->message.getChannel(), ev->message.getNoteNumber());
+            off.setTimeStamp (endTicks);
+            seq.addEvent (off);
+        }
+    // drop note-offs whose note-on was before the clip
+    seq.updateMatchedPairs();
+    for (int i = seq.getNumEvents(); --i >= 0;)
+        if (auto* ev = seq.getEventPointer (i); ev->message.isNoteOff())
+        {
+            bool matched = false;
+            for (int j = 0; j < i && ! matched; ++j)
+                if (auto* on = seq.getEventPointer (j); on->noteOffObject == ev) matched = true;
+            if (! matched) seq.deleteEvent (i, false);
+        }
+    if (seq.getNumEvents() == 0) return {};
+
+    juce::MidiMessageSequence track;
+    track.addEvent (juce::MidiMessage::textMetaEvent (3, "Live Planet"));
+    track.addSequence (seq, 0.0);
+    track.updateMatchedPairs();
+    juce::MidiFile mf;
+    mf.setTicksPerQuarterNote (tpq);
+    mf.addTrack (track);
+
+    juce::String cityName;
+    {
+        const juce::SpinLock::ScopedLockType sl (skyLock);
+        cityName = city;
+    }
+    auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("Live Planet");
+    dir.createDirectory();
+    auto file = dir.getChildFile (juce::File::createLegalFileName ("Live Planet - " + cityName + " - "
+                                    + juce::String (lp::noteName (engine.uiKey.load())) + " "
+                                    + lp::getScale ((lp::ScaleId) engine.uiScale.load()).name + ".mid"));
+    file.deleteFile();
+    juce::FileOutputStream os (file);
+    if (! os.openedOk() || ! mf.writeTo (os)) return {};
+    return file;
 }

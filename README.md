@@ -35,6 +35,10 @@ It only plays while your song is playing (or the play button on its screen is on
 | Ocarina | breathy clay flute | cool clear days |
 
 Choose **Auto** and the weather picks the instrument (it re-chooses every 8 bars and whenever you change city), or drag in any audio file of your own.
+**Presets:** 30 moods, from "rainy window" to "static radio".
+**Nostalgia:** one knob for vinyl crackle, tape hiss and wobble, and a warm worn-out tone.
+**Drag notes:** drag the last 8 bars it played straight into your song as a MIDI clip.
+**Your sample:** pitch is detected automatically; drag the waveform edges to choose the part that plays, and tune it by semitones.
 **Effects:** grain size, scatter, sparkle (octave-up glitter), tape warmth and wobble, ping-pong echo, reverb with shimmer, and real rain and wind noise.
 
 Formats: VST3, AU (Mac), CLAP and a standalone app, for macOS, Windows and Linux.

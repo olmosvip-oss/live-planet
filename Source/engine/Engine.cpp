@@ -607,6 +607,9 @@ void Engine::process (float* L, float* R, int n, const EngineParams& p, const Tr
         return;
     }
     const double ppq = t.hostPlaying ? t.ppq : freePpq;
+    midi.blockPpq = ppq;
+    midi.ppqPerSample = ppqPerSample;
+    midi.running = true;
 
     for (int off = 0; off < n; off += kChunk)
     {
@@ -665,7 +668,7 @@ void Engine::spawnGrain (std::vector<Grain>& pool, const SourceSound& src, doubl
     if ((double) len * ratio > dataLen - 4)
         len = (int) ((dataLen - 4) / ratio * 0.9);
     const double maxStart = dataLen - 3 - len * ratio;
-    startPos = std::fmod (std::max (0.0, startPos), std::max (1.0, maxStart));
+    startPos = juce::jlimit (0.0, std::max (0.0, maxStart), startPos);
 
     for (auto& g : pool)
         if (! g.active)
@@ -701,7 +704,13 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
     const double srcLen = (double) src.data.size();
     const float spray = juce::jlimit (0.0f, 1.0f, p.texture + windN * 0.3f + pr.scatterAdd);
     // struck sounds: read the bloom from after the attack, so it sings instead of clicking
-    const float posBase = pr.padStruck ? 0.12f + 0.8f * p.position : p.position;
+    const float posBase = pr.padStruck ? 0.12f + 0.8f * p.position : 0.02f + 0.9f * p.position; // never wraps round to the start
+    // your sample: only read from the part you picked, tuned as you like
+    const bool isUser = soundNow == SoundId::UserSample;
+    const double regStart = isUser ? (double) juce::jlimit (0.0f, 0.98f, p.sampleStart) * srcLen : 0.0;
+    const double regLen = isUser ? std::max (0.02, (double) (p.sampleEnd - p.sampleStart)) * srcLen : srcLen;
+    const double tune = isUser ? std::pow (2.0, (double) p.sampleTune / 12.0) : 1.0;
+    auto posIn = [regStart, regLen] (double frac) { frac -= std::floor (frac); return regStart + frac * regLen; };
     const float padGrainSec = juce::jlimit (0.02f, 0.9f, p.grainMs * 0.001f * (1.0f + snowN * 0.8f) * pr.grainMul);
     const int padGrainLen = (int) (padGrainSec * fsr);
     const int dropGrainLen = (int) (juce::jlimit (0.015f, 0.16f, padGrainSec * 0.35f) * fsr);
@@ -721,11 +730,11 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         while (v.countdown <= 0)
         {
             v.countdown += interval * (0.7 + 0.6 * rng.nextDouble());
-            double ratio = pitchRatio (src, (float) v.note) * rateFix
+            double ratio = pitchRatio (src, (float) v.note) * rateFix * tune
                          * cents ((rng.nextFloat() * 2.0f - 1.0f) * (4.0f + spray * 14.0f));
             float gain = v.env * v.vel * p.padLevel * padNorm * pr.padGain;
             if (rng.nextFloat() < p.sparkle * 0.3f) { ratio *= src.foldSemis > 0.0f ? 1.4983 : 2.0; gain *= 0.5f; }
-            const double pos = (posBase + (rng.nextFloat() - 0.5f) * spray * 0.6f + 1.0f) * srcLen;
+            const double pos = posIn (posBase + (rng.nextFloat() - 0.5f) * spray * 0.6f);
             const float pan = v.pan + (rng.nextFloat() * 2.0f - 1.0f) * (0.25f + 0.6f * spray);
             spawnGrain (padGrains, src, pos, ratio, padGrainLen, gain, pan);
         }
@@ -744,10 +753,10 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         while (v.countdown <= 0)
         {
             v.countdown += interval * (0.7 + 0.6 * rng.nextDouble());
-            double ratio = pitchRatio (src, (float) v.note) * rateFix * cents ((rng.nextFloat() * 2.0f - 1.0f) * 6.0f);
+            double ratio = pitchRatio (src, (float) v.note) * rateFix * tune * cents ((rng.nextFloat() * 2.0f - 1.0f) * 6.0f);
             float gain = v.env * v.vel * p.dropLevel * dropNorm * pr.dropGain;
             if (rng.nextFloat() < p.sparkle * 0.35f) { ratio *= src.foldSemis > 0.0f ? 1.4983 : 2.0; gain *= 0.55f; }
-            const double pos = (posBase + (rng.nextFloat() - 0.5f) * spray * 0.4f + 1.0f) * srcLen;
+            const double pos = posIn (posBase + (rng.nextFloat() - 0.5f) * spray * 0.4f);
             spawnGrain (dropGrains, src, pos, ratio, dropGrainLen, gain, v.pan + (rng.nextFloat() - 0.5f) * 0.3f);
         }
 
@@ -824,10 +833,14 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
 
     // --- effects settings for this chunk
     const float warm = juce::jlimit (0.0f, 1.0f, p.warmth + pr.warmthAdd + (1.0f - w.warmthNorm()) * 0.12f);
-    const float toneHz = 17000.0f * std::pow (0.2f, warm) * (w.isDay ? 1.0f : 0.8f) * pr.brightness;
+    const float nost = juce::jlimit (0.0f, 1.0f, p.nostalgia);
+    const float toneHz = 17000.0f * std::pow (0.2f, warm) * (w.isDay ? 1.0f : 0.8f) * pr.brightness * std::pow (0.32f, nost);
+    hpL.setup (30.0f + nost * 190.0f, 0.6f, fsr);
+    hpR.setup (30.0f + nost * 190.0f, 0.6f, fsr);
+    hissFilt.setup (7000.0f, 0.5f, fsr);
     toneL.setup (toneHz, 0.6f, fsr);
     toneR.setup (toneHz, 0.6f, fsr);
-    const float drive = 1.0f + warm * 1.6f;
+    const float drive = 1.0f + warm * 1.6f + nost * 1.4f;
     const float windHz = 380.0f + 950.0f * (0.5f + 0.5f * std::sin (windLfo));
     windFilt.setup (windHz, 1.4f, fsr);
     const float echoDelay = juce::jlimit (100.0f, (float) (2.9 * sr), (float) (0.75 * 60.0 / curBpm * sr));
@@ -857,7 +870,10 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
     const float rainLevel = p.atmos * rainN * 0.5f * atmosGate;
     const float crackleProb = rainN * 0.004f;
     const float windLevel = p.atmos * windN * 0.6f * atmosGate;
-    const float wobbleDepth = warm * 0.0011f * fsr;
+    const float wobbleDepth = (warm * 0.0011f + nost * 0.0026f) * fsr;
+    const float crackleRate = nost * 0.0009f * atmosGate;       // vinyl pops per sample
+    const float hissLevel = nost * nost * 0.018f * atmosGate;
+    const float nostInc = kTwoPi * 0.31f / fsr;
     const float wobbleInc = kTwoPi * 0.55f / fsr, flutterInc = kTwoPi * 6.3f / fsr;
     const float windInc = kTwoPi * (0.05f + 0.2f * windN) / fsr;
     const float shimmerAmt = std::min (0.38f, p.shimmer * 0.3f * pr.shimmer);
@@ -934,6 +950,29 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
 
         float yl = padL[(size_t) i] * (1.0f - 0.3f * space) + rl * space * 0.22f;
         float yr = padR[(size_t) i] * (1.0f - 0.3f * space) + rr * space * 0.22f;
+
+        if (nost > 0.001f)
+        {
+            // an old record: thinner lows, narrower stereo, a slow worn-tape sway in level,
+            // soft surface hiss and the occasional crackle
+            hpL.tick (yl); hpR.tick (yr);
+            yl = yl + (hpL.hp - yl) * nost;
+            yr = yr + (hpR.hp - yr) * nost;
+            const float mid = (yl + yr) * 0.5f, side = (yl - yr) * 0.5f * (1.0f - 0.5f * nost);
+            nostPhase += nostInc;
+            if (nostPhase > kTwoPi) nostPhase -= kTwoPi;
+            const float sway = 1.0f - nost * 0.1f * (0.5f + 0.5f * std::sin (nostPhase) * std::sin (nostPhase * 0.37f));
+            yl = (mid + side) * sway;
+            yr = (mid - side) * sway;
+            hissFilt.tick (noise.next());
+            float pop = 0.0f;
+            if (noise.next() * 0.5f + 0.5f < crackleRate)
+                pop = noise.next() * (0.05f + 0.25f * std::abs (noise.next())) * nost;
+            crackleHp = 0.6f * (crackleHp + pop - crackleLast);
+            crackleLast = pop;
+            yl += hissFilt.lp * hissLevel + crackleHp;
+            yr += hissFilt.lp * hissLevel * 0.9f + crackleHp * 0.8f;
+        }
 
         // remove DC, then a soft limiter so it never clips harshly
         dcL = yl - dcInL + 0.9995f * dcL; dcInL = yl;

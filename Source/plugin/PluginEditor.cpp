@@ -381,6 +381,198 @@ void PlayButton::mouseUp (const MouseEvent&)
     repaint();
 }
 
+//==============================================================================
+
+void PresetBrowser::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (1.0f);
+    g.setColour (Colours::white.withAlpha (0.45f));
+    g.fillRoundedRectangle (r, 8.0f);
+    g.setColour (th->ink.withAlpha (0.15f));
+    g.drawRoundedRectangle (r, 8.0f, 1.0f);
+    g.setFont (font (13.5f));
+    g.setColour (th->inkDim);
+    g.drawText ("<", r.removeFromLeft (28.0f), Justification::centred, false);
+    g.drawText (">", r.removeFromRight (28.0f), Justification::centred, false);
+    g.setColour (th->ink);
+    const int i = proc.getCurrentProgram();
+    g.drawText (String (i + 1) + "  " + proc.getProgramName (i), r, Justification::centred, false);
+}
+
+void PresetBrowser::mouseUp (const MouseEvent& e)
+{
+    const int n = proc.getNumPrograms(), cur = proc.getCurrentProgram();
+    if (e.position.x < 28.0f)                         proc.setCurrentProgram ((cur + n - 1) % n);
+    else if (e.position.x > (float) getWidth() - 28.0f) proc.setCurrentProgram ((cur + 1) % n);
+    else
+    {
+        PopupMenu menu;
+        for (int i = 0; i < n; ++i)
+            menu.addItem (i + 1, proc.getProgramName (i), true, i == cur);
+        menu.showMenuAsync (PopupMenu::Options().withTargetComponent (this).withMaximumNumColumns (2),
+                            [this] (int result) { if (result > 0) { proc.setCurrentProgram (result - 1); repaint(); } });
+    }
+    repaint();
+}
+
+//==============================================================================
+
+Rectangle<float> SampleView::waveArea() const { return getLocalBounds().toFloat().reduced (14.0f, 20.0f).withTrimmedRight (120.0f); }
+Rectangle<float> SampleView::tuneDown() const  { return { (float) getWidth() - 122.0f, (float) getHeight() * 0.5f - 6.0f, 26.0f, 26.0f }; }
+Rectangle<float> SampleView::tuneUp() const    { return { (float) getWidth() - 40.0f, (float) getHeight() * 0.5f - 6.0f, 26.0f, 26.0f }; }
+
+void SampleView::setParam (const char* id, float value)
+{
+    if (auto* p = proc.params.getParameter (id))
+        p->setValueNotifyingHost (p->convertTo0to1 (value));
+}
+
+void SampleView::paint (Graphics& g)
+{
+    auto b = getLocalBounds().toFloat();
+    g.setColour (Colour (0xf0060609));
+    g.fillRect (b);
+    g.setColour (Colours::white.withAlpha (0.1f));
+    g.drawLine (b.getX(), b.getY(), b.getRight(), b.getY(), 1.0f);
+
+    const auto peaks = proc.getSamplePeaks();
+    auto w = waveArea();
+    const float st = proc.params.getRawParameterValue ("smpStart")->load();
+    const float en = proc.params.getRawParameterValue ("smpEnd")->load();
+    const float x0 = w.getX() + st * w.getWidth(), x1 = w.getX() + en * w.getWidth();
+
+    g.setFont (font (11.5f));
+    g.setColour (Colours::white.withAlpha (0.5f));
+    g.drawText ("your sample  -  drag the edges to choose the part that plays", Rectangle<float> (w.getX(), 3.0f, w.getWidth(), 14.0f), Justification::centredLeft, false);
+
+    // highlighted region
+    g.setColour (Colour (0xff9fcb55).withAlpha (0.12f));
+    g.fillRect (Rectangle<float> (x0, w.getY(), x1 - x0, w.getHeight()));
+
+    if (! peaks.empty())
+    {
+        const float mid = w.getCentreY(), half = w.getHeight() * 0.5f;
+        for (size_t i = 0; i < peaks.size(); ++i)
+        {
+            const float x = w.getX() + (float) i / (float) peaks.size() * w.getWidth();
+            const bool inside = x >= x0 && x <= x1;
+            g.setColour (inside ? Colour (0xffe9f5d6).withAlpha (0.85f) : Colours::white.withAlpha (0.18f));
+            const float h = std::max (1.0f, peaks[i] * half);
+            g.fillRect (x, mid - h, std::max (1.0f, w.getWidth() / (float) peaks.size() - 0.5f), h * 2.0f);
+        }
+    }
+    else
+    {
+        g.setColour (Colours::white.withAlpha (0.5f));
+        g.drawText ("drop an audio file on the plugin to load your own sound", w, Justification::centred, false);
+    }
+
+    // edge handles
+    for (auto x : { x0, x1 })
+    {
+        g.setColour (Colour (0xffb6e06a));
+        g.drawLine (x, w.getY() - 4.0f, x, w.getBottom() + 4.0f, 2.0f);
+        g.fillEllipse (x - 5.0f, w.getY() - 9.0f, 10.0f, 10.0f);
+    }
+
+    // tuning
+    const float tune = proc.params.getRawParameterValue ("smpTune")->load();
+    g.setColour (Colours::white.withAlpha (0.12f));
+    g.fillEllipse (tuneDown());
+    g.fillEllipse (tuneUp());
+    g.setColour (Colours::white.withAlpha (0.85f));
+    g.setFont (font (15.0f));
+    g.drawText ("-", tuneDown(), Justification::centred, false);
+    g.drawText ("+", tuneUp(), Justification::centred, false);
+    auto label = Rectangle<float> (tuneDown().getRight(), tuneDown().getY() - 2.0f, tuneUp().getX() - tuneDown().getRight(), 30.0f);
+    g.setFont (font (14.0f));
+    g.drawText ((tune > 0.05f ? "+" : "") + String (roundToInt (tune)) + " st", label, Justification::centred, false);
+    g.setFont (font (11.0f));
+    g.setColour (Colours::white.withAlpha (0.5f));
+    g.drawText ("tune", label.translated (0.0f, -22.0f), Justification::centred, false);
+    g.drawFittedText (proc.getSampleInfo(), Rectangle<float> ((float) getWidth() - 126.0f, label.getBottom() + 2.0f, 116.0f, 26.0f).toNearestInt(),
+                      Justification::centredTop, 2, 0.8f);
+}
+
+void SampleView::mouseDown (const MouseEvent& e)
+{
+    const float tune = proc.params.getRawParameterValue ("smpTune")->load();
+    if (tuneDown().contains (e.position)) { setParam ("smpTune", jmax (-12.0f, (float) roundToInt (tune) - 1.0f)); repaint(); return; }
+    if (tuneUp().contains (e.position))   { setParam ("smpTune", jmin (12.0f, (float) roundToInt (tune) + 1.0f)); repaint(); return; }
+
+    auto w = waveArea();
+    const float st = proc.params.getRawParameterValue ("smpStart")->load();
+    const float en = proc.params.getRawParameterValue ("smpEnd")->load();
+    const float x0 = w.getX() + st * w.getWidth(), x1 = w.getX() + en * w.getWidth();
+    if (std::abs (e.position.x - x0) < 10.0f)      dragging = 0;
+    else if (std::abs (e.position.x - x1) < 10.0f) dragging = 1;
+    else if (e.position.x > x0 && e.position.x < x1) { dragging = 2; grabOffset = (e.position.x - w.getX()) / w.getWidth() - st; }
+    else dragging = -1;
+    for (auto id : { "smpStart", "smpEnd" })
+        if (auto* p = proc.params.getParameter (id)) p->beginChangeGesture();
+}
+
+void SampleView::mouseDrag (const MouseEvent& e)
+{
+    auto w = waveArea();
+    const float f = jlimit (0.0f, 1.0f, (e.position.x - w.getX()) / w.getWidth());
+    const float st = proc.params.getRawParameterValue ("smpStart")->load();
+    const float en = proc.params.getRawParameterValue ("smpEnd")->load();
+    if (dragging == 0) setParam ("smpStart", jmin (f, en - 0.02f));
+    else if (dragging == 1) setParam ("smpEnd", jmax (f, st + 0.02f));
+    else if (dragging == 2)
+    {
+        const float len = en - st;
+        const float ns = jlimit (0.0f, 1.0f - len, f - grabOffset);
+        setParam ("smpStart", ns);
+        setParam ("smpEnd", ns + len);
+    }
+    repaint();
+}
+
+void SampleView::mouseUp (const MouseEvent&)
+{
+    for (auto id : { "smpStart", "smpEnd" })
+        if (auto* p = proc.params.getParameter (id)) p->endChangeGesture();
+    dragging = -1;
+}
+
+//==============================================================================
+
+void DragNotes::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (2.0f);
+    const bool any = proc.recordedNoteCount() > 0;
+    const bool over = isMouseOver();
+    g.setColour (Colours::white.withAlpha (any ? (over ? 0.2f : 0.12f) : 0.05f));
+    g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
+    g.setColour (Colours::white.withAlpha (any ? 0.4f : 0.15f));
+    g.drawRoundedRectangle (r, r.getHeight() * 0.5f, 1.0f);
+    // a little grip of dots
+    g.setColour (Colours::white.withAlpha (any ? 0.85f : 0.35f));
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 2; ++j)
+            g.fillEllipse (r.getX() + 14.0f + (float) j * 5.0f, r.getCentreY() - 6.0f + (float) i * 5.0f, 2.5f, 2.5f);
+    g.setFont (font (13.0f));
+    g.drawText (message.isNotEmpty() ? message : (any ? "drag notes into your song" : "notes appear here as it plays"),
+                r.withTrimmedLeft (30.0f), Justification::centredLeft, false);
+}
+
+void DragNotes::mouseDrag (const MouseEvent& e)
+{
+    if (started || e.getDistanceFromDragStart() < 6) return;
+    started = true;
+    const auto file = proc.exportRecentNotes (8);
+    if (! file.existsAsFile())
+    {
+        message = "press play first, then drag";
+        repaint();
+        return;
+    }
+    message = {};
+    DragAndDropContainer::performExternalDragDropOfFiles ({ file.getFullPathName() }, false, this);
+}
+
 void ThemeDots::paint (Graphics& g)
 {
     const int cur = proc.themeIndex.load();
@@ -418,6 +610,9 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       pageSwitch ("instrument", "sky", [this] { return page; }, [this] (int i) { setPage (i); }, lnf.th),
       keys (p, lnf.th),
       playButton (p),
+      presetBrowser (p, lnf.th),
+      sampleView (p),
+      dragNotes (p),
       themeDots (p, [this] { applyTheme(); })
 {
     setLookAndFeel (&lnf);
@@ -437,6 +632,9 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addAndMakeVisible (pageSwitch);
     addAndMakeVisible (keys);
     addAndMakeVisible (playButton);
+    addAndMakeVisible (presetBrowser);
+    addChildComponent (sampleView);
+    addAndMakeVisible (dragNotes);
     addAndMakeVisible (themeDots);
 
     keyStepper = std::make_unique<Stepper> (*p.params.getParameter ("key"), lnf.th);
@@ -470,6 +668,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addKnob ("shimmer", "shimmer", 0.58f, 44);
     addKnob ("atmos", "atmos", 0.36f, 44);
     addKnob ("gain", "output", 0.0f, 44);
+    addKnob ("nostalgia", "nostalgia", 0.1f, 44);
     knobById["gain"]->slider.getProperties().set ("hue", 0.95);
 
     // manual sky
@@ -686,6 +885,12 @@ void LivePlanetEditor::timerCallback()
     keys.repaint();
     liveSwitch.repaint();
     playButton.repaint();
+    presetBrowser.repaint();
+    dragNotes.repaint();
+    // the sample editor replaces the step lane while your own sample is playing
+    const bool sampleMode = (int) proc.params.getRawParameterValue ("sound")->load() == LivePlanetProcessor::kSampleChoice;
+    if (sampleView.isVisible() != sampleMode) sampleView.setVisible (sampleMode);
+    if (sampleMode) sampleView.repaint();
 }
 
 //==============================================================================
@@ -834,7 +1039,7 @@ void LivePlanetEditor::paint (Graphics& g)
         g.drawText ("liveplanet", head.withTrimmedLeft (26.0f), Justification::centredLeft, false);
         g.setFont (font (13.5f));
         g.setColour (th.inkDim);
-        g.drawText (String (CharPointer_UTF8 ("version 0.3  \xc2\xb7  an instrument played by the sky")), in.removeFromTop (22.0f), Justification::centredLeft, false);
+        in.removeFromTop (22.0f); // the preset browser sits here
 
         const bool live = proc.params.getRawParameterValue ("live")->load() > 0.5f;
         const float pulse = 0.6f + 0.4f * (float) std::sin (Time::getMillisecondCounterHiRes() * 0.004);
@@ -1041,6 +1246,9 @@ void LivePlanetEditor::resized()
     keyStepper->setBounds (rx + 14, 438, sw, 30);
     scaleStepper->setBounds (rx + 14 + sw + 12, 438, sw, 30);
     playButton.setBounds (screen.getX() + 18, screen.getBottom() - 112 - 54, 42, 42);
+    dragNotes.setBounds (screen.getRight() - 18 - 210, screen.getBottom() - 112 - 50, 210, 34);
+    sampleView.setBounds (screen.getX(), screen.getBottom() - 112, screen.getWidth(), 112);
+    presetBrowser.setBounds (rx + 18, 56 + 40, rw - 36, 28);
 
     // three bark slabs of knobs
     const int py = 490, ph = 236;
@@ -1061,10 +1269,14 @@ void LivePlanetEditor::resized()
     k ("position")->setBounds (plateTex.getX() + 284, py + 70, 100, 110);
 
     // space: a 3 x 2 grid
-    const char* fx[] = { "warmth", "echo", "space", "shimmer", "atmos", "gain" };
-    const int cw = (plateFx.getWidth() - 16) / 3;
-    for (int i = 0; i < 6; ++i)
-        k (fx[i])->setBounds (plateFx.getX() + 8 + (i % 3) * cw, py + 26 + (i / 3) * 104, cw, 104);
+    const char* fx[] = { "warmth", "echo", "space", "shimmer", "nostalgia", "atmos", "gain" };
+    const int cw = (plateFx.getWidth() - 16) / 4;
+    for (int i = 0; i < 7; ++i)
+    {
+        const int row = i / 4, col = i % 4;
+        const int x = plateFx.getX() + 8 + col * cw + (row == 1 ? cw / 2 : 0); // second row sits between the first
+        k (fx[i])->setBounds (x, py + 26 + row * 104, cw, 104);
+    }
 
     lnf.displayScale = (float) jmax (1.0, Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr
                                               ? Desktop::getInstance().getDisplays().getPrimaryDisplay()->scale : 1.0);

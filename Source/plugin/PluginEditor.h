@@ -98,6 +98,55 @@ private:
     LivePlanetProcessor& proc;
 };
 
+// "<  rainy window  >": step through presets, or click the name for the full list
+class PresetBrowser : public juce::Component
+{
+public:
+    PresetBrowser (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme) {}
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+};
+
+// Your sample's waveform: drag the edges to pick the part that plays, arrows to tune it
+class SampleView : public juce::Component
+{
+public:
+    explicit SampleView (LivePlanetProcessor& p) : proc (p) {}
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    juce::Rectangle<float> waveArea() const;
+    juce::Rectangle<float> tuneDown() const, tuneUp() const;
+    void setParam (const char* id, float value);
+    LivePlanetProcessor& proc;
+    int dragging = -1;        // 0 start edge, 1 end edge, 2 the whole region
+    float grabOffset = 0.0f;
+};
+
+// Drag this into your DAW to get the notes Live Planet just played as a MIDI clip
+class DragNotes : public juce::Component
+{
+public:
+    explicit DragNotes (LivePlanetProcessor& p) : proc (p) {}
+    void paint (juce::Graphics&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override { started = false; }
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    juce::String message;
+
+private:
+    LivePlanetProcessor& proc;
+    bool started = false;
+};
+
 class ThemeDots : public juce::Component
 {
 public:
@@ -181,6 +230,9 @@ private:
     Segmented liveSwitch, pageSwitch;
     SoundKeys keys;
     PlayButton playButton;
+    PresetBrowser presetBrowser;
+    SampleView sampleView;
+    DragNotes dragNotes;
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;
     juce::TextButton loadButton { "load sample" };

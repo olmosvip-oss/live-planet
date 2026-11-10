@@ -130,6 +130,7 @@ static int knobTest()
         { "echo", 0, 1, &lp::EngineParams::echo },         { "space", 0, 1, &lp::EngineParams::space },
         { "shimmer", 0, 1, &lp::EngineParams::shimmer },   { "atmos", 0, 1, &lp::EngineParams::atmos },
         { "output", -24, 6, &lp::EngineParams::gainDb },
+        { "nostalgia", 0, 1, &lp::EngineParams::nostalgia },
     };
     std::printf ("%-13s", "sound");
     for (auto& k : knobs) std::printf ("%9s", k.name);
