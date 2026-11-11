@@ -26,19 +26,20 @@ void StudioView::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
 
 Rectangle<float> StudioView::colBounds (int row, Col c) const
 {
+    // columns spread over the width: name, volume, pan, tone, then the remix buttons on the right
     auto r = rowBounds (row);
-    const float x = r.getX(), y = r.getY(), h = r.getHeight();
+    const float x = r.getX(), y = r.getY(), h = r.getHeight(), w = r.getWidth();
     switch (c)
     {
-        case Mute:      return { x + 2, y + 3, 19, 19 };
-        case Solo:      return { x + 24, y + 3, 19, 19 };
-        case Volume:    return { x + 262, y + 8, 86, 9 };
-        case Pan:       return { x + 358, y + 8, 46, 9 };
-        case Tone:      return { x + 414, y + 8, 56, 9 };
-        case Swap:      return { x + 480, y + 2, 38, h - 4 };
-        case Reverse:   return { x + 522, y + 2, 34, h - 4 };
-        case PitchDown: return { x + 560, y + 2, 20, h - 4 };
-        case PitchUp:   return { r.getRight() - 22, y + 2, 20, h - 4 };
+        case Mute:      return { x + 6, y + 3, 19, 19 };
+        case Solo:      return { x + 28, y + 3, 19, 19 };
+        case Volume:    return { x + w * 0.42f, y + 8, w * 0.18f, 9 };
+        case Pan:       return { x + w * 0.63f, y + 8, w * 0.08f, 9 };
+        case Tone:      return { x + w * 0.74f, y + 8, w * 0.08f, 9 };
+        case Swap:      return { r.getRight() - 150, y + 2, 44, h - 4 };
+        case Reverse:   return { r.getRight() - 102, y + 2, 38, h - 4 };
+        case PitchDown: return { r.getRight() - 58, y + 2, 24, h - 4 };
+        case PitchUp:   return { r.getRight() - 28, y + 2, 24, h - 4 };
         default:        return {};
     }
 }
@@ -75,19 +76,20 @@ StudioView::Col StudioView::colAt (int row, Point<float> p) const
 void StudioView::paint (Graphics& g)
 {
     auto b = getLocalBounds().toFloat();
-    g.setColour (Colour (0xea070a0e));
+    const auto& th = lp::ui::theme (proc.themeIndex.load());
+    g.setColour (th.body);
     g.fillRoundedRectangle (b, 14.0f);
     const auto st = proc.songJob.getStatus();
-    const Colour txt (0xffe8eef3), dim (0x99e8eef3), accent (0xff27b4ea);
+    const Colour txt = th.ink, dim = th.inkDim, accent = th.grass;
 
-    g.setFont (font (11.0f, lp::ui::Medium, 0.12f));
+    g.setColour (th.line);
+    g.drawRoundedRectangle (b.reduced (0.5f), 14.0f, 1.0f);
+    g.setFont (lp::ui::mono (10.0f, false, 0.14f));
     g.setColour (dim);
     auto head = Rectangle<float> (12.0f, 8.0f, b.getWidth() - 24.0f, 16.0f);
-    g.drawText ("TRACKS", head, Justification::centredLeft, false);
-    const std::pair<const char*, float> headers[] = { { "volume", 272.0f }, { "pan", 368.0f }, { "tone", 424.0f },
-                                                      { "swap", 490.0f }, { "rev", 534.0f }, { "pitch", 578.0f } };
-    for (auto& [label, x] : headers)
-        g.drawText (label, Rectangle<float> (x, 8.0f, 60.0f, 16.0f), Justification::centredLeft, false);
+    g.drawText ("TRACKS", head.withTrimmedLeft (6.0f), Justification::centredLeft, false);
+    for (auto [label, c] : { std::pair { "VOLUME", Volume }, { "PAN", Pan }, { "TONE", Tone }, { "SWAP", Swap }, { "REV", Reverse }, { "PITCH", PitchDown } })
+        g.drawText (label, Rectangle<float> (colBounds (scroll, c).getX(), 8.0f, 80.0f, 16.0f), Justification::centredLeft, false);
     if (st.editing)
     {
         g.setColour (accent);
@@ -125,9 +127,9 @@ void StudioView::paint (Graphics& g)
             g.drawText (label, r, Justification::centred, false);
         };
         pill (colBounds (i, Mute), "M", m.mute.load(), Colour (0xfff2a33a));
-        pill (colBounds (i, Solo), "S", m.solo.load(), Colour (0xff7fdcff));
+        pill (colBounds (i, Solo), "S", m.solo.load(), th.grassLight);
 
-        auto nameArea = Rectangle<float> (row.getX() + 50, row.getY(), 204, row.getHeight());
+        auto nameArea = Rectangle<float> (row.getX() + 58, row.getY(), row.getWidth() * 0.42f - 70, row.getHeight());
         g.setColour (txt);
         g.setFont (font (12.0f, lp::ui::Medium));
         String name = t.name;

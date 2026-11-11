@@ -48,7 +48,9 @@ juce_add_plugin(LivePlanet
 juce_add_binary_data(LivePlanetAssets SOURCES
     Resources/fonts/SpaceGrotesk-Light.ttf
     Resources/fonts/SpaceGrotesk-Medium.ttf
-    Resources/fonts/SpaceGrotesk-Bold.ttf)
+    Resources/fonts/SpaceGrotesk-Bold.ttf
+    Resources/fonts/SpaceMono-Regular.ttf
+    Resources/fonts/SpaceMono-Bold.ttf)
 
 target_sources(LivePlanet PRIVATE
     ${LP_ENGINE_SOURCES}

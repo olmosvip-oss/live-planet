@@ -137,6 +137,9 @@ public:
         s.profile.lowSustain = status.profile.lowSustain;
         s.profile.tone = status.profile.tone;
         s.profile.brightness = status.profile.brightness;
+        s.profile.hasStems = status.profile.hasStems;
+        s.profile.vocalsHeard = status.profile.vocalsHeard;
+        s.profile.stemDb = status.profile.stemDb;
         for (auto& sec : status.profile.sections)
             s.profile.sections.push_back ({ sec.label, sec.startBar, sec.bars, sec.energy, {}, {} });
         s.haveSong = status.haveSong;

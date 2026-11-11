@@ -1,13 +1,14 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
-#include <juce_opengl/juce_opengl.h>
 #include "PluginProcessor.h"
 
 namespace lp::ui
 {
     enum Weight { Light, Medium, Bold };
     juce::Font font (float size, Weight w = Light, float kerning = 0.0f);
+    // small uppercase labels, buttons and numbers
+    juce::Font mono (float size, bool bold = false, float kerning = 0.08f);
 
     // the colour of the device body
     struct Theme
@@ -19,6 +20,8 @@ namespace lp::ui
     };
     const Theme& theme (int index);
     constexpr int numThemes = 4;
+    // the product's name, as shown in the wordmark (one place to change it)
+    inline const char* productName() { return "LIVE PLANET"; }
 }
 
 class LivePlanetLookAndFeel : public juce::LookAndFeel_V4
@@ -52,6 +55,20 @@ private:
     juce::StringArray labels;
     std::function<int()> getter;
     std::function<void (int)> setter;
+    const lp::ui::Theme*& th;
+};
+
+// A row of filter chips for a choice parameter ("AUTO  TRAP  HOUSE ...")
+class ChoiceChips : public juce::Component
+{
+public:
+    ChoiceChips (juce::RangedAudioParameter& p, const lp::ui::Theme*& theme) : param (p), th (theme) {}
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    juce::Rectangle<float> chip (int i) const;
+    juce::RangedAudioParameter& param;
     const lp::ui::Theme*& th;
 };
 
@@ -156,7 +173,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseUp (const juce::MouseEvent&) override;
-    juce::Rectangle<int> dropZone() const { return getLocalBounds().removeFromTop (44); }
+    juce::Rectangle<int> dropZone() const { return hero.withTrimmedBottom (96); }
     void refresh(); // update the button from the message thread (never while drawing)
     juce::TextEditor promptBox;     // "describe your song"
     juce::String autoDescription, describedRef; // what the box was filled with from your reference
@@ -166,12 +183,13 @@ private:
     const lp::ui::Theme*& th;
     juce::ToggleButton newKey { "new key" }, useSamples { "my samples" }, playWith { "play it with my song" }, samplesOnly { "samples only" }, dawTempo { "daw tempo" };
     Segmented length;
-    std::unique_ptr<Stepper> style;
+    std::unique_ptr<ChoiceChips> style;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> useSamplesAtt, playWithAtt, samplesOnlyAtt, dawTempoAtt;
     juce::TextButton write { "write a song" };
     bool full = true;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Rectangle<float> scanLink, folderLink;
+    juce::Rectangle<int> hero, settings;
 };
 
 // Song mode, on the screen: the song's sections as a timeline, and progress
@@ -247,7 +265,6 @@ private:
 
 class LivePlanetEditor : public juce::AudioProcessorEditor,
                          public juce::FileDragAndDropTarget,
-                         private juce::OpenGLRenderer,
                          private juce::Timer
 {
 public:
@@ -265,15 +282,12 @@ public:
     void fileDragExit (const juce::StringArray&) override { dragging = false; repaint(); }
 
 private:
-    void newOpenGLContextCreated() override;
-    void renderOpenGL() override;
-    void openGLContextClosing() override;
-
     void timerCallback() override;
     void runSearch();
     void setPage (int p);
     void applyTheme();
-    void paintScreen (juce::Graphics&);
+    enum Page { Write = 0, Studio, Sound, Sky };
+    juce::Rectangle<int> tabBounds (int i) const;
 
     struct Knob
     {
@@ -282,39 +296,12 @@ private:
     };
     Knob& addKnob (const char* id, const juce::String& name, float hue, int size);
 
-    struct SceneState
-    {
-        float w1[4] {}, w2[4] {}, w3[4] {};
-        float cityLon = 0;
-        float palA[3] {}, palB[3] {}, palC[3] {};
-        float notes[24 * 4] {};
-        int noteCount = 0;
-        float planet[4] {};
-        float screen[4] {}; // x, y (from bottom), w, h in points
-        float size[2] { 1120, 720 };
-    };
-
-    struct NoteFx { float hue; int kind; double born; float seed; double life; };
-    struct LaneDot { int step; int note; int kind; double born; float hue; };
-
     LivePlanetProcessor& proc;
     LivePlanetLookAndFeel lnf;
-    juce::OpenGLContext gl;
-    std::unique_ptr<juce::OpenGLShaderProgram> shader;
-    GLuint vbo = 0;
-    std::atomic<bool> shaderFailed { false };
-
-    juce::SpinLock sceneLock;
-    SceneState scene;
-    std::vector<NoteFx> fx;
-    std::vector<LaneDot> lane;
-    double startMs = 0, stepClock = 0;
-    int lastUiStep = -1;
-    float dayAmt = 1.0f, flash = 0.0f, smoothLat = 0.6f, smoothLon = 2.4f;
-    bool haveCity = false;
+    double startMs = 0;
 
     juce::TextEditor cityBox;
-    Segmented liveSwitch, pageSwitch, keySwitch;
+    Segmented liveSwitch, keySwitch;
     SoundKeys keys;
     PlayButton playButton;
     PresetBrowser presetBrowser;
@@ -326,7 +313,7 @@ private:
     FilePill pillMidi, pillStems, pillMix, pillHelper, pillFolder;
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;
-    juce::TextButton loadButton { "load sample" };
+    juce::TextButton loadButton { "Load sample" };
     juce::ToggleButton dayToggle { "daylight" }, thunderToggle { "thunder" };
 
     std::vector<std::unique_ptr<Knob>> knobs;
@@ -334,9 +321,8 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> dayAtt, thunderAtt;
     std::unique_ptr<juce::FileChooser> chooser;
 
-    juce::Rectangle<int> bezel, screen, infoCard, pageCard, rightPlate, plateMix, plateTex, plateFx;
-    juce::Image topiary;
-    const lp::ui::Theme* topiaryTheme = nullptr;
+    // cards on each page
+    juce::Rectangle<int> cardTimeline, cardInstrument, cardSky, cardWeather, plateMix, plateTex, plateFx;
     int page = 0;
     bool dragging = false;
 
