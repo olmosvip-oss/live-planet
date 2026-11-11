@@ -745,9 +745,17 @@ static int makeFromReference (const juce::File& refFile, const juce::File& outDi
     rd->read (&b, 0, n, 0, true, true);
     std::vector<float> mono ((size_t) n);
     for (int i = 0; i < n; ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
-    auto prof = analyse (mono.data(), n, rd->sampleRate);
-    std::printf ("heard: %.1f bpm, %s %s, %d sections, density %.2f\n", prof.bpm, lp::noteName (prof.key), prof.minor ? "minor" : "major",
-                 (int) prof.sections.size(), prof.density);
+    const auto hint0 = Library::parse (refFile, refFile.getParentDirectory());
+    auto prof = analyse (mono.data(), n, rd->sampleRate, hint0.bpm >= 60.0 && hint0.bpm <= 200.0 ? hint0.bpm : 0.0);
+    std::printf ("heard: %.1f bpm, %s %s, %d sections, density %.2f, sustain %.2f, 808 held %.2f\n", prof.bpm, lp::noteName (prof.key), prof.minor ? "minor" : "major",
+                 (int) prof.sections.size(), prof.density, prof.sustain, prof.lowSustain);
+    for (auto* row : { &prof.grooveLow, &prof.grooveMid, &prof.grooveHigh })
+    {
+        std::printf ("  %s ", row == &prof.grooveLow ? "kick " : row == &prof.grooveMid ? "snare" : "hats ");
+        for (float v : *row) std::printf ("%c", v > 0.66f ? '#' : v > 0.4f ? '+' : v > 0.2f ? '.' : ' ');
+        std::printf ("|\n");
+    }
+    if (std::getenv ("LP_ANALYSE_ONLY")) return 0;
     const auto hint = Library::parse (refFile, refFile.getParentDirectory());
     if (prof.valid && hint.bpm >= 60.0 && hint.bpm <= 200.0) prof.bpm = hint.bpm;
     if (prof.valid && hint.key >= 0) { prof.key = hint.key; prof.minor = hint.minor; }

@@ -216,12 +216,23 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
     }
 
     // ---- instruments
-    const auto main = o.mainSound == lp::SoundId::Auto ? lp::autoSoundFor (sky) : o.mainSound;
+    // a reference with long, held, singing notes gets held sounds; a plucky one gets plucks
+    const bool sustained = ref.valid && ref.sustain > 0.83f;
+    const bool modern = song.style == Style::Trap || song.style == Style::Electronic;
+    auto main = o.mainSound == lp::SoundId::Auto ? lp::autoSoundFor (sky) : o.mainSound;
+    if (sustained && o.mainSound == lp::SoundId::Auto)
+        main = modern ? (rng.chance (0.5f) ? lp::SoundId::Vapor : lp::SoundId::Choir) : (rng.chance (0.5f) ? lp::SoundId::Strings : lp::SoundId::Organ);
     const bool mainStruck = lp::profileFor (main).padStruck;
-    const lp::SoundId melodySound = mainStruck ? (song.minor ? lp::SoundId::Ocarina : lp::SoundId::Glass)
-                                               : std::array<lp::SoundId, 4> { lp::SoundId::Rhodes, lp::SoundId::Kalimba, lp::SoundId::Vibes, lp::SoundId::MusicBox }[(size_t) rng.i (4)];
-    const lp::SoundId counterSound = melodySound == lp::SoundId::Kalimba ? lp::SoundId::MusicBox : lp::SoundId::Kalimba;
-    const lp::SoundId padSound = song.minor ? lp::SoundId::Choir : lp::SoundId::Strings;
+    lp::SoundId melodySound = mainStruck ? (song.minor ? lp::SoundId::Ocarina : lp::SoundId::Glass)
+                                         : std::array<lp::SoundId, 4> { lp::SoundId::Rhodes, lp::SoundId::Kalimba, lp::SoundId::Vibes, lp::SoundId::MusicBox }[(size_t) rng.i (4)];
+    lp::SoundId counterSound = melodySound == lp::SoundId::Kalimba ? lp::SoundId::MusicBox : lp::SoundId::Kalimba;
+    lp::SoundId padSound = song.minor ? lp::SoundId::Choir : lp::SoundId::Strings;
+    if (sustained)
+    {
+        melodySound = std::array<lp::SoundId, 3> { lp::SoundId::Ocarina, lp::SoundId::Melodica, lp::SoundId::Glass }[(size_t) rng.i (3)];
+        counterSound = modern ? lp::SoundId::Celesta : lp::SoundId::Vibes;  // a quiet bell on top
+        padSound = main == lp::SoundId::Choir ? lp::SoundId::Strings : lp::SoundId::Choir;
+    }
 
     Part chords { "chords", PartKind::Chords, main, -2.0f, {} };
     Part melody { "melody", PartKind::Melody, melodySound, 0.0f, {} };
@@ -305,8 +316,8 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
                     }
                 lastVoicing = voicing;
             }
-            if (isIntro || isOutro || e < 0.35f)
-                for (auto n : voicing) chords.notes.push_back ({ t0, 3.9, n, (0.5f + vj) * fade });
+            if (isIntro || isOutro || e < 0.35f || sustained)
+                for (auto n : voicing) chords.notes.push_back ({ t0, 3.95, n, (0.5f + vj) * fade });
             else if (density < 0.45f)
                 for (double off : { 0.0, 2.0 })
                     for (auto n : voicing) chords.notes.push_back ({ t0 + off, 1.9, n, 0.55f + vj + (off == 0 ? 0.08f : 0.0f) });
@@ -323,9 +334,20 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
             if (song.style == Style::Trap && (! isIntro || e > 0.4f))
             {
                 const int n808 = bassNote - 12 + (bassNote - 12 < 29 ? 12 : 0); // deep but audible
-                bass.notes.push_back ({ t0, 0.7, n808, 0.9f * fade });
-                bass.notes.push_back ({ t0 + 2.5, 1.4, n808, 0.85f * fade });
-                if (e > 0.6f && rng.chance (0.5f)) bass.notes.push_back ({ t0 + 3.5, 0.45, n808 + 12, 0.7f });
+                if (ref.valid && ref.lowSustain > 0.62f)
+                {
+                    // held 808: the root rings, then moves; overlapping notes make it glide
+                    const int fifth = n808 + 7 - (n808 + 7 > 40 ? 12 : 0);
+                    const int second = rng.chance (0.4f) ? fifth : (rng.chance (0.5f) ? n808 + 12 : n808);
+                    bass.notes.push_back ({ t0, second == n808 ? 2.45 : 2.6, n808, 0.9f * fade });
+                    bass.notes.push_back ({ t0 + 2.5, 1.45, second, 0.85f * fade });
+                }
+                else
+                {
+                    bass.notes.push_back ({ t0, 0.7, n808, 0.9f * fade });
+                    bass.notes.push_back ({ t0 + 2.5, 1.4, n808, 0.85f * fade });
+                    if (e > 0.6f && rng.chance (0.5f)) bass.notes.push_back ({ t0 + 3.5, 0.45, n808 + 12, 0.7f });
+                }
             }
             else if (song.style == Style::House && (! isIntro || e > 0.4f))
             {
@@ -397,14 +419,27 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
                 if (ref.valid && ref.hasGroove && ! (isIntro || isOutro))
                 {
                     // the reference's groove (where its hits land), not its sound
-                    const float lift = big ? 0.0f : 0.12f; // quieter sections keep only the strongest hits
+                    const float lift = big ? 0.0f : 0.08f; // quieter sections keep only the strongest hits
+                    bool kick1 = false, snare = false, hats = false;
                     for (int st = 0; st < 16; ++st)
                     {
                         const double at = st * 0.25;
                         const float lo = ref.grooveLow[(size_t) st], mi = ref.grooveMid[(size_t) st], hiS = ref.grooveHigh[(size_t) st];
-                        if (lo > 0.5f + lift && ! (mi > lo && mi > 0.6f)) hit (at, 36, 0.6f + 0.4f * lo);
-                        if (mi > 0.55f + lift && mi >= lo * 0.8f) hit (at, big ? 39 : 38, 0.55f + 0.4f * mi);
-                        if (hiS > 0.3f + lift * 0.5f) hit (at, 42, 0.25f + 0.4f * hiS);
+                        if (lo > 0.5f + lift && ! (mi > lo && mi > 0.6f)) { hit (at, 36, 0.6f + 0.4f * lo); kick1 = kick1 || st == 0; }
+                        if (mi > 0.38f + lift && mi >= lo * 0.8f && st % 2 == 0) { hit (at, big ? 39 : 38, 0.55f + 0.4f * mi); snare = true; }
+                        if (hiS > 0.3f + lift * 0.5f && song.style != Style::Trap) { hit (at, 42, 0.25f + 0.4f * hiS); hats = true; }
+                    }
+                    if (! kick1) hit (0.0, 36, 0.9f);
+                    if (! snare) // a backbeat, always
+                    {
+                        if (song.style == Style::Trap) hit (2.0, 39, 0.95f);
+                        else { hit (1.0, 38, 0.9f); hit (3.0, 38, 0.9f); }
+                    }
+                    if (song.style == Style::Trap || ! hats) // steady hats under everything (trap: 8ths, 16ths when busy)
+                    {
+                        const double step = song.style == Style::Trap && (ref.density > 0.5f || big) ? 0.25 : 0.5;
+                        for (double h = 0; h < 4.0 - 1e-6; h += step)
+                            hit (h, 42, std::fmod (h, 1.0) == 0.0 ? 0.5f : (std::fmod (h, 0.5) == 0.0 ? 0.38f : 0.26f));
                     }
                     if (song.style == Style::Trap && big && rng.chance (0.5f)) // a roll now and then
                     {
@@ -489,6 +524,15 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
     for (auto* part : { &chords, &melody, &counter, &pad, &bass, &drums })
         if (! part->notes.empty())
             song.parts.push_back (*part);
+    // held notes: each melody note rings until the next one (like a singer or a lead), at most 2 beats
+    if (sustained)
+        for (auto& p : song.parts)
+            if (p.kind == PartKind::Melody)
+            {
+                std::sort (p.notes.begin(), p.notes.end(), [] (const Note& a, const Note& b) { return a.beat < b.beat; });
+                for (size_t k = 0; k + 1 < p.notes.size(); ++k)
+                    p.notes[k].length = std::max (p.notes[k].length, std::min (2.0, p.notes[k + 1].beat - p.notes[k].beat - 0.02));
+            }
     return song;
 }
 

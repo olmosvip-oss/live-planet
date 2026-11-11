@@ -60,12 +60,15 @@ struct Profile
     float brightness = 0.5f;    // how bright the sound is, 0..1
     double lengthSeconds = 0.0;
     Tone tone;                  // its overall sound
+    float sustain = 0.5f;       // 0 short, plucky notes .. 1 long, held, singing notes
+    float lowSustain = 0.5f;    // 0 punchy bass hits .. 1 a constant, held 808
     std::vector<RefSection> sections;
     juce::String sourceName;
 };
 
 // Analyses mono audio. Runs in well under a second per minute of music.
-Profile analyse (const float* mono, int numSamples, double sampleRate);
+// knownBpm > 0: the tempo is already known (say, from the file name), so the groove and sections use its grid
+Profile analyse (const float* mono, int numSamples, double sampleRate, double knownBpm = 0.0);
 
 // What the ear heard: how well every key fits ([key + 12 * minor]), and whether a third was heard
 struct KeyReading { std::array<float, 24> scores {}; float best = 0; float tuningCents = 0; bool hasThird = true; };

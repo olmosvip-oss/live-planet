@@ -211,7 +211,7 @@ Tone measureTone (const float* x, int n, double sr)
     return t;
 }
 
-Profile analyse (const float* input, int numSamples, double sampleRate)
+Profile analyse (const float* input, int numSamples, double sampleRate, double knownBpm)
 {
     Profile p;
     if (numSamples < (int) (sampleRate * 8.0)) return p;
@@ -298,6 +298,7 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
         }
         std::vector<cpx> b2 (N2);
         std::vector<std::vector<Peak>> winPeaks;
+        std::vector<double> lowEnergy;
         std::vector<Peak> allPeaks;
         for (int start = 0; start + N2 < (int) x.size(); start += hop2)
         {
@@ -305,9 +306,39 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
             fft (b2);
             winPeaks.emplace_back();
             findPeaks (b2, N2, sr, 50.0, 2500.0, winPeaks.back());
+            {
+                double low = 0;
+                for (int k = (int) (40.0 * N2 / sr); k <= (int) (120.0 * N2 / sr); ++k) low += std::norm (b2[(size_t) k]);
+                lowEnergy.push_back (low);
+            }
             if (winPeaks.size() % 3 == 0) allPeaks.insert (allPeaks.end(), winPeaks.back().begin(), winPeaks.back().end());
         }
         const double off = tuningOffset (allPeaks);
+        // sustain: do the melodic notes (250 Hz - 2.5 kHz) carry on at the same level into the next moment?
+        {
+            double held = 0, all = 0;
+            for (size_t w = 0; w + 1 < winPeaks.size(); ++w)
+                for (auto& pk : winPeaks[w])
+                {
+                    if (pk.freq < 250.0f || pk.freq > 2500.0f) continue;
+                    float next = 0;
+                    for (auto& q : winPeaks[w + 1])
+                        if (std::abs (q.freq / pk.freq - 1.0f) < 0.015f) next = std::max (next, q.w);
+                    all += pk.w;
+                    held += pk.w * std::min (1.0f, next / pk.w);
+                }
+            p.sustain = all > 0 ? (float) (held / all) : 0.5f;
+        }
+        // 808: how much of the time the low end is full (vs. short hits with gaps)
+        if (! lowEnergy.empty())
+        {
+            auto sorted = lowEnergy;
+            std::sort (sorted.begin(), sorted.end());
+            const double loud = sorted[(size_t) (sorted.size() * 9 / 10)];
+            int full = 0;
+            for (double v : lowEnergy) full += v > loud * 0.3 ? 1 : 0;
+            p.lowSustain = (float) full / (float) lowEnergy.size();
+        }
         size_t wi = 0;
         for (int start = 0; start + N2 < (int) x.size(); start += hop2, ++wi)
         {
@@ -388,6 +419,7 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
         const double hitsPerBeat = hits0 / (frames / (fps * 60.0 / p.bpm));
         if (p.bpm < 85.0 && hitsPerBeat > 2.2 && p.bpm * 2.0 <= 170.0) p.bpm *= 2.0; // a "70" with rolling 16ths is really 140
     }
+    if (knownBpm >= 40.0) p.bpm = knownBpm; // the tempo is known (e.g. from the file name): measure everything on its grid
     const double beat = fps * 60.0 / p.bpm;
 
     // beat phase, then which beat is the downbeat (strongest low end)

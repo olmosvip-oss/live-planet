@@ -139,7 +139,7 @@ namespace
     struct BassSynth
     {
         double sr = 48000;
-        struct V { int note = 0; float vel = 0, env = 0; bool on = false, active = false; double phase = 0; };
+        struct V { int note = 0; float vel = 0, env = 0; bool on = false, active = false; double phase = 0, freq = 0, age = 0; };
         std::array<V, 4> voices {};
         float lowpass = 0;
 
@@ -148,8 +148,17 @@ namespace
 
         void noteOn (int note, float vel)
         {
+            if (is808)
+                for (auto& v : voices)
+                    if (v.active && v.on && v.note != note)
+                    {
+                        // a new note while one rings: slide to it (the trap 808 glide)
+                        v.note = note;
+                        v.vel = std::max (v.vel, vel);
+                        return;
+                    }
             for (auto& v : voices) if (v.active && v.on) v.on = false; // one note at a time
-            for (auto& v : voices) if (! v.active) { v = { note, vel, 0.0f, true, true, 0.0 }; return; }
+            for (auto& v : voices) if (! v.active) { v = { note, vel, 0.0f, true, true, 0.0, mtof ((float) note), 0.0 }; return; }
         }
         void noteOff (int note) { for (auto& v : voices) if (v.note == note) v.on = false; }
 
@@ -168,9 +177,11 @@ namespace
                     double f = mtof ((float) v.note);
                     if (is808)
                     {
-                        // an 808: a punchy pitch drop at the start, a long round tail, a little grit
-                        const double age = v.phase / (2.0 * juce::MathConstants<double>::pi * f);
-                        f *= 1.0 + 1.5 * std::exp (-age * 40.0);
+                        // an 808: a punchy pitch drop at the start, a long round tail, a little grit,
+                        // and a smooth slide when it moves to a new note while ringing
+                        v.freq = v.freq <= 0 ? f : v.freq + (f - v.freq) * (1.0 - std::exp (-1.0 / (0.07 * sr)));
+                        v.age += 1.0 / sr;
+                        f = v.freq * (1.0 + 1.5 * std::exp (-v.age * 40.0));
                     }
                     v.phase += 2.0 * juce::MathConstants<double>::pi * f / sr;
                     const float ph = (float) v.phase;
@@ -494,6 +505,7 @@ namespace
             bool songHasBass = false;
             for (auto& p : song.parts) songHasBass = songHasBass || isBassPart (p);
             const bool bass = isBassPart (part);
+            const bool is808 = part.kind == PartKind::Bass && part.variant == 1;
             if (! bass && songHasBass && part.kind == PartKind::Loop)
             {
                 for (int ch = 0; ch < buf.getNumChannels(); ++ch)
@@ -510,7 +522,7 @@ namespace
                 if (p.kind == PartKind::Drums)
                     for (auto& nt : p.notes)
                         if (nt.pitch == 36) kicks.push_back ((int) (nt.beat * spb));
-            if (! kicks.empty())
+            if (! kicks.empty() && ! is808) // an 808 is the low end itself: never ducked
             {
                 std::sort (kicks.begin(), kicks.end());
                 const float depth = juce::Decibels::decibelsToGain (bass ? -5.0f : -2.0f);

@@ -276,11 +276,12 @@ private:
             mono[(size_t) i] = v / (float) buf.getNumChannels();
         }
         setStage (Stage::Listening, 0.5f, "finding tempo, key and sections...");
-        auto profile = lp::song::analyse (mono.data(), len, reader->sampleRate);
-        profile.sourceName = file.getFileNameWithoutExtension();
-        // producers often put the tempo and key in the name ("todavia-140-cm"): trust that over listening
+        // producers often put the tempo and key in the name ("todavia-140-cm"): trust that over listening,
+        // and measure the groove and sections on that tempo's grid
         const auto hint = lp::song::Library::parse (file, file.getParentDirectory());
-        if (profile.valid && hint.bpm >= 60.0 && hint.bpm <= 200.0) profile.bpm = hint.bpm;
+        const double knownBpm = hint.bpm >= 60.0 && hint.bpm <= 200.0 ? hint.bpm : 0.0;
+        auto profile = lp::song::analyse (mono.data(), len, reader->sampleRate, knownBpm);
+        profile.sourceName = file.getFileNameWithoutExtension();
         if (profile.valid && hint.key >= 0) { profile.key = hint.key; profile.minor = hint.minor; }
         const juce::ScopedLock sl (lock);
         if (! profile.valid)
