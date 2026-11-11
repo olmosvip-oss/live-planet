@@ -156,8 +156,9 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseUp (const juce::MouseEvent&) override;
-    juce::Rectangle<int> dropZone() const { return getLocalBounds().removeFromTop (50); }
+    juce::Rectangle<int> dropZone() const { return getLocalBounds().removeFromTop (44); }
     void refresh(); // update the button from the message thread (never while drawing)
+    juce::TextEditor promptBox;     // "describe your song"
 
 private:
     LivePlanetProcessor& proc;

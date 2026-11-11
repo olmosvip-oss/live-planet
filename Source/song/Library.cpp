@@ -267,6 +267,7 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
         // a full kit counts; a huge pack doesn't win just for being huge, so different kits get their turn
         float sc = 0;
         for (int v : c) sc += (float) std::min (v, 6);
+        for (auto& w : target.genreWords) if (pack.containsIgnoreCase (w)) sc += 12.0f; // the genre you asked for
         kitPacks.push_back ({ sc + rng.nextFloat() * 14.0f, pack });
     }
     std::sort (kitPacks.begin(), kitPacks.end(), [] (auto& a, auto& b) { return a.first > b.first; });
@@ -319,6 +320,7 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
         for (double m : { 0.5, 1.0, 2.0 }) best = std::min (best, std::abs (ratio * m - 1.0));
         if (best > 0.10) continue;
         float score = (sameKey ? 2.0f : 1.0f) + ((e.styles & styleBit) ? 1.5f : 0.0f) + (float) (0.06 - best) * 20.0f + rng.nextFloat();
+        for (auto& w : target.genreWords) if (e.path.containsIgnoreCase (w)) { score += 3.0f; break; }
         loops.push_back ({ score, &e });
     }
     std::sort (loops.begin(), loops.end(), [] (auto& a, auto& b) { return a.first > b.first; });
@@ -371,8 +373,9 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
             {
                 const auto& e = *o.entry;
                 const bool nameFits = e.key >= 0 && ((e.key == target.key && e.minor == target.minor) || (e.key == relative && e.minor != target.minor));
-                const float sc = (nameFits ? 4.0f : 0.0f) + (e.pack == picks.loop->pack ? 2.5f : 0.0f)
-                               + ((e.styles & styleBit) ? 1.5f : 0.0f) + rng.nextFloat() * 2.0f;
+                float sc = (nameFits ? 4.0f : 0.0f) + (e.pack == picks.loop->pack ? 2.5f : 0.0f)
+                         + ((e.styles & styleBit) ? 1.5f : 0.0f) + rng.nextFloat() * 2.0f;
+                for (auto& w : target.genreWords) if (e.path.containsIgnoreCase (w)) { sc += 3.0f; break; }
                 scored.push_back ({ sc, o });
             }
             std::sort (scored.begin(), scored.end(), [] (auto& a, auto& b) { return a.first > b.first; });
@@ -394,7 +397,7 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
                 if (kind != LoopKind::Drums && kind != LoopKind::Perc && kind != LoopKind::FX && tuneFor)
                 {
                     tune = tuneFor (o.entry->path);
-                    if (tune == 99 || std::abs (tune) > 3) continue; // no clear key, or too far to tune cleanly
+                    if (tune == 99) continue; // no clear key at all; any other key gets tuned into the song's
                 }
                 ok.push_back ({ o.entry, bars, tune });
                 if (ok.size() >= 5) break;

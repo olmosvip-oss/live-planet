@@ -93,7 +93,20 @@ Target chooseTarget (const Profile& ref, const lp::Weather& sky, const Options& 
     }
     if (t.style == Style::Trap && t.bpm < 100.0 && ! ref.valid) t.bpm *= 2.0; // trap counts in double time
     if (t.style == Style::House) t.bpm = juce::jlimit (116.0, 128.0, t.bpm);
-    if (o.dawBpm > 0.0) t.bpm = o.dawBpm; // your project's tempo wins
+    // what you typed: key and mood
+    if (o.promptKey >= 0) { t.key = o.promptKey; t.minor = o.promptMinor; }
+    else if (o.promptMood != 0) t.minor = o.promptMood < 0;
+    t.genreWords = o.genreWords;
+    // tempo: a typed tempo wins; a genre keeps your project's tempo when it suits the genre; else your project's tempo
+    if (o.promptBpm > 0.0) t.bpm = o.promptBpm;
+    else if (o.genreBpm > 0.0)
+    {
+        bool fits = false;
+        if (o.dawBpm > 0.0)
+            for (double m : { 0.5, 1.0, 2.0 }) fits = fits || (o.dawBpm * m >= o.genreLo - 0.5 && o.dawBpm * m <= o.genreHi + 0.5);
+        t.bpm = fits ? o.dawBpm : o.genreBpm;
+    }
+    else if (o.dawBpm > 0.0) t.bpm = o.dawBpm; // your project's tempo wins
     return t;
 }
 

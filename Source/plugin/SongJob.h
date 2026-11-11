@@ -312,6 +312,7 @@ private:
             onlySamples = samplesOnly && library.size() > 0;
         }
         auto opts = o;
+        juce::String noteForYou;
         lp::song::LibraryPicks picks;
         juce::String used;
         const auto target = lp::song::chooseTarget (ref, sky, o);
@@ -322,7 +323,8 @@ private:
                                                {}, [this, &target] (const juce::String& path) { return tuneFor (path, target.key, target.minor); });
             if (picks.loop != nullptr)
             {
-                opts.forceBpm = o.dawBpm > 0.0 ? o.dawBpm : (picks.loopBpm > 0 ? picks.loopBpm : picks.loop->bpm);
+                const bool tempoSet = o.dawBpm > 0.0 || o.promptBpm > 0.0 || o.genreBpm > 0.0;
+                opts.forceBpm = tempoSet ? target.bpm : (picks.loopBpm > 0 ? picks.loopBpm : picks.loop->bpm);
                 opts.forceKey = target.key;          // same key or its relative: the notes match either way
                 opts.forceMinor = target.minor;
             }
@@ -409,6 +411,19 @@ private:
             // the main loop's instrument leads; the others are shuffled by the song's seed
             juce::Random mix ((juce::int64) o.seed * 13 + 5);
             for (size_t i = melodic.size(); i > 2; --i) std::swap (melodic[i - 1], melodic[1 + (size_t) mix.nextInt ((int) i - 1)]);
+            // instruments you asked for go first (and all of them play)
+            size_t wanted = 0;
+            for (int want : o.wantKinds)
+                for (size_t i = wanted; i < melodic.size(); ++i)
+                    if ((int) melodic[i]->kind == want) { std::rotate (melodic.begin() + (long) wanted, melodic.begin() + (long) i, melodic.begin() + (long) i + 1); ++wanted; break; }
+            juce::StringArray missing;
+            for (int want : o.wantKinds)
+            {
+                bool found = false;
+                for (auto& c : picks.loopSet) found = found || (int) c.kind == want;
+                if (! found) missing.add (lp::song::loopKindName ((lp::song::LoopKind) want));
+            }
+            if (! missing.isEmpty()) noteForYou = "no " + missing.joinIntoString (" / ") + " loops in your library fit this song";
             const bool kit = ! song.drumSamples.empty();
             if (drumC != nullptr)
             {
@@ -420,6 +435,7 @@ private:
             if (melodic.size() > 0) addLoop (*melodic[0], lp::song::loopKindName (melodic[0]->kind), { "intro", "verse", "pre-chorus", "chorus", "outro" });
             if (melodic.size() > 1) addLoop (*melodic[1], lp::song::loopKindName (melodic[1]->kind), { "chorus", "bridge" });
             if (melodic.size() > 2) addLoop (*melodic[2], lp::song::loopKindName (melodic[2]->kind), { "pre-chorus", "chorus", "outro" });
+            if (melodic.size() > 3 && wanted > 3) addLoop (*melodic[3], lp::song::loopKindName (melodic[3]->kind), { "verse", "bridge" });
             if (padC != nullptr)   addLoop (*padC, "pad", { "intro", "bridge", "outro" });
             if (vocalC != nullptr) addLoop (*vocalC, "vocal", { "chorus", "bridge" });
             if (fxC != nullptr)    addLoop (*fxC, "fx", { "pre-chorus" });
@@ -475,6 +491,10 @@ private:
         status.stage = Stage::Done;
         status.progress = 1.0f;
         status.message = "\"" + song.title + "\" is ready. locators: drag the locators button onto any track in ableton";
+        if (o.dawBpm > 0.0 && std::abs (song.bpm - o.dawBpm) > 0.5)
+            status.message = "\"" + song.title + "\" is at " + juce::String (song.bpm, 0) + " bpm: set your project to " + juce::String (song.bpm, 0)
+                           + " (the locators helper does it for you)";
+        if (noteForYou.isNotEmpty()) status.message << ". " << noteForYou;
     }
 
     // semitones to put a sample in the song's key (99 = it has no clear key). Listens once per file.
@@ -596,7 +616,7 @@ private:
             const int b = songBars (e->path, e->bpm, song.bpm);
             if (b <= 0) continue;
             const int tune = tonal ? tuneFor (e->path, song.key, song.minor) : 0;
-            if (tune == 99 || std::abs (tune) > 3) continue;
+            if (tune == 99) continue;
             if (part.candidates.isEmpty()) bars = b;
             part.candidates.add (e->path);
             part.candidateTunes.add (tune);

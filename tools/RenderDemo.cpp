@@ -7,6 +7,7 @@
 #include "../Source/song/Song.h"
 #include "../Source/song/Library.h"
 #include "../Source/engine/SampleFx.h"
+#include "../Source/song/Prompt.h"
 
 namespace
 {
@@ -661,6 +662,20 @@ int fxTest()
     return 0;
 }
 
+int promptTest()
+{
+    const char* tries[] = { "dark trap 140 in F minor with piano and flute", "chill lofi beat with rhodes and vinyl vibes",
+                            "happy afrobeats with guitar, bells and vocal chops", "uk drill in a dark mood, 808s and strings",
+                            "deep house 124 Am with pads", "make me something like 90s boom bap in Eb major with horns",
+                            "drum and bass with a reese bass", "sad r&b, key of c#, 90 bpm, guitar", "I am making a pop song in the key of Bb" };
+    for (auto* t : tries)
+    {
+        auto p = lp::song::parsePrompt (t);
+        std::printf ("%-62s -> %s\n", t, p.summary.toRawUTF8());
+    }
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -677,6 +692,8 @@ int main (int argc, char** argv)
         return sampleTest (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--stretch")
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
+    if (argc > 1 && juce::String (argv[1]) == "--prompt")
+        return promptTest();
     if (argc > 1 && juce::String (argv[1]) == "--fx")
         return fxTest();
     if (argc > 1 && juce::String (argv[1]) == "--keys")

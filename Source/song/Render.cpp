@@ -336,7 +336,36 @@ namespace
     };
 
     // a simple time-preserving pitch shifter: two crossfading read heads on a delay line
+    void pitchShiftSimple (juce::AudioBuffer<float>& buf, int semis, double sr);
+
+    // moves the pitch without changing the length: resample (pitch and length change together),
+    // then stretch back to the original length with WSOLA. Clean even for big moves (up to 6+ semitones).
     void pitchShift (juce::AudioBuffer<float>& buf, int semis, double sr)
+    {
+        const int n = buf.getNumSamples();
+        if (semis == 0 || n < 16384) { pitchShiftSimple (buf, semis, sr); return; }
+        const double ratio = std::pow (2.0, semis / 12.0);
+        const int m = (int) ((n - 4) / ratio);
+        juce::AudioBuffer<float> rs (2, m);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float* x = buf.getReadPointer (std::min (ch, buf.getNumChannels() - 1));
+            float* y = rs.getWritePointer (ch);
+            for (int i = 0; i < m; ++i)
+            {
+                // 4-point Hermite interpolation
+                const double pos = i * ratio;
+                const int i1 = (int) pos;
+                const float f = (float) (pos - i1);
+                const float y0 = x[std::max (0, i1 - 1)], y1 = x[i1], y2 = x[std::min (n - 1, i1 + 1)], y3 = x[std::min (n - 1, i1 + 2)];
+                const float c1 = 0.5f * (y2 - y0), c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3, c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+                y[i] = ((c3 * f + c2) * f + c1) * f + y1;
+            }
+        }
+        buf = timeStretch (rs, n);
+    }
+
+    void pitchShiftSimple (juce::AudioBuffer<float>& buf, int semis, double sr)
     {
         const double ratio = std::pow (2.0, semis / 12.0);
         const int win = (int) (0.06 * sr);

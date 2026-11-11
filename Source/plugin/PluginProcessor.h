@@ -71,7 +71,8 @@ public:
     std::vector<float> fxL, fxR, sendL, sendR;
     std::atomic<bool> previewPlaying { false };
     std::atomic<double> previewPos { 0.0 };   // in 48 kHz samples
-    std::atomic<double> dawBpm { 0.0 };       // your project's tempo, as last reported
+    std::atomic<double> dawBpm { 0.0 };
+    juce::String songPrompt;                  // "describe your song" (message thread only)       // your project's tempo, as last reported
     std::atomic<double> playheadPos { 0.0 };  // where the song is right now (preview or DAW)
     int loadedStudioVersion = -1;
     juce::String getSampleName() const { return sampleName; }

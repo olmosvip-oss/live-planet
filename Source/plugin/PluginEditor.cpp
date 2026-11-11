@@ -2,6 +2,7 @@
 #include "PlanetShader.h"
 #include "BinaryData.h"
 #include "GrassArt.h"
+#include "../song/Prompt.h"
 
 using namespace juce;
 using lp::ui::font;
@@ -617,32 +618,46 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     dawTempo.setWantsKeyboardFocus (false);
     dawTempo.setTooltip ("write the song at your project's tempo so every loop lines up");
     dawTempoAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "dawtempo", dawTempo);
-    write.onClick = [this] { proc.makeSong (full, newKey.getToggleState()); repaint(); };
+    write.onClick = [this] { proc.songPrompt = promptBox.getText(); proc.makeSong (full, newKey.getToggleState()); repaint(); };
     addAndMakeVisible (write);
+
+    promptBox.setTextToShowWhenEmpty ("describe it: dark trap 140 in f minor with piano + flute", lp::ui::theme (0).inkDim);
+    promptBox.setFont (font (13.0f));
+    promptBox.setIndents (10, 5);
+    promptBox.setColour (TextEditor::backgroundColourId, Colours::transparentBlack);
+    promptBox.setColour (TextEditor::outlineColourId, Colours::transparentBlack);
+    promptBox.setColour (TextEditor::focusedOutlineColourId, Colours::transparentBlack);
+    promptBox.setText (p.songPrompt, false);
+    promptBox.onTextChange = [this] { proc.songPrompt = promptBox.getText(); repaint(); };
+    promptBox.onReturnKey = [this] { promptBox.giveAwayKeyboardFocus(); if (write.isEnabled()) write.triggerClick(); };
+    promptBox.onEscapeKey = [this] { promptBox.giveAwayKeyboardFocus(); };
+    addAndMakeVisible (promptBox);
 }
 
 void SongPanel::resized()
 {
     auto r = getLocalBounds();
-    r.removeFromTop (56);
-    auto row1 = r.removeFromTop (28);
+    r.removeFromTop (47);
+    promptBox.setBounds (r.removeFromTop (26));
+    r.removeFromTop (5);
+    auto row1 = r.removeFromTop (24);
     newKey.setBounds (row1.removeFromLeft (88));
     row1.removeFromLeft (4);
     dawTempo.setBounds (row1.removeFromLeft (96));
     row1.removeFromLeft (4);
     style->setBounds (row1);
-    r.removeFromTop (6);
-    auto row2 = r.removeFromTop (28);
+    r.removeFromTop (4);
+    auto row2 = r.removeFromTop (24);
     useSamples.setBounds (row2.removeFromLeft (124));
     row2.removeFromLeft (8);
     length.setBounds (row2);
-    r.removeFromTop (6);
-    auto row3 = r.removeFromTop (26);
+    r.removeFromTop (4);
+    auto row3 = r.removeFromTop (24);
     playWith.setBounds (row3.removeFromLeft (row3.getWidth() / 2 + 20));
     row3.removeFromLeft (8);
     samplesOnly.setBounds (row3);
-    r.removeFromTop (6);
-    write.setBounds (r.removeFromTop (30));
+    r.removeFromTop (5);
+    write.setBounds (r.removeFromTop (27));
 }
 
 void SongPanel::paint (Graphics& g)
@@ -657,7 +672,15 @@ void SongPanel::paint (Graphics& g)
     g.setColour (th->ink.withAlpha (0.35f));
     g.fillPath (dashed);
 
-    auto in = z.reduced (12.0f, 8.0f);
+    auto in = z.reduced (12.0f, 4.0f);
+
+    // the description box: an outline, and what was understood
+    {
+        auto pb = promptBox.getBounds().toFloat();
+        g.setColour (promptBox.hasKeyboardFocus (true) ? th->ink.withAlpha (0.6f) : th->ink.withAlpha (0.25f));
+        g.drawRoundedRectangle (pb.reduced (0.5f), 8.0f, 1.0f);
+    }
+    const auto understood = lp::song::parsePrompt (promptBox.getText());
     if (st.stage == SongJob::Stage::Listening)
     {
         g.setFont (font (13.5f));
@@ -681,10 +704,11 @@ void SongPanel::paint (Graphics& g)
     {
         g.setFont (font (13.5f, lp::ui::Medium));
         g.setColour (th->ink);
-        g.drawText ("drop a song you love here", in.removeFromTop (20.0f), Justification::centredLeft, false);
+        g.drawText ("drop a song you love here, or describe one below", in.removeFromTop (19.0f), Justification::centredLeft, false);
         g.setFont (font (12.0f));
-        g.setColour (th->inkDim);
-        g.drawText ("it learns the feel, never the melody. or skip it and let the weather lead.", in.removeFromTop (18.0f), Justification::centredLeft, true);
+        g.setColour (understood.any ? th->grass.darker (0.3f) : th->inkDim);
+        g.drawText (understood.any ? "making: " + understood.summary : String ("it learns the feel, never the melody."), in.removeFromTop (17.0f),
+                    Justification::centredLeft, true);
     }
 
     // status under the button
@@ -703,7 +727,8 @@ void SongPanel::paint (Graphics& g)
     g.setFont (font (12.0f));
     g.setColour (st.stage == SongJob::Stage::Failed ? Colour (0xffb5482b) : th->inkDim);
     String msg = st.message.toLowerCase();
-    if (st.stage == SongJob::Stage::Done && st.usedSamples.isNotEmpty()) msg = st.usedSamples.toLowerCase();
+    const bool important = st.message.contains ("set your project") || st.message.contains (". no ");
+    if (st.stage == SongJob::Stage::Done && st.usedSamples.isNotEmpty() && ! important) msg = st.usedSamples.toLowerCase();
     g.drawText (msg, msgLine, Justification::centredLeft, true);
 
     // your sample library
@@ -1060,6 +1085,10 @@ void LivePlanetEditor::applyTheme()
     cityBox.setColour (CaretComponent::caretColourId, lnf.th->ink);
     cityBox.setTextToShowWhenEmpty ("search any city...", lnf.th->inkDim);
     cityBox.applyColourToAllText (lnf.th->ink);
+    songPanel.promptBox.setColour (TextEditor::textColourId, lnf.th->ink);
+    songPanel.promptBox.setColour (CaretComponent::caretColourId, lnf.th->ink);
+    songPanel.promptBox.setTextToShowWhenEmpty ("describe it: dark trap 140 in f minor with piano + flute", lnf.th->inkDim);
+    songPanel.promptBox.applyColourToAllText (lnf.th->ink);
     for (auto* c : getChildren()) c->repaint();
     repaint();
 }
@@ -1506,6 +1535,9 @@ void LivePlanetEditor::mouseDown (const MouseEvent& e)
 {
     if (e.eventComponent != &cityBox && ! cityBox.isParentOf (e.eventComponent) && cityBox.hasKeyboardFocus (true))
         cityBox.giveAwayKeyboardFocus();
+    auto& pb = songPanel.promptBox;
+    if (e.eventComponent != &pb && ! pb.isParentOf (e.eventComponent) && pb.hasKeyboardFocus (true))
+        pb.giveAwayKeyboardFocus();
 }
 
 void LivePlanetEditor::paintOverChildren (Graphics& g)

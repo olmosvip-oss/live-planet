@@ -2,6 +2,7 @@
 #include "PluginEditor.h"
 #include "Presets.h"
 #include "AbletonHelper.h"
+#include "../song/Prompt.h"
 
 using APVTS = juce::AudioProcessorValueTreeState;
 
@@ -652,6 +653,24 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
     o.style = (int) params.getRawParameterValue ("songstyle")->load() - 1;
     if (params.getRawParameterValue ("dawtempo")->load() > 0.5f && dawBpm.load() > 30.0)
         o.dawBpm = std::round (dawBpm.load() * 100.0) / 100.0;
+    // "describe your song": genre, tempo, key, mood, instruments
+    const auto pr = lp::song::parsePrompt (songPrompt);
+    if (pr.any)
+    {
+        if (pr.genre != nullptr)
+        {
+            if (o.style < 0) o.style = (int) pr.genre->style; // the style switch still wins if you set it
+            o.genreLo = pr.genre->lo; o.genreHi = pr.genre->hi; o.genreBpm = pr.genre->typical;
+            for (auto* w : pr.genre->libraryWords) o.genreWords.add (w);
+        }
+        o.promptBpm = pr.bpm;
+        o.promptKey = pr.key;
+        o.promptMinor = pr.minor;
+        o.promptMood = pr.mood;
+        for (auto k : pr.instruments) o.wantKinds.push_back ((int) k);
+        if (pr.key >= 0) o.shiftKey = false;
+        if (pr.sketch) o.full = false;
+    }
     const int soundIdx = (int) params.getRawParameterValue ("sound")->load();
     o.mainSound = (soundIdx <= 0 || soundIdx >= kSampleChoice) ? lp::SoundId::Auto : (lp::SoundId) (soundIdx - 1);
 

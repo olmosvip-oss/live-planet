@@ -161,10 +161,22 @@ struct Options
     double dawBpm = 0.0;          // > 0: write the song at your DAW's tempo
     int forceKey = -1;            // ...and the key
     bool forceMinor = false;
+    // from "describe your song" (see Prompt.h)
+    double promptBpm = 0.0;       // a tempo you typed
+    double genreLo = 0.0, genreHi = 0.0, genreBpm = 0.0; // the genre's usual tempo range
+    int promptKey = -1;           // a key you typed
+    bool promptMinor = false;
+    int promptMood = 0;           // -1 dark, +1 bright
+    juce::StringArray genreWords;
+    std::vector<int> wantKinds;   // instruments you asked for (LoopKind)
 };
 
 // The tempo / key / groove a song would get before any sample choices
-struct Target { double bpm; int key; bool minor; Style style; };
+struct Target
+{
+    double bpm; int key; bool minor; Style style;
+    juce::StringArray genreWords; // from "describe your song": look for these in your sample folders
+};
 Target chooseTarget (const Profile& ref, const lp::Weather& sky, const Options& options);
 
 // Writes a song. With an invalid profile it uses the weather and a classic song shape instead.
