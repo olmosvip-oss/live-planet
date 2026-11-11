@@ -123,7 +123,16 @@ inline int loopTune (const KeyReading& r, bool clear, int nameKey, bool nameMino
 
 // ---------- the new song
 
-enum class PartKind { Chords, Melody, Counter, Pad, Bass, Drums, Loop };
+enum class PartKind { Chords, Melody, Counter, Pad, Bass, Drums, Loop, Fx };
+
+// One transition sound placed in the song (a riser, an impact...)
+struct FxHit
+{
+    juce::String path;
+    double beat = 0;        // where it lands, in beats
+    bool peakOnBeat = false; // risers / reverse swells: their loudest moment lands on the beat; others start on it
+    float gainDb = 0.0f;
+};
 
 // The groove of a song: which drum kit, which patterns, which bass.
 enum class Style { Dusty, BoomBap, Trap, House, Brushes, Electronic };
@@ -170,6 +179,9 @@ struct Part
     std::set<int> stutterBars;       // the last beat stutters
     std::set<int> gapBars;           // the last beat drops out (right before a chorus hits)
     std::set<int> swellBars;         // a reversed swell of the loop rising into the next bar
+    std::vector<FxHit> fxHits;       // Fx parts: the transition sounds and where they land
+    float mixDb = 0.0f;              // where it sits in the mix vs. its kind's usual level (lead up, background down)
+    float pan = 0.0f;                // -1 left .. 0 centre .. +1 right
 };
 
 struct Section

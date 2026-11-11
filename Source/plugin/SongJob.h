@@ -81,7 +81,7 @@ public:
 
     static juce::File libraryCache()
     {
-        return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("library.json");
+        return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("library-v2.json");
     }
 
     void makeSong (const lp::song::Options& o, const lp::song::RenderSettings& rs, const lp::Weather& sky, bool useLibrary, bool onlySamples = false)
@@ -440,6 +440,20 @@ private:
                 loop.loopBars = songBars (loop.samplePath, choice.options[0].entry->bpm, song.bpm);
                 if (loop.loopBars <= 0) return;
                 arrange (loop, song, role, kit);
+                // mixed by role: the lead and the low end up front and centred, the rest a little back and to the sides
+                switch (role)
+                {
+                    case Role::Main:     loop.mixDb = +2.0f; loop.pan = 0.0f;   break;
+                    case Role::Second:   loop.mixDb = -1.0f; loop.pan = -0.3f;  break;
+                    case Role::Third:    loop.mixDb = -3.0f; loop.pan = 0.35f;  break;
+                    case Role::Fourth:   loop.mixDb = -4.0f; loop.pan = -0.45f; break;
+                    case Role::Bass:     loop.mixDb = +4.0f; loop.pan = 0.0f;   break;
+                    case Role::DrumLoop: loop.mixDb = kit ? -1.0f : +3.0f; loop.pan = 0.0f; break;
+                    case Role::Perc:     loop.mixDb = -3.0f; loop.pan = 0.25f;  break;
+                    case Role::Pad:      loop.mixDb = -4.0f; loop.pan = 0.0f;   break;
+                    case Role::Vocal:    loop.mixDb = +1.0f; loop.pan = 0.0f;   break;
+                    case Role::Fx:       loop.mixDb = -3.0f; loop.pan = 0.0f;   break;
+                }
                 if (std::none_of (loop.barSrc.begin(), loop.barSrc.end(), [] (int v) { return v >= 0; }) && loop.swellBars.empty()) return;
                 loop.source = "splice: " + juce::File (loop.samplePath).getFileNameWithoutExtension();
                 loop.remix = remixText (loop, 0.0, song) + arrangementText (loop);
@@ -453,13 +467,37 @@ private:
                 addArranged (*melodic[i], lp::song::loopKindName (melodic[i]->kind), melodicRoles[i]);
             if (padC != nullptr)   addArranged (*padC, "pad", Role::Pad);
             if (vocalC != nullptr) addArranged (*vocalC, "vocal", Role::Vocal);
-            if (fxC != nullptr)    addArranged (*fxC, "fx", Role::Fx);
+            if (fxC != nullptr && library.fxOfKind (lp::song::SampleKind::Riser).empty()) addArranged (*fxC, "fx", Role::Fx);
         }
         else if (picks.loop != nullptr && ! picks.loopSet.empty())
             addLoop (picks.loopSet.front(), "loop", { "chorus", "bridge" });
 
+        // transition FX from your library at every change of section
+        if (useLib || onlySamples)
+        {
+            juce::StringArray packs;
+            packs.add (picks.drumPack);
+            for (auto& part : song.parts)
+                if (const auto* e = library.find (part.samplePath)) packs.addIfNotAlreadyThere (e->pack);
+            auto tr = makeTransitions (song, o.seed, packs, target.genreWords);
+            if (! tr.fxHits.empty())
+            {
+                // a crash sample takes over from the kit's stand-in crash on the chorus "one"
+                bool hasCrash = false;
+                for (auto& h : tr.fxHits) hasCrash = hasCrash || library.find (h.path) != nullptr && library.find (h.path)->kind == lp::song::SampleKind::Crash;
+                if (hasCrash)
+                    for (auto& part : song.parts)
+                        if (part.kind == lp::song::PartKind::Drums)
+                            for (auto& sec : song.sections)
+                                if (baseName (sec.name) == "chorus")
+                                    part.notes.erase (std::remove_if (part.notes.begin(), part.notes.end(), [&] (const lp::song::Note& n)
+                                        { return n.pitch == 46 && std::abs (n.beat - sec.startBar * 4.0) < 0.01; }), part.notes.end());
+                song.parts.push_back (tr);
+            }
+        }
+
         for (auto& part : song.parts)
-            if (part.kind == lp::song::PartKind::Loop || (part.kind == lp::song::PartKind::Drums && ! song.drumSamples.empty()))
+            if (part.kind == lp::song::PartKind::Loop || part.kind == lp::song::PartKind::Fx || (part.kind == lp::song::PartKind::Drums && ! song.drumSamples.empty()))
                 used << (used.isEmpty() ? "" : "  -  ") << juce::String (part.name) << ": " << part.source.fromFirstOccurrenceOf (": ", false, false);
 
         auto folder = songsFolder().getChildFile (juce::File::createLegalFileName (song.title));
@@ -607,7 +645,7 @@ private:
         t.candidate = p.candidate;
         t.sample = p.source.startsWith ("splice");
         const juce::String n (p.name);
-        if (p.kind == lp::song::PartKind::Drums || n.contains ("drum") || n == "percussion") t.group = 4;
+        if (p.kind == lp::song::PartKind::Drums || p.kind == lp::song::PartKind::Fx || n.contains ("drum") || n == "percussion") t.group = 4;
         else if (p.kind == lp::song::PartKind::Bass || n.contains ("bass"))                t.group = 3;
         else if (n == "keys" || n == "guitar" || n == "pad" || n == "strings" || n == "loop" || p.kind == lp::song::PartKind::Chords || p.kind == lp::song::PartKind::Pad)
             t.group = 1;
@@ -745,6 +783,15 @@ private:
                 part.source = "splice: " + juce::File (part.samplePath).getFileNameWithoutExtension();
                 part.remix = remixText (part, 0.0, song) + arrangementText (part);
             }
+            else if (part.kind == PK::Fx)
+            {
+                juce::StringArray packs;
+                for (auto& other : song.parts)
+                    if (const auto* e = library.find (other.samplePath)) packs.addIfNotAlreadyThere (e->pack);
+                const int next = part.candidate + 1;
+                part = makeTransitions (song, currentSeed + 1000u * (juce::uint32) next, packs, currentTarget.genreWords);
+                part.candidate = next;
+            }
             else if (part.kind == PK::Drums && ! song.drumSamples.empty() && part.candidates.size() > 1)
             {
                 part.candidate = (part.candidate + 1) % part.candidates.size();
@@ -866,6 +913,75 @@ private:
         // gaps and swells only where the part has something to do
         for (auto it = p.gapBars.begin(); it != p.gapBars.end();)
             it = (*it >= 0 && *it < total && p.barSrc[(size_t) *it] >= 0) ? std::next (it) : p.gapBars.erase (it);
+    }
+
+    // ---------- transitions: FX from your library at the right spots
+    lp::song::Part makeTransitions (const lp::song::Song& song, juce::uint32 seed, const juce::StringArray& preferPacks,
+                                    const juce::StringArray& genreWords)
+    {
+        using SK = lp::song::SampleKind;
+        lp::song::Part p;
+        p.name = "transitions";
+        p.kind = lp::song::PartKind::Fx;
+        juce::Random rng ((juce::int64) seed * 97 + 11);
+        // a couple of choices per kind, best fits first (same packs as the song, its genre), so it varies
+        auto choose = [&] (SK k, int howMany)
+        {
+            std::vector<std::pair<float, const lp::song::LibraryEntry*>> pool;
+            for (auto* e : library.fxOfKind (k))
+            {
+                float sc = rng.nextFloat() * 2.0f + (preferPacks.contains (e->pack) ? 3.0f : 0.0f);
+                for (auto& w : genreWords) if (e->path.containsIgnoreCase (w)) { sc += 2.0f; break; }
+                pool.push_back ({ sc, e });
+            }
+            std::sort (pool.begin(), pool.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+            juce::StringArray out;
+            for (size_t i = 0; i < pool.size() && out.size() < howMany; ++i) out.add (pool[i].second->path);
+            return out;
+        };
+        const auto risers = choose (SK::Riser, 2), reverses = choose (SK::ReverseFx, 2), impacts = choose (SK::Impact, 2),
+                   crashes = choose (SK::Crash, 1), downs = choose (SK::Downlifter, 2), subs = choose (SK::SubDrop, 1);
+        auto pick = [] (const juce::StringArray& a, int i) { return a.isEmpty() ? juce::String() : a[i % a.size()]; };
+        auto add = [&] (const juce::String& path, double beat, bool peak, float db)
+        {
+            if (path.isNotEmpty() && beat >= 0) p.fxHits.push_back ({ path, beat, peak, db });
+        };
+        int chorusNo = 0, chorusCount = 0;
+        for (auto& sec : song.sections) chorusCount += baseName (sec.name) == "chorus";
+        for (size_t si = 0; si < song.sections.size(); ++si)
+        {
+            const auto& sec = song.sections[si];
+            const auto base = baseName (sec.name);
+            const double at = sec.startBar * 4.0;
+            if (base == "chorus")
+            {
+                const bool last = ++chorusNo == chorusCount;
+                // into it: a riser (or a reverse swell, taking turns); the last chorus gets both
+                const bool useReverse = ! reverses.isEmpty() && (chorusNo % 2 == 0 || risers.isEmpty());
+                if (useReverse) add (pick (reverses, chorusNo), at, true, -6.0f);
+                else            add (pick (risers, chorusNo), at, true, -6.0f);
+                if (last && ! useReverse) add (pick (reverses, chorusNo + 1), at, true, -8.0f);
+                // on the "one": impact, crash, sub drop
+                add (pick (impacts, chorusNo), at, false, -4.0f);
+                add (pick (crashes, 0), at, false, -8.0f);
+                if (last || chorusNo == 1) add (pick (subs, 0), at, false, -5.0f);
+            }
+            else if (base == "bridge" || base == "outro" || (base == "verse" && sectionNumber (sec.name) >= 2))
+                add (pick (downs, (int) si), at, false, -8.0f); // the energy drops: a downlifter
+            else if (base == "verse" && si > 0)
+                add (! reverses.isEmpty() ? pick (reverses, 0) : pick (crashes, 0), at, ! reverses.isEmpty(), -9.0f); // a small lift out of the intro
+        }
+        int n = (int) p.fxHits.size();
+        p.source = n > 0 ? "splice: " + juce::String (n) + " transition fx" : juce::String();
+        juce::StringArray kinds;
+        if (! risers.isEmpty()) kinds.add ("risers landing on each chorus");
+        if (! reverses.isEmpty()) kinds.add ("reverse swells");
+        if (! impacts.isEmpty() || ! crashes.isEmpty()) kinds.add ("impacts / crashes on the downbeat");
+        if (! subs.isEmpty()) kinds.add ("sub drops");
+        if (! downs.isEmpty()) kinds.add ("downlifters where the energy drops");
+        p.remix = "placed by Live Planet: " + kinds.joinIntoString (", ") + ". swap for a different set";
+        p.candidate = 0;
+        return p;
     }
 
     // after a swap: the same plan, re-cut to the new loop's length

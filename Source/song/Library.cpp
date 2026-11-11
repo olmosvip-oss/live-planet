@@ -68,8 +68,21 @@ void Library::classifyKind (LibraryEntry& e, const juce::StringArray& tokens)
     e.kind = SampleKind::Other;
     e.loop = LoopKind::None;
     const bool isLoop = hasToken (tokens, { "loop", "loops" }) || (e.bpm > 0.0 && ! hasToken (tokens, { "oneshot", "one", "shot", "shots", "hit" }));
+    auto fxKind = [&]() -> SampleKind
+    {
+        const bool rev = hasToken (tokens, { "reverse", "reversed", "rev", "rvrs", "reverb_swell" });
+        if (hasToken (tokens, { "downlifter", "downlifters", "downsweep", "downer", "falldown" })) return SampleKind::Downlifter;
+        if (hasToken (tokens, { "riser", "risers", "uplifter", "uplifters", "build", "buildup", "upsweep", "rise", "rising", "tension" })) return SampleKind::Riser;
+        if (rev && hasToken (tokens, { "cymbal", "crash", "swell", "fx", "sfx", "reverb", "vox", "vocal", "piano", "snare" })) return SampleKind::ReverseFx;
+        if (hasToken (tokens, { "subdrop", "sub_drop", "drop" }) && hasToken (tokens, { "sub", "subdrop", "808", "bass" })) return SampleKind::SubDrop;
+        if (hasToken (tokens, { "impact", "impacts", "boom", "booms", "slam", "explosion", "hit_fx", "cinematic_hit" })) return SampleKind::Impact;
+        if (hasToken (tokens, { "crash", "crashes", "cymbal", "cymbals" })) return SampleKind::Crash;
+        if (hasToken (tokens, { "sweep", "sweeps", "whoosh", "whooshes", "swoosh" })) return SampleKind::Riser;
+        return SampleKind::Other;
+    };
     if (! isLoop)
     {
+        if (const auto fx = fxKind(); fx != SampleKind::Other) { e.kind = fx; return; }
         if (hasToken (tokens, { "808" }))                                          e.kind = SampleKind::Bass808;
         else if (hasToken (tokens, { "kick", "kicks", "kck", "bd", "bassdrum" }))   e.kind = SampleKind::Kick;
         else if (hasToken (tokens, { "clap", "claps", "clp" }))                     e.kind = SampleKind::Clap;
@@ -108,6 +121,22 @@ void Library::classifyKind (LibraryEntry& e, const juce::StringArray& tokens)
         else                                                                                                              e.loop = LoopKind::Other;
     }
 
+}
+
+std::vector<const LibraryEntry*> Library::fxOfKind (SampleKind k) const
+{
+    std::vector<const LibraryEntry*> out;
+    for (auto& e : entries)
+    {
+        if (e.kind == k) { out.push_back (&e); continue; }
+        // "fx_riser_128bpm" style loops are risers too (we only use them to land on the downbeat)
+        if (k == SampleKind::Riser && e.kind == SampleKind::Loop && e.loop == LoopKind::FX)
+        {
+            const auto n = juce::File (e.path).getFileName().toLowerCase();
+            if (n.contains ("riser") || n.contains ("uplift") || n.contains ("build") || n.contains ("sweep")) out.push_back (&e);
+        }
+    }
+    return out;
 }
 
 std::vector<const LibraryEntry*> Library::loopsOfKind (LoopKind k, double songBpm) const

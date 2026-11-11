@@ -9,7 +9,9 @@
 namespace lp::song
 {
 
-enum class SampleKind { Kick, Snare, Clap, Hat, OpenHat, Perc, Bass808, Loop, Other };
+enum class SampleKind { Kick, Snare, Clap, Hat, OpenHat, Perc, Bass808, Loop, Other,
+                        // transition FX (one-shots): risers, impacts, downlifters, reverse swells, crashes, sub drops
+                        Riser, Impact, Downlifter, ReverseFx, Crash, SubDrop };
 enum class LoopKind { None, Drums, Bass, Keys, Guitar, Synth, Vocal, Strings, Other,
                       Pad, Lead, Pluck, Brass, Woodwind, Mallet, Perc, FX };
 constexpr int kNumLoopKinds = 17;
@@ -47,6 +49,8 @@ public:
     // what kind of sound / loop and which grooves, from the words in a path (used by parse, and to update old caches)
     static void classify (LibraryEntry& e, const juce::String& fileName, const juce::String& path);
     static void classifyKind (LibraryEntry& e, const juce::StringArray& tokens);
+    // transition FX of one kind (risers also come as tempo-labelled "fx" loops)
+    std::vector<const LibraryEntry*> fxOfKind (SampleKind k) const;
     // loops of one kind that fit a song's tempo (at half / normal / double speed, within 10%)
     std::vector<const LibraryEntry*> loopsOfKind (LoopKind k, double songBpm) const;
     const LibraryEntry* find (const juce::String& path) const

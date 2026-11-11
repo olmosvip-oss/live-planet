@@ -494,7 +494,7 @@ namespace
 
     // what kind of sound a part is, for mixing
     bool isBassPart (const Part& p)  { return p.kind == PartKind::Bass || juce::String (p.name).containsIgnoreCase ("bass"); }
-    bool isDrumPart (const Part& p)  { const juce::String n (p.name); return p.kind == PartKind::Drums || n.contains ("drum") || n == "percussion" || n == "fx"; }
+    bool isDrumPart (const Part& p)  { const juce::String n (p.name); return p.kind == PartKind::Drums || p.kind == PartKind::Fx || n.contains ("drum") || n == "percussion" || n == "fx"; }
 
     // cleans a track so the whole song sits together: melodic loops leave the low end to the bass,
     // and bass + music duck a little under every kick so the drums punch through; then the reference's tone
@@ -746,7 +746,50 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     auto* L = buf.getWritePointer (0);
     auto* R = buf.getWritePointer (1);
 
-    if (part.kind == PartKind::Loop)
+    if (part.kind == PartKind::Fx)
+    {
+        // transition sounds from your library: risers whose peak lands on the downbeat, impacts on it...
+        std::map<juce::String, juce::AudioBuffer<float>> cache;
+        for (auto& h : part.fxHits)
+        {
+            auto& a = cache[h.path];
+            if (a.getNumSamples() == 0) a = loadAudio (h.path, sr);
+            const int n = a.getNumSamples();
+            if (n == 0) continue;
+            int anchor = 0;
+            if (h.peakOnBeat)
+            {
+                // the loudest 20 ms of the sound
+                const int w = (int) (0.02 * sr);
+                double best = -1;
+                for (int i = 0; i + w <= n; i += w / 2)
+                {
+                    double e = 0;
+                    for (int k = i; k < i + w; ++k) e += std::abs (a.getSample (0, k)) + std::abs (a.getSample (1, k));
+                    if (e > best) { best = e; anchor = i + w / 2; }
+                }
+            }
+            const int at = (int) std::round (h.beat * spb) - anchor;
+            const int maxLen = (int) (8 * 4 * spb); // never longer than 8 bars
+            // a very long riser starts part-way (faded in); nothing plays before the song starts
+            const int firstUsed = std::max ({ 0, -at, anchor - maxLen });
+            const float g = juce::Decibels::decibelsToGain (h.gainDb);
+            const int fadeIn = (int) (0.03 * sr);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float* src = a.getReadPointer (ch);
+                float* dst = buf.getWritePointer (ch);
+                for (int i = firstUsed; i < n && i < firstUsed + maxLen * 2; ++i)
+                {
+                    const int o = at + i;
+                    if (o < 0 || o >= total) continue;
+                    const float fi = firstUsed > 0 ? std::min (1.0f, (float) (i - firstUsed) / (float) fadeIn) : 1.0f;
+                    dst[o] += src[i] * g * fi;
+                }
+            }
+        }
+    }
+    else if (part.kind == PartKind::Loop)
     {
         // your loop, fitted exactly to its bars and placed at each start
         const double barSamples = 4.0 * spb;
@@ -894,8 +937,10 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
             case PartKind::Bass:    targetDb = -16.0f; break;
             case PartKind::Drums:   targetDb = -17.0f; break;
             case PartKind::Loop:    targetDb = -21.0f; break;
+            case PartKind::Fx:      targetDb = 0.0f; break; // each transition sound already has its own level
         }
-        if (rms > 1e-6)
+        targetDb += part.mixDb;
+        if (rms > 1e-6 && part.kind != PartKind::Fx)
         {
             const float g = juce::jlimit (0.05f, 12.0f, juce::Decibels::decibelsToGain (targetDb) / (float) rms);
             for (int ch = 0; ch < 2; ++ch)
@@ -910,6 +955,14 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     const int shift = part.pitchSemis + (part.kind == PartKind::Loop ? part.autoTune : 0); // your pitch + tuning into the song's key
     if (shift != 0 && (part.kind == PartKind::Loop || part.kind == PartKind::Drums))
         pitchShift (buf, shift, sr);
+    // its place left / right (equal-power, so it doesn't jump in level)
+    if (std::abs (part.pan) > 0.01f)
+    {
+        const float a = (juce::jlimit (-1.0f, 1.0f, part.pan) + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
+        const float gl = std::cos (a) * 1.41421356f, gr = std::sin (a) * 1.41421356f;
+        buf.applyGain (0, 0, buf.getNumSamples(), std::min (1.0f, gl));
+        buf.applyGain (1, 0, buf.getNumSamples(), std::min (1.0f, gr));
+    }
     shapeForMix (song, part, buf, sr);
     return true;
 }
