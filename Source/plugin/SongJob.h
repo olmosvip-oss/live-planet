@@ -428,20 +428,32 @@ private:
             }
             if (! missing.isEmpty()) noteForYou = "no " + missing.joinIntoString (" / ") + " loops in your library fit this song";
             const bool kit = ! song.drumSamples.empty();
-            if (drumC != nullptr)
+            // a produced arrangement: each loop has a role, and plays (and is treated) section by section
+            auto addArranged = [&] (const lp::song::LoopChoice& choice, const juce::String& name, Role role)
             {
-                if (kit) addLoop (*drumC, "drum loop", { "chorus", "bridge" });                      // layered on the kit
-                else     addLoop (*drumC, "drum loop", { "verse", "pre-chorus", "chorus", "bridge" });
-            }
-            if (percC != nullptr)  addLoop (*percC, "percussion", { "pre-chorus", "chorus" });
-            if (bassC != nullptr)  addLoop (*bassC, "bass loop", { "verse", "pre-chorus", "chorus" });
-            if (melodic.size() > 0) addLoop (*melodic[0], lp::song::loopKindName (melodic[0]->kind), { "intro", "verse", "pre-chorus", "chorus", "outro" });
-            if (melodic.size() > 1) addLoop (*melodic[1], lp::song::loopKindName (melodic[1]->kind), { "chorus", "bridge" });
-            if (melodic.size() > 2) addLoop (*melodic[2], lp::song::loopKindName (melodic[2]->kind), { "pre-chorus", "chorus", "outro" });
-            if (melodic.size() > 3 && wanted > 3) addLoop (*melodic[3], lp::song::loopKindName (melodic[3]->kind), { "verse", "bridge" });
-            if (padC != nullptr)   addLoop (*padC, "pad", { "intro", "bridge", "outro" });
-            if (vocalC != nullptr) addLoop (*vocalC, "vocal", { "chorus", "bridge" });
-            if (fxC != nullptr)    addLoop (*fxC, "fx", { "pre-chorus" });
+                lp::song::Part loop;
+                loop.name = name.toStdString();
+                loop.kind = lp::song::PartKind::Loop;
+                for (auto& opt : choice.options) { loop.candidates.add (opt.entry->path); loop.candidateTunes.add (opt.tune); }
+                loop.samplePath = loop.candidates[0];
+                loop.autoTune = loop.candidateTunes[0];
+                loop.loopBars = songBars (loop.samplePath, choice.options[0].entry->bpm, song.bpm);
+                if (loop.loopBars <= 0) return;
+                arrange (loop, song, role, kit);
+                if (std::none_of (loop.barSrc.begin(), loop.barSrc.end(), [] (int v) { return v >= 0; }) && loop.swellBars.empty()) return;
+                loop.source = "splice: " + juce::File (loop.samplePath).getFileNameWithoutExtension();
+                loop.remix = remixText (loop, 0.0, song) + arrangementText (loop);
+                song.parts.push_back (loop);
+            };
+            if (drumC != nullptr)  addArranged (*drumC, "drum loop", Role::DrumLoop);
+            if (percC != nullptr)  addArranged (*percC, "percussion", Role::Perc);
+            if (bassC != nullptr)  addArranged (*bassC, "bass loop", Role::Bass);
+            const Role melodicRoles[4] = { Role::Main, Role::Second, Role::Third, Role::Fourth };
+            for (size_t i = 0; i < melodic.size() && i < (wanted > 3 ? 4u : 3u); ++i)
+                addArranged (*melodic[i], lp::song::loopKindName (melodic[i]->kind), melodicRoles[i]);
+            if (padC != nullptr)   addArranged (*padC, "pad", Role::Pad);
+            if (vocalC != nullptr) addArranged (*vocalC, "vocal", Role::Vocal);
+            if (fxC != nullptr)    addArranged (*fxC, "fx", Role::Fx);
         }
         else if (picks.loop != nullptr && ! picks.loopSet.empty())
             addLoop (picks.loopSet.front(), "loop", { "chorus", "bridge" });
@@ -714,7 +726,12 @@ private:
                 part.autoTune = part.candidate < part.candidateTunes.size() ? part.candidateTunes[part.candidate] : 0;
                 const auto* entry = library.find (part.samplePath);
                 const int bars = songBars (part.samplePath, entry != nullptr ? entry->bpm : song.bpm, song.bpm);
-                if (bars > 0)
+                if (bars > 0 && ! part.barSrc.empty())
+                {
+                    part.loopBars = bars;
+                    recut (part, song);
+                }
+                else if (bars > 0)
                 {
                     // keep the same placements, re-cut to the new loop's length
                     std::vector<int> starts;
@@ -726,7 +743,7 @@ private:
                     if (! starts.empty()) part.loopStartBars = starts;
                 }
                 part.source = "splice: " + juce::File (part.samplePath).getFileNameWithoutExtension();
-                part.remix = remixText (part, 0.0, song);
+                part.remix = remixText (part, 0.0, song) + arrangementText (part);
             }
             else if (part.kind == PK::Drums && ! song.drumSamples.empty() && part.candidates.size() > 1)
             {
@@ -771,6 +788,105 @@ private:
     }
 
     int editCounter = 0;
+
+    // ---------- the producer: which loop plays where, and what happens to it
+    enum class Role { Main, Second, Third, Fourth, Bass, DrumLoop, Perc, Pad, Vocal, Fx };
+
+    static std::string baseName (const std::string& n) { const auto sp = n.find (' '); return sp == std::string::npos ? n : n.substr (0, sp); }
+    static int sectionNumber (const std::string& n) { const auto sp = n.find (' '); return sp == std::string::npos ? 1 : std::atoi (n.c_str() + sp + 1); }
+
+    static bool plays (Role r, const std::string& base, int n, bool lastChorus, bool kit)
+    {
+        switch (r)
+        {
+            case Role::Main:     return base == "intro" || base == "verse" || base == "pre-chorus" || base == "chorus" || base == "outro";
+            case Role::Second:   return base == "chorus" || base == "bridge" || (base == "verse" && n >= 2);
+            case Role::Third:    return (base == "chorus" && n >= 2) || (base == "pre-chorus" && n >= 2);
+            case Role::Fourth:   return base == "verse" || base == "bridge";
+            case Role::Bass:     return base == "verse" || base == "pre-chorus" || base == "chorus";
+            case Role::DrumLoop: return kit ? (base == "chorus" || (base == "verse" && n >= 2)) : (base == "verse" || base == "pre-chorus" || base == "chorus");
+            case Role::Perc:     return base == "pre-chorus" || base == "chorus";
+            case Role::Pad:      return base == "intro" || base == "pre-chorus" || base == "bridge" || base == "outro" || lastChorus;
+            case Role::Vocal:    return base == "chorus" || base == "bridge";
+            case Role::Fx:       return false; // placed to land on each chorus instead
+        }
+        return false;
+    }
+
+    static void arrange (lp::song::Part& p, const lp::song::Song& song, Role role, bool kit)
+    {
+        const int total = song.totalBars();
+        p.barSrc.assign ((size_t) total, -1);
+        p.barFilter.clear(); p.chopBars.clear(); p.stutterBars.clear(); p.gapBars.clear(); p.swellBars.clear();
+        const int L = std::max (1, p.loopBars);
+        int lastChorusIdx = -1;
+        for (size_t i = 0; i < song.sections.size(); ++i) if (baseName (song.sections[i].name) == "chorus") lastChorusIdx = (int) i;
+        for (size_t si = 0; si < song.sections.size(); ++si)
+        {
+            const auto& sec = song.sections[si];
+            const auto base = baseName (sec.name);
+            const int n = sectionNumber (sec.name);
+            const bool lastChorus = (int) si == lastChorusIdx;
+            const bool nextIsChorus = si + 1 < song.sections.size() && baseName (song.sections[si + 1].name) == "chorus";
+            const bool nextIsPre = si + 1 < song.sections.size() && baseName (song.sections[si + 1].name) == "pre-chorus";
+            const int s0 = sec.startBar, s1 = sec.startBar + sec.bars;
+            if (role == Role::Fx)
+            {
+                // a riser that ends right on the chorus
+                if (nextIsChorus)
+                    for (int k = 0; k < L; ++k)
+                        if (s1 - L + k >= 0 && s1 - L + k < total) p.barSrc[(size_t) (s1 - L + k)] = k;
+                continue;
+            }
+            if (plays (role, base, n, lastChorus, kit))
+            {
+                for (int b = s0; b < s1 && b < total; ++b) p.barSrc[(size_t) b] = (b - s0) % L;
+                // the build: the last beat before a chorus drops out
+                if (nextIsChorus) p.gapBars.insert (s1 - 1);
+                if (role == Role::Main)
+                {
+                    if (base == "intro")  // a muffled intro that opens up
+                        for (int b = s0; b <= s1; ++b) p.barFilter[b] = b == s1 ? 1.0f : 0.12f + 0.88f * (float) (b - s0) / (float) sec.bars;
+                    if (base == "outro")  // and closes down at the end
+                        for (int b = s0; b <= s1; ++b) p.barFilter[b] = 1.0f - 0.85f * (float) (b - s0) / (float) sec.bars;
+                    if (base == "verse" && nextIsPre) p.stutterBars.insert (s1 - 1);
+                    if (base == "verse" && n >= 2)  // verse 2: chopped variations in its second half
+                        for (int b = s0 + sec.bars / 2; b < s1; b += 2) p.chopBars.insert (b + 1 < s1 ? b + 1 : b);
+                    if (lastChorus)                 // the last chorus: a chopped variation every 4th bar
+                        for (int b = s0 + 3; b < s1 - 1; b += 4) p.chopBars.insert (b);
+                }
+                if (role == Role::Pad && base == "outro")
+                    for (int b = s0; b <= s1; ++b) p.barFilter[b] = 1.0f - 0.8f * (float) (b - s0) / (float) sec.bars;
+                if (role == Role::Second && base == "bridge") // the bridge: the second sound, muffled and far away
+                    for (int b = s0; b <= s1; ++b) p.barFilter[b] = b == s1 ? 1.0f : 0.4f;
+            }
+            else if (nextIsChorus && (role == Role::Second || (role == Role::Pad)) && s1 - 1 >= 0)
+                p.swellBars.insert (s1 - 1); // a reversed swell rising into the chorus
+        }
+        // gaps and swells only where the part has something to do
+        for (auto it = p.gapBars.begin(); it != p.gapBars.end();)
+            it = (*it >= 0 && *it < total && p.barSrc[(size_t) *it] >= 0) ? std::next (it) : p.gapBars.erase (it);
+    }
+
+    // after a swap: the same plan, re-cut to the new loop's length
+    static void recut (lp::song::Part& p, const lp::song::Song& song)
+    {
+        const int L = std::max (1, p.loopBars);
+        for (auto& sec : song.sections)
+            for (int b = sec.startBar; b < sec.startBar + sec.bars && b < (int) p.barSrc.size(); ++b)
+                if (p.barSrc[(size_t) b] >= 0) p.barSrc[(size_t) b] = (b - sec.startBar) % L;
+    }
+
+    static juce::String arrangementText (const lp::song::Part& p)
+    {
+        juce::StringArray t;
+        if (! p.barFilter.empty())   t.add ("filter sweeps");
+        if (! p.chopBars.empty())    t.add ("chopped variations");
+        if (! p.stutterBars.empty()) t.add ("stutters");
+        if (! p.swellBars.empty())   t.add ("reversed swells into the chorus");
+        if (! p.gapBars.empty())     t.add ("drop-outs before the chorus");
+        return t.isEmpty() ? juce::String() : ". produced: " + t.joinIntoString (", ");
+    }
 
     // a loop's length in the SONG's bars: whole bars at its own tempo, at the nearest of half / normal / double speed
     static int songBars (const juce::String& path, double fileBpm, double songBpm)

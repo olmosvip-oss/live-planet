@@ -134,14 +134,44 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
     std::vector<Plan> plan;
     int refBars = 0;
     for (auto& s2 : ref.sections) refBars = std::max (refBars, s2.startBar + s2.bars);
-    const bool shortRef = ref.valid && (ref.sections.size() < 4 || refBars < 32);
+    // does the reference's own layout make a sensible song? (a verse and a chorus, not chorus after chorus)
+    bool sensible = ref.valid && ref.sections.size() >= 5 && ref.sections.size() <= 12;
+    if (sensible)
+    {
+        int verses = 0, choruses = 0, repeats = 0;
+        for (size_t i = 0; i < ref.sections.size(); ++i)
+        {
+            verses += ref.sections[i].label == "verse";
+            choruses += ref.sections[i].label == "chorus";
+            if (i > 0 && ref.sections[i].label == ref.sections[i - 1].label) ++repeats;
+        }
+        sensible = verses >= 1 && choruses >= 1 && choruses <= 4 && repeats <= 1;
+    }
+    const bool shortRef = ref.valid && ! sensible;
     if (shortRef)
     {
+        // a produced song: intro, verse, pre-chorus, chorus, verse 2, pre-chorus, chorus, bridge, final chorus, outro,
+        // sized to about 3 minutes at this tempo; chords from the reference's matching (or biggest) section
         const RefSection* main = &ref.sections.front();
         for (auto& s2 : ref.sections) if (s2.energy > main->energy) main = &s2;
-        for (auto& [l, b] : std::vector<std::pair<std::string, int>> {
-                 { "intro", 8 }, { "verse", 16 }, { "chorus", 16 }, { "verse", 16 }, { "chorus", 16 }, { "bridge", 8 }, { "chorus", 16 }, { "outro", 8 } })
-            plan.push_back ({ l, b, sectionEnergy (l), main });
+        auto refFor = [&] (const std::string& l) -> const RefSection*
+        {
+            for (auto& s2 : ref.sections) if (s2.label == l) return &s2;
+            return main;
+        };
+        const bool roomy = target.bpm >= 112.0; // faster songs have room for longer sections
+        const std::vector<std::pair<std::string, int>> layout = roomy
+            ? std::vector<std::pair<std::string, int>> { { "intro", 8 }, { "verse", 16 }, { "pre-chorus", 4 }, { "chorus", 16 }, { "verse", 8 },
+                                                         { "pre-chorus", 4 }, { "chorus", 16 }, { "bridge", 8 }, { "chorus", 16 }, { "outro", 8 } }
+            : std::vector<std::pair<std::string, int>> { { "intro", 4 }, { "verse", 8 }, { "pre-chorus", 4 }, { "chorus", 8 }, { "verse", 8 },
+                                                         { "pre-chorus", 4 }, { "chorus", 8 }, { "bridge", 8 }, { "chorus", 16 }, { "outro", 4 } };
+        int choruses = 0;
+        for (auto& [l, b] : layout)
+        {
+            float en = sectionEnergy (l);
+            if (l == "chorus" && ++choruses == 3) en = 1.0f;  // the last chorus is the biggest
+            plan.push_back ({ l, b, en, refFor (l) });
+        }
     }
     else if (ref.valid && ! ref.sections.empty())
     {
@@ -533,6 +563,32 @@ Song generate (const Profile& ref, const lp::Weather& sky, const Options& o)
                 for (size_t k = 0; k + 1 < p.notes.size(); ++k)
                     p.notes[k].length = std::max (p.notes[k].length, std::min (2.0, p.notes[k + 1].beat - p.notes[k].beat - 0.02));
             }
+    // transitions into every chorus: a snare roll, the last half-beat drops out, a crash and kick on the "one"
+    for (size_t si = 0; si + 1 < song.sections.size(); ++si)
+    {
+        if (song.sections[si + 1].name.rfind ("chorus", 0) != 0) continue;
+        const double end = (song.sections[si].startBar + song.sections[si].bars) * 4.0;
+        const double lastBar = end - 4.0, gap = end - 0.5;
+        for (auto& p : song.parts)
+        {
+            if (p.kind == PartKind::Drums)
+            {
+                p.notes.erase (std::remove_if (p.notes.begin(), p.notes.end(), [&] (const Note& n) { return n.beat >= lastBar && n.beat < end; }), p.notes.end());
+                for (double t = 0; t < 2.0; t += 0.5)   p.notes.push_back ({ lastBar + t, 0.1, 38, 0.4f + 0.08f * (float) t });
+                for (double t = 2.0; t < 3.5; t += 0.25) p.notes.push_back ({ lastBar + t, 0.1, 38, 0.55f + 0.25f * (float) (t - 2.0) });
+                p.notes.push_back ({ end, 0.1, 36, 1.0f });
+                p.notes.push_back ({ end, 0.1, 46, 0.95f }); // the crash
+            }
+            else if (p.kind != PartKind::Loop)
+            {
+                // everything else leaves the last half-beat empty
+                p.notes.erase (std::remove_if (p.notes.begin(), p.notes.end(), [&] (const Note& n) { return n.beat >= gap && n.beat < end; }), p.notes.end());
+                for (auto& n : p.notes)
+                    if (n.beat < gap && n.beat + n.length > gap) n.length = gap - n.beat;
+            }
+        }
+    }
+
     return song;
 }
 

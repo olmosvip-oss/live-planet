@@ -4,6 +4,7 @@
 #include <vector>
 #include <map>
 #include <array>
+#include <set>
 #include "../engine/Weather.h"
 #include "../engine/Sources.h"
 
@@ -161,6 +162,14 @@ struct Part
     bool reversed = false;
     int autoTune = 0;                // loops: semitones to bring the sample into the song's key
     juce::Array<int> candidateTunes; // ...for each candidate
+    // produced arrangement (loops): for every bar of the song, which bar of the loop plays (-1 = silent),
+    // and what is done to it, like a producer would
+    std::vector<int> barSrc;
+    std::map<int, float> barFilter;  // bar -> low-pass openness at the start of that bar (0 muffled .. 1 open)
+    std::set<int> chopBars;          // the bar's 8ths re-ordered into a new variation
+    std::set<int> stutterBars;       // the last beat stutters
+    std::set<int> gapBars;           // the last beat drops out (right before a chorus hits)
+    std::set<int> swellBars;         // a reversed swell of the loop rising into the next bar
 };
 
 struct Section

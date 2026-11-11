@@ -447,6 +447,7 @@ namespace
             double b0, b1, b2, a0, a1, a2;
             if (type == 0) { b0 = 1 + alpha * A; b1 = -2 * cw; b2 = 1 - alpha * A; a0 = 1 + alpha / A; a1 = -2 * cw; a2 = 1 - alpha / A; }
             else if (type == 3) { b0 = (1 + cw) / 2; b1 = -(1 + cw); b2 = (1 + cw) / 2; a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha; }
+            else if (type == 4) { b0 = (1 - cw) / 2; b1 = 1 - cw; b2 = (1 - cw) / 2; a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha; }
             else
             {
                 const double sa = 2.0 * std::sqrt (A) * alpha, sgn = type == 1 ? 1.0 : -1.0;
@@ -549,6 +550,128 @@ namespace
         }
     }
 
+    // ---------- a loop arranged like a producer would, bar by bar
+    void renderArrangedLoop (const Part& part, const juce::AudioBuffer<float>& loop, double barSamples,
+                             juce::AudioBuffer<float>& out, int total, double sr)
+    {
+        const int loopLen = loop.getNumSamples();
+        const int nb = (int) part.barSrc.size();
+        const int fade = (int) (0.002 * sr);
+        juce::AudioBuffer<float> seg (2, (int) std::ceil (barSamples) + 4);
+        auto modified = [&] (int b) { return part.chopBars.count (b) || part.stutterBars.count (b) || part.gapBars.count (b) || part.swellBars.count (b); };
+        auto srcOf = [&] (int b) { return b >= 0 && b < nb ? part.barSrc[(size_t) b] : -1; };
+        for (int b = 0; b < nb; ++b)
+        {
+            const int src = srcOf (b);
+            const bool swell = part.swellBars.count (b) > 0;
+            if (src < 0 && ! swell) continue;
+            const int a = (int) std::round (b * barSamples), e = std::min (total, (int) std::round ((b + 1) * barSamples));
+            const int len = e - a;
+            if (len <= 0) continue;
+            seg.clear();
+            auto copyFrom = [&] (int dst, int from, int n, bool backwards)
+            {
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const float* in = loop.getReadPointer (ch);
+                    float* o = seg.getWritePointer (ch);
+                    for (int i = 0; i < n && dst + i < len; ++i)
+                    {
+                        const int k = backwards ? from + n - 1 - i : from + i;
+                        o[dst + i] = k >= 0 && k < loopLen ? in[k] : 0.0f;
+                    }
+                }
+            };
+            auto ramp = [&] (int from, int n, bool up)
+            {
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < n && from + i < len; ++i)
+                        seg.getWritePointer (ch)[from + i] *= up ? (float) i / (float) n : 1.0f - (float) i / (float) n;
+            };
+            const int srcStart = (int) std::round (std::max (0, src) * barSamples);
+            if (swell && src < 0)
+            {
+                // reversed swell: the loop's first bar played backwards, rising out of nothing into the next bar
+                copyFrom (0, 0, len, true);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < len; ++i) { const float t = (float) i / (float) len; seg.getWritePointer (ch)[i] *= t * t * t; }
+            }
+            else if (part.chopBars.count (b))
+            {
+                // the bar's 8ths re-ordered (a new variation from the same sound), each slice faded so it's clean
+                static const int orders[4][8] = { { 0, 1, 0, 1, 4, 5, 6, 6 }, { 0, 1, 2, 2, 4, 4, 6, 7 }, { 0, 0, 2, 3, 0, 1, 6, 6 }, { 0, 1, 2, 3, 2, 3, 6, 7 } };
+                const int* ord = orders[(size_t) ((b * 7 + src) % 4)];
+                const int sl = len / 8;
+                for (int k = 0; k < 8; ++k)
+                {
+                    copyFrom (k * sl, srcStart + ord[k] * sl, k == 7 ? len - 7 * sl : sl, false);
+                    ramp (k * sl, fade, true);
+                    ramp (k * sl + sl - fade, fade, false);
+                }
+            }
+            else
+                copyFrom (0, srcStart, len, false);
+            if (part.stutterBars.count (b))
+            {
+                // the last beat stutters: its first 16th, four times, getting louder
+                const int beat = len / 4, s16 = beat / 4;
+                for (int k = 0; k < 4; ++k)
+                {
+                    copyFrom (3 * beat + k * s16, srcStart + 3 * beat, k == 3 ? len - 3 * beat - 3 * s16 : s16, false);
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < s16; ++i) seg.getWritePointer (ch)[std::min (len - 1, 3 * beat + k * s16 + i)] *= 0.6f + 0.13f * (float) k;
+                    ramp (3 * beat + k * s16 + s16 - fade, fade, false);
+                }
+            }
+            if (part.gapBars.count (b))
+            {
+                // the last beat drops out, so the next section hits harder
+                const int from = len - len / 4;
+                ramp (from - fade, fade, false);
+                for (int ch = 0; ch < 2; ++ch) std::fill (seg.getWritePointer (ch) + from, seg.getWritePointer (ch) + len, 0.0f);
+            }
+            // clean edges wherever the sound doesn't simply carry on from the bar before / into the next
+            const bool joinPrev = srcOf (b - 1) >= 0 && ! modified (b - 1) && ! modified (b) && src == (srcOf (b - 1) + 1) % std::max (1, part.loopBars) && src != 0;
+            const bool joinNext = srcOf (b + 1) >= 0 && ! modified (b + 1) && ! modified (b) && srcOf (b + 1) == (src + 1) % std::max (1, part.loopBars) && srcOf (b + 1) != 0;
+            if (! joinPrev && ! swell) ramp (0, fade, true);
+            if (! joinNext && ! part.gapBars.count (b)) ramp (len - fade, fade, false);
+            for (int ch = 0; ch < 2; ++ch) out.addFrom (ch, a, seg, ch, 0, len);
+        }
+
+        // filter sweeps: muffled intros that open up, outros that close down
+        if (! part.barFilter.empty())
+        {
+            auto openness = [&] (double barPos)
+            {
+                const int b = (int) barPos;
+                auto it = part.barFilter.find (b);
+                if (it == part.barFilter.end()) return 1.0f;
+                auto nx = part.barFilter.find (b + 1);
+                const float v1 = nx != part.barFilter.end() ? nx->second : it->second;
+                return it->second + (v1 - it->second) * (float) (barPos - b);
+            };
+            Biquad f[2];
+            for (int i = 0; i < total; i += 64)
+            {
+                const float o = juce::jlimit (0.0f, 1.0f, openness (i / barSamples));
+                if (o >= 0.999f) { for (auto& q : f) q = Biquad {}; continue; }
+                const double hz = 180.0 * std::pow (100.0, (double) o);
+                for (auto& q : f)
+                {
+                    // new coefficients, same filter memory (so the sweep is smooth)
+                    const auto lp = Biquad::make (4, sr, hz, 0.8, 0);
+                    q.b0 = lp.b0; q.b1 = lp.b1; q.b2 = lp.b2; q.a1 = lp.a1; q.a2 = lp.a2;
+                }
+                const int n = std::min (64, total - i);
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    float* d = out.getWritePointer (ch, i);
+                    for (int k = 0; k < n; ++k) d[k] = f[ch].process (d[k]);
+                }
+            }
+        }
+    }
+
     bool writeWav (const juce::File& file, const juce::AudioBuffer<float>& buf, double sr)
     {
         file.deleteFile();
@@ -639,6 +762,9 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
                                 : timeStretch (probe, (int) std::round (part.loopBars * barSamples)));              // smooth notes
             if (part.reversed) reverse (loop);
             const int ln = loop.getNumSamples();
+            if (! part.barSrc.empty())
+                renderArrangedLoop (part, loop, barSamples, buf, total, sr); // a produced arrangement, bar by bar
+            else
             for (int startBar : part.loopStartBars)
             {
                 const int at = (int) (startBar * barSamples);
