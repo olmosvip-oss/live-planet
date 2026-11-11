@@ -733,6 +733,49 @@ static int matchTest (const juce::File& outDir, const juce::File& refFile)
     return fails;
 }
 
+// writes a song from a reference file, the way the plugin does (coded sounds; no sample library)
+static int makeFromReference (const juce::File& refFile, const juce::File& outDir, int seed)
+{
+    using namespace lp::song;
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (refFile));
+    if (rd == nullptr) { std::printf ("can't read reference\n"); return 1; }
+    const int n = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 600));
+    juce::AudioBuffer<float> b (2, n);
+    rd->read (&b, 0, n, 0, true, true);
+    std::vector<float> mono ((size_t) n);
+    for (int i = 0; i < n; ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+    auto prof = analyse (mono.data(), n, rd->sampleRate);
+    std::printf ("heard: %.1f bpm, %s %s, %d sections, density %.2f\n", prof.bpm, lp::noteName (prof.key), prof.minor ? "minor" : "major",
+                 (int) prof.sections.size(), prof.density);
+    const auto hint = Library::parse (refFile, refFile.getParentDirectory());
+    if (prof.valid && hint.bpm >= 60.0 && hint.bpm <= 200.0) prof.bpm = hint.bpm;
+    if (prof.valid && hint.key >= 0) { prof.key = hint.key; prof.minor = hint.minor; }
+    std::printf ("with the name's hints: %.1f bpm, %s %s\n", prof.bpm, lp::noteName (prof.key), prof.minor ? "minor" : "major");
+    std::printf ("its sound: rolloff %d Hz, air %.1f dB, level %.1f dB, crest %.1f dB\n", juce::roundToInt (prof.tone.rolloffHz),
+                 prof.tone.airDb, prof.tone.rmsDb, prof.tone.crestDb);
+    lp::Weather sky; sky.temperatureC = 16; sky.windKmh = 8; sky.cloudPct = 40;
+    Options o; o.seed = (uint32_t) seed; o.shiftKey = false; o.full = true;
+    o.dawBpm = prof.bpm; // as if your project were set to the reference's tempo
+    Song song = generate (prof, sky, o);
+    song.refTone = prof.tone;
+    std::printf ("new song \"%s\": %.0f bpm, %s %s, style %s, %.1f min\n  sections:", song.title.toRawUTF8(), song.bpm, lp::noteName (song.key),
+                 song.minor ? "minor" : "major", styleName (song.style), song.lengthSeconds() / 60.0);
+    for (auto& sct : song.sections) std::printf (" %s(%d)", sct.name.c_str(), sct.bars);
+    std::printf ("\n  parts:");
+    for (auto& p : song.parts) std::printf (" %s[%s]", p.name.c_str(), p.kind == PartKind::Drums ? styleName ((Style) p.variant) : lp::profileFor (p.sound).name);
+    std::printf ("\n");
+    Rendered out;
+    if (! render (song, {}, outDir, out)) return 1;
+    std::vector<float> mm ((size_t) out.mixAudio->getNumSamples());
+    for (int i = 0; i < out.mixAudio->getNumSamples(); ++i) mm[(size_t) i] = 0.5f * (out.mixAudio->getSample (0, i) + out.mixAudio->getSample (1, i));
+    const auto t = measureTone (mm.data(), (int) mm.size(), 48000.0);
+    std::printf ("new song's sound: rolloff %d Hz, air %.1f dB, level %.1f dB\n  tone match eq:", juce::roundToInt (t.rolloffHz), t.airDb, t.rmsDb);
+    for (float v : out.matchEqDb) std::printf (" %+.1f", v);
+    std::printf ("\nmix: %s\n", out.mixFile.getFullPathName().toRawUTF8());
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -749,6 +792,8 @@ int main (int argc, char** argv)
         return sampleTest (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--stretch")
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
+    if (argc > 3 && juce::String (argv[1]) == "--make")
+        return makeFromReference (juce::File (argv[2]), juce::File (argv[3]), argc > 4 ? juce::String (argv[4]).getIntValue() : 1);
     if (argc > 3 && juce::String (argv[1]) == "--match")
         return matchTest (juce::File (argv[2]), juce::File (argv[3]));
     if (argc > 1 && juce::String (argv[1]) == "--prompt")
