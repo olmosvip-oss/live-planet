@@ -676,6 +676,63 @@ int promptTest()
     return 0;
 }
 
+// tone match: the same reference made dark (lo-fi) and bright; does each new song move toward it?
+static int matchTest (const juce::File& outDir, const juce::File& refFile)
+{
+    using namespace lp::song;
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (refFile));
+    if (rd == nullptr) { std::printf ("can't read reference\n"); return 1; }
+    const double sr = rd->sampleRate;
+    const int n = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (sr * 120));
+    juce::AudioBuffer<float> b (2, n);
+    rd->read (&b, 0, n, 0, true, true);
+    lp::Weather sky; sky.temperatureC = 14; sky.windKmh = 10; sky.cloudPct = 60;
+    auto toneStr = [] (const Tone& t)
+    {
+        juce::String r; r << "rolloff " << juce::roundToInt (t.rolloffHz) << " Hz, air " << juce::String (t.airDb, 1) << " dB, level " << juce::String (t.rmsDb, 1) << " dB";
+        return r;
+    };
+    int fails = 0;
+    for (int variant = 0; variant < 2; ++variant)
+    {
+        // make the reference dark (lo-fi, -3 dB/oct-ish above 1.5 kHz) or bright (+6 dB air)
+        std::vector<float> mono ((size_t) n);
+        float z1 = 0, z2 = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            const float x = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+            z1 += 0.18f * (x - z1); z2 += 0.18f * (z1 - z2); // two gentle low-passes (~1.5 kHz)
+            mono[(size_t) i] = variant == 0 ? z2 : x + 2.0f * (x - z2);
+        }
+        const auto prof = analyse (mono.data(), n, sr);
+        Options o; o.seed = 77; o.mainSound = lp::SoundId::Rhodes;
+        Song song = generate (prof, sky, o);
+        song.refTone = prof.tone;
+        Song plain = song; plain.refTone = Tone {};
+        Rendered withMatch, without;
+        if (! render (song, {}, outDir.getChildFile (variant == 0 ? "dark" : "bright"), withMatch)) return 1;
+        if (! render (plain, {}, outDir.getChildFile (variant == 0 ? "dark-plain" : "bright-plain"), without)) return 1;
+        auto measure = [&] (const Rendered& r)
+        {
+            auto& m = *r.mixAudio;
+            std::vector<float> mm ((size_t) m.getNumSamples());
+            for (int i = 0; i < m.getNumSamples(); ++i) mm[(size_t) i] = 0.5f * (m.getSample (0, i) + m.getSample (1, i));
+            return measureTone (mm.data(), (int) mm.size(), 48000.0);
+        };
+        const auto a = measure (without), c = measure (withMatch);
+        auto dist = [] (const Tone& x, const Tone& y) { float d = 0; for (int i = 1; i < 9; ++i) d += std::abs (x.bandsDb[(size_t) i] - y.bandsDb[(size_t) i]); return d / 8.0f; };
+        std::printf ("%s reference: %s\n  new song, no match:   %s   (tone distance %.1f dB)\n  new song, matched:    %s   (tone distance %.1f dB)\n",
+                     variant == 0 ? "DARK" : "BRIGHT", toneStr (prof.tone).toRawUTF8(), toneStr (a).toRawUTF8(), dist (a, prof.tone),
+                     toneStr (c).toRawUTF8(), dist (c, prof.tone));
+        std::printf ("  eq:");
+        for (float v : withMatch.matchEqDb) std::printf (" %+.1f", v);
+        std::printf ("\n");
+        if (dist (c, prof.tone) >= dist (a, prof.tone)) ++fails;
+    }
+    return fails;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -692,6 +749,8 @@ int main (int argc, char** argv)
         return sampleTest (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--stretch")
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
+    if (argc > 3 && juce::String (argv[1]) == "--match")
+        return matchTest (juce::File (argv[2]), juce::File (argv[3]));
     if (argc > 1 && juce::String (argv[1]) == "--prompt")
         return promptTest();
     if (argc > 1 && juce::String (argv[1]) == "--fx")

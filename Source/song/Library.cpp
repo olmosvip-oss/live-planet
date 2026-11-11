@@ -244,8 +244,12 @@ bool Library::load (const juce::File& cache)
 LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::uint32 seed,
                               std::function<int (const juce::String&, double)> loopLengthBars,
                               const juce::String& forceDrumPack,
-                              std::function<int (const juce::String&)> tuneFor)
+                              std::function<int (const juce::String&)> tuneFor,
+                              std::function<float (const juce::String&)> soundsLike)
 {
+    auto like = [&] (const juce::String& path) { return soundsLike ? soundsLike (path) : 0.5f; };
+    // in key matters most, then sounding like your reference (a little tuning is fine; a lot is a last resort)
+    auto rank = [] (int tune, float lk) { return lk * 3.0f - (float) std::abs (tune) * 0.35f; };
     LibraryPicks picks;
     juce::Random rng ((juce::int64) seed * 31 + 7);
     const auto styleBit = 1u << (int) target.style;
@@ -326,15 +330,15 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
     std::sort (loops.begin(), loops.end(), [] (auto& a, auto& b) { return a.first > b.first; });
     // listen to the best few: the one that's really in key (or needs the least tuning) wins
     {
-        int bestTune = 99;
+        float bestRank = -1e9f;
         for (size_t i = 0; i < std::min<size_t> (loops.size(), 16); ++i)
         {
             const int bars = loopLengthBars ? loopLengthBars (loops[i].second->path, loops[i].second->bpm) : 0;
             if (bars <= 0) continue;
             const int tune = tuneFor ? tuneFor (loops[i].second->path) : 0;
             if (tune == 99) continue;
-            if (std::abs (tune) < std::abs (bestTune)) { bestTune = tune; picks.loop = loops[i].second; picks.loopBars = bars; }
-            if (tune == 0) break;
+            const float r = rank (tune, like (loops[i].second->path));
+            if (r > bestRank) { bestRank = r; picks.loop = loops[i].second; picks.loopBars = bars; }
         }
     }
 
@@ -399,11 +403,12 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
                     tune = tuneFor (o.entry->path);
                     if (tune == 99) continue; // no clear key at all; any other key gets tuned into the song's
                 }
-                ok.push_back ({ o.entry, bars, tune });
-                if (ok.size() >= 5) break;
+                ok.push_back ({ o.entry, bars, tune, like (o.entry->path) });
+                if (ok.size() >= 8) break;
             }
-            // in key first, then the smallest tuning
-            std::stable_sort (ok.begin(), ok.end(), [] (const LoopOption& a, const LoopOption& b) { return std::abs (a.tune) < std::abs (b.tune); });
+            // the ones that sound most like your reference (and need the least tuning) first; keep 5
+            std::stable_sort (ok.begin(), ok.end(), [&] (const LoopOption& a, const LoopOption& b) { return rank (a.tune, a.like) > rank (b.tune, b.like); });
+            if (ok.size() > 5) ok.resize (5);
             if (kind == picks.loop->loop)
                 for (size_t i = 0; i < ok.size(); ++i)
                     if (ok[i].entry == picks.loop) std::swap (ok[0], ok[i]);

@@ -24,6 +24,29 @@ struct RefSection
     std::vector<bool> chordMinor;
 };
 
+// The sound of a recording, measured (never copied): balance across 10 octave bands,
+// how bright and airy it is, how loud. Used to pick samples that sound like your reference
+// and to give the new song's mix the same overall tone.
+struct Tone
+{
+    bool valid = false;
+    std::array<float, 10> bandsDb {}; // octaves at 31, 63, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz, relative to their average
+    float rolloffHz = 8000.0f;        // 85% of the energy is below this
+    float airDb = -30.0f;             // energy above 8 kHz vs. all
+    float rmsDb = -20.0f;             // loudness
+    float crestDb = 12.0f;            // peak vs. loudness: how punchy / how squashed
+};
+Tone measureTone (const float* mono, int numSamples, double sampleRate);
+
+// How alike two sounds are in character (bright / dark, lo-fi / polished), 0..1
+inline float toneLikeness (const Tone& a, const Tone& b)
+{
+    if (! a.valid || ! b.valid) return 0.5f;
+    const float roll = std::abs (std::log2 (std::max (200.0f, a.rolloffHz) / std::max (200.0f, b.rolloffHz))); // octaves apart
+    const float air = std::abs (a.airDb - b.airDb) / 12.0f;
+    return std::exp (-(roll * 1.2f + air));
+}
+
 struct Profile
 {
     bool valid = false;
@@ -36,6 +59,7 @@ struct Profile
     bool hasGroove = false;
     float brightness = 0.5f;    // how bright the sound is, 0..1
     double lengthSeconds = 0.0;
+    Tone tone;                  // its overall sound
     std::vector<RefSection> sections;
     juce::String sourceName;
 };
@@ -146,6 +170,10 @@ struct Song
     std::vector<Section> sections;
     std::vector<Part> parts;
     std::map<int, juce::String> drumSamples; // drum note -> one-shot file from your library (empty = coded kit)
+    Tone refTone;                            // the reference's sound, to shape the mix toward
+    std::array<float, 10> matchEqDb {};      // the tone shaping found when the song was mixed (applied to every track)
+    float matchGainDb = 0.0f;                // ...and the level
+    bool mixShaped = false;
     int totalBars() const { return sections.empty() ? 0 : sections.back().startBar + sections.back().bars; }
     double lengthSeconds() const { return totalBars() * 4.0 * 60.0 / bpm; }
 };
@@ -195,6 +223,8 @@ struct Rendered
     juce::File folder, midiFile, mixFile, planFile;
     juce::Array<juce::File> stems;
     std::shared_ptr<juce::AudioBuffer<float>> mixAudio; // the finished song, for playing it inside the plugin
+    std::array<float, 10> matchEqDb {};  // the tone shaping used (kept, so edited tracks get the same)
+    float matchGainDb = 0.0f;
 };
 
 // Renders every part to its own WAV file plus a full mix, and writes a multi-track MIDI file

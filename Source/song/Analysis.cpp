@@ -157,6 +157,60 @@ bool detectKey (const float* input, int numSamples, double sampleRate, int& key,
     return sc[(size_t) bi] > 0.5f; // a clear enough key
 }
 
+Tone measureTone (const float* x, int n, double sr)
+{
+    Tone t;
+    constexpr int N = 4096;
+    if (n < N * 2 || sr <= 0) return t;
+    static const float centres[10] = { 31.25f, 62.5f, 125.0f, 250.0f, 500.0f, 1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f };
+    std::vector<float> win (N);
+    for (int i = 0; i < N; ++i) win[(size_t) i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * (float) i / (float) (N - 1));
+    std::vector<double> spec (N / 2, 0.0);
+    std::vector<cpx> b (N);
+    // up to ~120 windows spread over the whole recording
+    const int windows = std::min (120, n / N);
+    const double stride = (double) (n - N) / std::max (1, windows - 1);
+    double sumSq = 0, peak = 0;
+    for (int i = 0; i < n; ++i) { sumSq += (double) x[i] * x[i]; peak = std::max (peak, (double) std::abs (x[i])); }
+    for (int w = 0; w < windows; ++w)
+    {
+        const int start = (int) (w * stride);
+        for (int i = 0; i < N; ++i) b[(size_t) i] = cpx (x[start + i] * win[(size_t) i], 0.0f);
+        fft (b);
+        for (int k = 1; k < N / 2; ++k) spec[(size_t) k] += std::norm (b[(size_t) k]);
+    }
+    double band[10] {}, total = 0, air = 0;
+    for (int k = 1; k < N / 2; ++k)
+    {
+        const double f = k * sr / N;
+        total += spec[(size_t) k];
+        if (f >= 8000.0) air += spec[(size_t) k];
+        for (int i = 0; i < 10; ++i)
+            if (f >= centres[i] / std::sqrt (2.0) && f < centres[i] * std::sqrt (2.0)) { band[i] += spec[(size_t) k]; break; }
+    }
+    if (total <= 0) return t;
+    double acc = 0;
+    for (int k = 1; k < N / 2; ++k)
+    {
+        acc += spec[(size_t) k];
+        if (acc >= 0.85 * total) { t.rolloffHz = (float) (k * sr / N); break; }
+    }
+    float mean = 0; int used = 0;
+    for (int i = 0; i < 10; ++i)
+    {
+        t.bandsDb[(size_t) i] = 10.0f * std::log10 ((float) band[i] + 1e-12f);
+        if (centres[i] < sr * 0.45) { mean += t.bandsDb[(size_t) i]; ++used; }
+    }
+    mean /= std::max (1, used);
+    for (auto& v : t.bandsDb) v -= mean;
+    t.airDb = 10.0f * std::log10 ((float) (air / total) + 1e-9f);
+    const double rms = std::sqrt (sumSq / n);
+    t.rmsDb = (float) juce::Decibels::gainToDecibels (rms, -100.0);
+    t.crestDb = (float) juce::Decibels::gainToDecibels (peak / std::max (1e-9, rms), 0.0);
+    t.valid = true;
+    return t;
+}
+
 Profile analyse (const float* input, int numSamples, double sampleRate)
 {
     Profile p;
@@ -173,6 +227,7 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
         x[i] = s / (float) step;
     }
     p.lengthSeconds = (double) x.size() / sr;
+    p.tone = measureTone (input, numSamples, sampleRate);
 
     // 2. spectra: onset strength, low-band onsets (kick), chroma, loudness, brightness
     constexpr int N = 2048, hop = 512;

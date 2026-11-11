@@ -60,7 +60,7 @@ private:
 };
 
 // A set of loops that fit together (same key, same tempo), each with alternatives to swap to.
-struct LoopOption { const LibraryEntry* entry; int bars; int tune; };
+struct LoopOption { const LibraryEntry* entry; int bars; int tune; float like = 0.5f; }; // like: sounds like your reference, 0..1
 
 struct LoopChoice
 {
@@ -86,7 +86,8 @@ struct LibraryPicks
 LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::uint32 seed,
                               std::function<int (const juce::String& path, double bpm)> loopLengthBars,
                               const juce::String& forceDrumPack = {},
-                              std::function<int (const juce::String& path)> tuneFor = {}); // 99 = no clear key
+                              std::function<int (const juce::String& path)> tuneFor = {}, // 99 = no clear key
+                              std::function<float (const juce::String& path)> soundsLike = {}); // 0..1
 
 inline const char* loopKindName (LoopKind k)
 {

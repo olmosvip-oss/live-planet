@@ -320,7 +320,8 @@ private:
         {
             setStage (Stage::Writing, 0.03f, "looking through your samples...");
             picks = lp::song::pickFromLibrary (library, target, o.seed, [] (const juce::String& path, double bpm) { return loopBars (path, bpm); },
-                                               {}, [this, &target] (const juce::String& path) { return tuneFor (path, target.key, target.minor); });
+                                               {}, [this, &target] (const juce::String& path) { return tuneFor (path, target.key, target.minor); },
+                                               [this, &ref] (const juce::String& path) { return soundsLike (path, ref.tone); });
             if (picks.loop != nullptr)
             {
                 const bool tempoSet = o.dawBpm > 0.0 || o.promptBpm > 0.0 || o.genreBpm > 0.0;
@@ -336,6 +337,7 @@ private:
         }
         auto song = lp::song::generate (ref, sky, opts);
         song.drumSamples = picks.drums;
+        song.refTone = ref.valid ? ref.tone : lp::song::Tone {};
 
         // where each sound came from, and how it was changed, for the studio
         for (auto& part : song.parts)
@@ -466,6 +468,9 @@ private:
         latestPointer().getParentDirectory().createDirectory();
         latestPointer().replaceWithText (files.planFile.loadFileAsString());
 
+        song.matchEqDb = files.matchEqDb;  // edited tracks later get the same tone and level
+        song.matchGainDb = files.matchGainDb;
+        song.mixShaped = true;
         const juce::ScopedLock sl (lock);
         current = song;
         currentRs = rs;
@@ -498,7 +503,16 @@ private:
     }
 
     // semitones to put a sample in the song's key (99 = it has no clear key). Listens once per file.
-    struct Heard { lp::song::KeyReading reading; bool clear = false; int key = -1; bool minor = false; };
+    struct Heard { lp::song::KeyReading reading; bool clear = false; int key = -1; bool minor = false; lp::song::Tone tone; };
+
+    // how much a sample sounds like your reference (0..1)
+    float soundsLike (const juce::String& path, const lp::song::Tone& ref)
+    {
+        if (! ref.valid) return 0.5f;
+        tuneFor (path, 0, false); // listens once (key and sound)
+        auto it = keyCache.find (path);
+        return it != keyCache.end() ? lp::song::toneLikeness (it->second.tone, ref) : 0.5f;
+    }
 
     // semitones to put a loop into the song's key (99 = too unsure): listens to it, and checks the file name
     int tuneFor (const juce::String& path, int songKey, bool songMinor)
@@ -523,6 +537,7 @@ private:
                     mono[(size_t) i] = v;
                 }
                 h.clear = lp::song::detectKey (mono.data(), len, rd->sampleRate, h.key, h.minor, &h.reading);
+                h.tone = lp::song::measureTone (mono.data(), len, rd->sampleRate);
             }
             it = keyCache.emplace (path, h).first;
         }
@@ -610,16 +625,25 @@ private:
         part.name = lp::song::loopKindName (kind);
         part.kind = lp::song::PartKind::Loop;
         int bars = 0;
-        for (size_t i = 0; i < pool.size() && i < 40 && part.candidates.size() < 5; ++i)
+        struct Found { const lp::song::LibraryEntry* e; int bars, tune; float like; };
+        std::vector<Found> found;
+        for (size_t i = 0; i < pool.size() && i < 40 && found.size() < 8; ++i)
         {
             const auto* e = pool[i].second;
             const int b = songBars (e->path, e->bpm, song.bpm);
             if (b <= 0) continue;
             const int tune = tonal ? tuneFor (e->path, song.key, song.minor) : 0;
             if (tune == 99) continue;
-            if (part.candidates.isEmpty()) bars = b;
-            part.candidates.add (e->path);
-            part.candidateTunes.add (tune);
+            found.push_back ({ e, b, tune, soundsLike (e->path, song.refTone) });
+        }
+        // the ones that sound most like your reference first
+        std::stable_sort (found.begin(), found.end(), [] (const Found& a, const Found& b)
+            { return a.like * 3.0f - (float) std::abs (a.tune) * 0.35f > b.like * 3.0f - (float) std::abs (b.tune) * 0.35f; });
+        for (size_t i = 0; i < found.size() && i < 5; ++i)
+        {
+            if (i == 0) bars = found[i].bars;
+            part.candidates.add (found[i].e->path);
+            part.candidateTunes.add (found[i].tune);
         }
         if (part.candidates.isEmpty())
         {

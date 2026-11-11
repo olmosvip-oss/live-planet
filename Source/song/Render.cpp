@@ -421,6 +421,122 @@ namespace
         return ev;
     }
 
+    // ---------- mixing: clean low end, kick ducking, and the reference's tone
+
+    struct Biquad
+    {
+        float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+        inline float process (float x) { const float y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return y; }
+        // RBJ cookbook filters. type: 0 peak, 1 low shelf, 2 high shelf, 3 high-pass
+        static Biquad make (int type, double sr, double f, double q, double db)
+        {
+            Biquad b;
+            const double A = std::pow (10.0, db / 40.0), w = 2.0 * juce::MathConstants<double>::pi * f / sr;
+            const double cw = std::cos (w), sw = std::sin (w), alpha = sw / (2.0 * q);
+            double b0, b1, b2, a0, a1, a2;
+            if (type == 0) { b0 = 1 + alpha * A; b1 = -2 * cw; b2 = 1 - alpha * A; a0 = 1 + alpha / A; a1 = -2 * cw; a2 = 1 - alpha / A; }
+            else if (type == 3) { b0 = (1 + cw) / 2; b1 = -(1 + cw); b2 = (1 + cw) / 2; a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha; }
+            else
+            {
+                const double sa = 2.0 * std::sqrt (A) * alpha, sgn = type == 1 ? 1.0 : -1.0;
+                b0 = A * ((A + 1) - sgn * (A - 1) * cw + sa);
+                b1 = sgn * 2 * A * ((A - 1) - sgn * (A + 1) * cw);
+                b2 = A * ((A + 1) - sgn * (A - 1) * cw - sa);
+                a0 = (A + 1) + sgn * (A - 1) * cw + sa;
+                a1 = -sgn * 2 * ((A - 1) + sgn * (A + 1) * cw);
+                a2 = (A + 1) + sgn * (A - 1) * cw - sa;
+            }
+            b.b0 = (float) (b0 / a0); b.b1 = (float) (b1 / a0); b.b2 = (float) (b2 / a0); b.a1 = (float) (a1 / a0); b.a2 = (float) (a2 / a0);
+            return b;
+        }
+    };
+
+    // the 10-band tone match (same octaves as Tone): low shelf, 8 bells, high shelf
+    struct MatchEq
+    {
+        std::array<Biquad, 10> f[2];
+        bool active = false;
+        void setup (const std::array<float, 10>& db, double sr)
+        {
+            static const double centres[10] = { 31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
+            active = false;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < 10; ++i)
+                {
+                    const double fc = std::min (centres[i], sr * 0.42);
+                    const int type = i == 0 ? 1 : (i == 9 ? 2 : 0);
+                    f[ch][(size_t) i] = std::abs (db[(size_t) i]) < 0.05f ? Biquad {} : Biquad::make (type, sr, type == 2 ? std::min (11000.0, fc) : fc, 0.9, db[(size_t) i]);
+                    active = active || std::abs (db[(size_t) i]) >= 0.05f;
+                }
+        }
+        void process (juce::AudioBuffer<float>& b, int start, int n)
+        {
+            if (! active) return;
+            for (int ch = 0; ch < std::min (2, b.getNumChannels()); ++ch)
+            {
+                float* d = b.getWritePointer (ch, start);
+                for (auto& q : f[ch]) for (int i = 0; i < n; ++i) d[i] = q.process (d[i]);
+            }
+        }
+    };
+
+    // what kind of sound a part is, for mixing
+    bool isBassPart (const Part& p)  { return p.kind == PartKind::Bass || juce::String (p.name).containsIgnoreCase ("bass"); }
+    bool isDrumPart (const Part& p)  { const juce::String n (p.name); return p.kind == PartKind::Drums || n.contains ("drum") || n == "percussion" || n == "fx"; }
+
+    // cleans a track so the whole song sits together: melodic loops leave the low end to the bass,
+    // and bass + music duck a little under every kick so the drums punch through; then the reference's tone
+    void shapeForMix (const Song& song, const Part& part, juce::AudioBuffer<float>& buf, double sr)
+    {
+        if (isDrumPart (part)) { /* drums keep their punch */ }
+        else
+        {
+            bool songHasBass = false;
+            for (auto& p : song.parts) songHasBass = songHasBass || isBassPart (p);
+            const bool bass = isBassPart (part);
+            if (! bass && songHasBass && part.kind == PartKind::Loop)
+            {
+                for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+                {
+                    auto hp1 = Biquad::make (3, sr, 110.0, 0.707, 0), hp2 = hp1;
+                    float* d = buf.getWritePointer (ch);
+                    for (int i = 0; i < buf.getNumSamples(); ++i) d[i] = hp2.process (hp1.process (d[i]));
+                }
+            }
+            // the kicks
+            std::vector<int> kicks;
+            const double spb = sr * 60.0 / song.bpm;
+            for (auto& p : song.parts)
+                if (p.kind == PartKind::Drums)
+                    for (auto& nt : p.notes)
+                        if (nt.pitch == 36) kicks.push_back ((int) (nt.beat * spb));
+            if (! kicks.empty())
+            {
+                std::sort (kicks.begin(), kicks.end());
+                const float depth = juce::Decibels::decibelsToGain (bass ? -5.0f : -2.0f);
+                const float rel = std::exp (-1.0f / (0.14f * (float) sr));
+                float env = 1.0f;
+                size_t k = 0;
+                const int atk = (int) (0.004 * sr);
+                for (int i = 0; i < buf.getNumSamples(); ++i)
+                {
+                    while (k < kicks.size() && kicks[k] + atk <= i) ++k;
+                    const bool inAttack = k < kicks.size() && i >= kicks[k] && i < kicks[k] + atk;
+                    if (inAttack) env = std::min (env, 1.0f - (1.0f - depth) * (float) (i - kicks[k]) / (float) atk);
+                    else env = 1.0f - (1.0f - env) * rel;
+                    for (int ch = 0; ch < buf.getNumChannels(); ++ch) buf.getWritePointer (ch)[i] *= env;
+                }
+            }
+        }
+        if (song.mixShaped)
+        {
+            MatchEq eq;
+            eq.setup (song.matchEqDb, sr);
+            eq.process (buf, 0, buf.getNumSamples());
+            if (std::abs (song.matchGainDb) > 0.01f) buf.applyGain (juce::Decibels::decibelsToGain (song.matchGainDb));
+        }
+    }
+
     bool writeWav (const juce::File& file, const juce::AudioBuffer<float>& buf, double sr)
     {
         file.deleteFile();
@@ -656,6 +772,7 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     const int shift = part.pitchSemis + (part.kind == PartKind::Loop ? part.autoTune : 0); // your pitch + tuning into the song's key
     if (shift != 0 && (part.kind == PartKind::Loop || part.kind == PartKind::Drums))
         pitchShift (buf, shift, sr);
+    shapeForMix (song, part, buf, sr);
     return true;
 }
 
@@ -678,11 +795,13 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
     lp::Weather calm; // a gentle, neutral sky for the song's sounds
     calm.rainMm = 0; calm.windKmh = 6; calm.cloudPct = 30; calm.temperatureC = 18; calm.humidityPct = 60;
 
+    Song dry = song;          // first pass: every track, without the reference's tone yet
+    dry.mixShaped = false;
     for (size_t pi = 0; pi < song.parts.size(); ++pi)
     {
         const auto& part = song.parts[pi];
         juce::AudioBuffer<float> buf;
-        if (! renderPart (song, part, rs, buf, shouldStop)) return false;
+        if (! renderPart (dry, part, rs, buf, shouldStop)) return false;
         for (int ch = 0; ch < 2; ++ch)
             mix.addFrom (ch, 0, buf, ch, 0, total, 1.6f);
 
@@ -693,14 +812,75 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
         if (shouldStop && shouldStop()) return false;
     }
 
-    // the full mix: gentle glue, then never above -1 dB
-    float peak = 0.0f;
-    for (int ch = 0; ch < 2; ++ch)
+    // the reference's tone: compare the mix with it, and gently move every track toward it
+    // (half way, at most 6 dB per octave, smoothed) - its overall colour, never its audio
+    std::array<float, 10> eq {};
+    if (song.refTone.valid)
     {
-        auto* d = mix.getWritePointer (ch);
-        for (int i = 0; i < total; ++i) { d[i] = std::tanh (d[i] * 0.9f); peak = std::max (peak, std::abs (d[i])); }
+        std::vector<float> mono ((size_t) total);
+        for (int i = 0; i < total; ++i) mono[(size_t) i] = 0.5f * (mix.getSample (0, i) + mix.getSample (1, i));
+        const auto now = measureTone (mono.data(), total, sr);
+        if (now.valid)
+        {
+            std::array<float, 10> diff {};
+            for (int i = 0; i < 10; ++i) diff[(size_t) i] = song.refTone.bandsDb[(size_t) i] - now.bandsDb[(size_t) i];
+            for (int i = 0; i < 10; ++i)
+            {
+                const float a = diff[(size_t) std::max (0, i - 1)], b = diff[(size_t) i], c = diff[(size_t) std::min (9, i + 1)];
+                eq[(size_t) i] = juce::jlimit (-6.0f, 6.0f, 0.5f * (0.25f * a + 0.5f * b + 0.25f * c));
+            }
+            if (sr < 36000.0) eq[9] = 0.0f;
+            MatchEq m;
+            m.setup (eq, sr);
+            m.process (mix, 0, total);
+        }
     }
-    if (peak > 0.0f) mix.applyGain (0.89f / peak);
+    out.matchEqDb = eq;
+
+    // loudness like the reference (without one, a calm level)
+    double sq = 0;
+    for (int ch = 0; ch < 2; ++ch) { auto* d = mix.getReadPointer (ch); for (int i = 0; i < total; ++i) sq += (double) d[i] * d[i]; }
+    const float rmsDb = (float) juce::Decibels::gainToDecibels (std::sqrt (sq / (2.0 * total)), -100.0);
+    const float target = song.refTone.valid ? juce::jlimit (-20.0f, -10.0f, song.refTone.rmsDb) : -16.0f;
+    const float loud = juce::jlimit (-24.0f, 18.0f, target - rmsDb);
+    // every track gets the same tone and level, so the stems add up to this mix (and edits match later)
+    out.matchGainDb = loud + juce::Decibels::gainToDecibels (1.6f);
+    for (auto& stem : out.stems)
+    {
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        juce::AudioBuffer<float> b;
+        {
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (stem));
+            if (rd == nullptr) continue;
+            b.setSize (2, (int) rd->lengthInSamples);
+            rd->read (&b, 0, (int) rd->lengthInSamples, 0, true, true);
+        }
+        MatchEq se;
+        se.setup (eq, sr);
+        se.process (b, 0, b.getNumSamples());
+        b.applyGain (juce::Decibels::decibelsToGain (out.matchGainDb));
+        if (! writeWav (stem, b, sr)) return false;
+        if (shouldStop && shouldStop()) return false;
+    }
+
+    // the full mix: up to the level, a soft limiter keeps peaks under -1 dB
+    {
+        const float gain = juce::Decibels::decibelsToGain (loud);
+        const float ceil = 0.89f;
+        float peak = 0.0f;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto* d = mix.getWritePointer (ch);
+            for (int i = 0; i < total; ++i)
+            {
+                const float x = d[i] * gain;
+                d[i] = std::abs (x) < 0.6f ? x : std::copysign (0.6f + (ceil - 0.6f) * std::tanh ((std::abs (x) - 0.6f) / (ceil - 0.6f)), x);
+                peak = std::max (peak, std::abs (d[i]));
+            }
+        }
+        if (peak > ceil) mix.applyGain (ceil / peak);
+    }
     out.mixFile = folder.getChildFile (song.title + " - full mix.wav");
     if (! writeWav (out.mixFile, mix, sr)) return false;
     out.mixAudio = std::make_shared<juce::AudioBuffer<float>> (std::move (mix));
