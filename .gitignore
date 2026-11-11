@@ -6,3 +6,6 @@ renders/*.wav
 .vs/
 renders/*.mp4
 renders/*.png
+
+# songs rendered for listening (not source)
+renders/**/*.mp3
