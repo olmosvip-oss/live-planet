@@ -556,7 +556,8 @@ juce::AudioBuffer<float> keySong (int key, bool minor, double seconds, bool drum
         if (type == 0 || type == 4)
             for (int q = 0; q < 4; ++q)
             {
-                const int d = type == 4 ? (int[]) { 0, 2, 4, 1, 0, 4, 5, 2 }[(barN * 4 + q) % 8] : rng.nextInt (7);
+                static const int tune[8] = { 0, 2, 4, 1, 0, 4, 5, 2 };
+                const int d = type == 4 ? tune[(barN * 4 + q) % 8] : rng.nextInt (7);
                 addTone (hz (key + 72 + sc[d]), t0 + q * bar / 4, bar / 4, 0.12f, 5);
             }
         if (drums)
