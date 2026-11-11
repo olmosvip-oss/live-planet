@@ -583,7 +583,7 @@ int keyTest()
     juce::Random rng (7);
     int songExact = 0, songNotes = 0, loopExact = 0, loopNotes = 0, loopUnclear = 0, total = 0, loopsTotal = 0;
     int missBy[5] {}, unclearBy[5] {}, badBy[5] {};
-    int decEar[3] {}, decName[3] {};
+    int decEar[3] {}, decName[3] {}, decBadName[3] {};
     for (int trial = 0; trial < 2; ++trial)
         for (int key = 0; key < 12; ++key)
             for (int mi = 0; mi < 2; ++mi)
@@ -608,10 +608,12 @@ int keyTest()
                     {
                         const int want = songOff;
                         const int sk = (key + songOff) % 12;
-                        for (int named = 0; named < 2; ++named)
+                        for (int named = 0; named < 3; ++named)
                         {
-                            const int t = lp::song::loopTune (rd, clear, named ? key : -1, mi == 1, sk, mi == 1);
-                            auto& c = named ? decName : decEar;
+                            // named 2: the label is wrong (says 2 semitones up): want the ear to catch it, else a wrong tuning
+                            const int nameKey = named == 0 ? -1 : (named == 1 ? key : (key + 2) % 12);
+                            const int t = lp::song::loopTune (rd, clear, nameKey, mi == 1, sk, mi == 1);
+                            auto& c = named == 0 ? decEar : (named == 1 ? decName : decBadName);
                             if (t == 99 || std::abs (t) > 3) ++c[1];      // skipped (harmless)
                             else if (t == want) ++c[0];                    // right
                             else { ++c[2]; ++badBy[type]; }               // wrong tuning applied
@@ -630,6 +632,7 @@ int keyTest()
     for (int t = 0; t < 5; ++t) std::printf ("  %-15s wrong %d  unclear %d  wrong tuning applied %d (of %d)\n", names[t], missBy[t], unclearBy[t], badBy[t], total * 4);
     std::printf ("tuning decisions, ear only:  right %d  skipped %d  WRONG %d\n", decEar[0], decEar[1], decEar[2]);
     std::printf ("tuning decisions, with name: right %d  skipped %d  WRONG %d\n", decName[0], decName[1], decName[2]);
+    std::printf ("with a WRONG label:          right %d  skipped %d  WRONG %d\n", decBadName[0], decBadName[1], decBadName[2]);
     return 0;
 }
 
@@ -673,7 +676,14 @@ int promptTest()
         auto p = lp::song::parsePrompt (t);
         std::printf ("%-62s -> %s\n", t, p.summary.toRawUTF8());
     }
-    return 0;
+    // a C minor reference + a bright genre: the song must stay in C minor
+    lp::song::Profile ref; ref.valid = true; ref.bpm = 124; ref.key = 0; ref.minor = true;
+    auto p = lp::song::parsePrompt ("rock indie pop");
+    lp::song::Options o; o.shiftKey = false; o.promptMood = p.mood; o.dawBpm = 90;
+    if (p.genre != nullptr) { o.style = (int) p.genre->style; o.genreLo = p.genre->lo; o.genreHi = p.genre->hi; o.genreBpm = p.genre->typical; }
+    const auto t = lp::song::chooseTarget (ref, lp::Weather {}, o);
+    std::printf ("C minor reference + \"rock indie pop\" -> %s %s at %.0f bpm\n", lp::noteName (t.key), t.minor ? "minor" : "major", t.bpm);
+    return t.key == 0 && t.minor ? 0 : 1;
 }
 
 // tone match: the same reference made dark (lo-fi) and bright; does each new song move toward it?

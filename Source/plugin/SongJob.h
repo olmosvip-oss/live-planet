@@ -562,7 +562,14 @@ private:
             t << ", fitted to " << juce::roundToInt (song.bpm) << " bpm (" << (fitPercent > 0 ? "+" : "") << juce::String (fitPercent, 1) << "%)";
         const juce::String songKey = juce::String (lp::noteName (song.key)) + (song.minor ? " minor" : " major");
         const auto* e = library.find (loop.samplePath);
-        const juce::String was = e != nullptr && e->key >= 0 ? juce::String (" (it was ") + lp::noteName (e->key) + (e->minor ? " minor)" : " major)") : juce::String();
+        juce::String was;
+        if (auto h = keyCache.find (loop.samplePath); h != keyCache.end())
+        {
+            bool usedName = false;
+            lp::song::loopTune (h->second.reading, h->second.clear, e != nullptr ? e->key : -1, e != nullptr && e->minor, song.key, song.minor, &usedName);
+            if (usedName && e != nullptr) was = juce::String (" (labelled ") + lp::noteName (e->key) + (e->minor ? " minor)" : " major)");
+            else if (h->second.key >= 0) was = juce::String (" (heard in ") + lp::noteName (h->second.key) + (h->second.minor ? " minor)" : " major)");
+        }
         if (loop.autoTune != 0)
             t << ", tuned " << (loop.autoTune > 0 ? "+" : "") << loop.autoTune << " st into " << songKey << was;
         else

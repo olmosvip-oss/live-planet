@@ -90,14 +90,21 @@ inline int tuneShift (int fromKey, bool fromMinor, int toKey, bool toMinor)
 // (nameKey -1 = the name says nothing). Returns semitones, or 99 when it's too unsure to use the loop.
 // The name is trusted unless the audio clearly disagrees; among keys that fit about equally well, the one
 // needing the least tuning wins, so a loop is only moved when it clearly needs it.
-inline int loopTune (const KeyReading& r, bool clear, int nameKey, bool nameMinor, int songKey, bool songMinor)
+inline int loopTune (const KeyReading& r, bool clear, int nameKey, bool nameMinor, int songKey, bool songMinor, bool* usedName = nullptr)
 {
     auto score = [&] (int k, bool m) { return r.scores[(size_t) ((k + 120) % 12 + (m ? 12 : 0))]; };
+    if (usedName != nullptr) *usedName = false;
     if (nameKey >= 0)
     {
+        // sample packs label their keys, and the labels are almost always right: the ear only
+        // overrules one when it is very sure and the label's key really doesn't fit what it hears
         const int rk = nameMinor ? (nameKey + 3) % 12 : (nameKey + 9) % 12;
         const float s = std::max (score (nameKey, nameMinor), score (rk, ! nameMinor));
-        if (! clear || s >= r.best - 0.15f) return tuneShift (nameKey, nameMinor, songKey, songMinor);
+        if (! clear || r.best < 0.72f || s >= r.best - 0.3f)
+        {
+            if (usedName != nullptr) *usedName = true;
+            return tuneShift (nameKey, nameMinor, songKey, songMinor);
+        }
     }
     if (! clear) return 99;
     int bestShift = 99; float bestS = -2;
