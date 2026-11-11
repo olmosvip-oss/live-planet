@@ -10,7 +10,9 @@ namespace lp::song
 {
 
 enum class SampleKind { Kick, Snare, Clap, Hat, OpenHat, Perc, Bass808, Loop, Other };
-enum class LoopKind { None, Drums, Bass, Keys, Guitar, Synth, Vocal, Strings, Other };
+enum class LoopKind { None, Drums, Bass, Keys, Guitar, Synth, Vocal, Strings, Other,
+                      Pad, Lead, Pluck, Brass, Woodwind, Mallet, Perc, FX };
+constexpr int kNumLoopKinds = 17;
 
 struct LibraryEntry
 {
@@ -42,6 +44,11 @@ public:
 
     // Understands one file name. Public so it can be tested.
     static LibraryEntry parse (const juce::File& file, const juce::File& root);
+    // what kind of sound / loop and which grooves, from the words in a path (used by parse, and to update old caches)
+    static void classify (LibraryEntry& e, const juce::String& fileName, const juce::String& path);
+    static void classifyKind (LibraryEntry& e, const juce::StringArray& tokens);
+    // loops of one kind that fit a song's tempo (at half / normal / double speed, within 10%)
+    std::vector<const LibraryEntry*> loopsOfKind (LoopKind k, double songBpm) const;
     const LibraryEntry* find (const juce::String& path) const
     {
         for (auto& e : entries) if (e.path == path) return &e;
@@ -83,8 +90,9 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
 
 inline const char* loopKindName (LoopKind k)
 {
-    static const char* n[] = { "", "drum loop", "bass", "keys", "guitar", "synth", "vocal", "strings", "loop" };
-    return n[(int) k];
+    static const char* n[] = { "", "drum loop", "bass", "keys", "guitar", "synth", "vocal", "strings", "loop",
+                               "pad", "lead", "pluck", "brass", "woodwind", "bells", "percussion", "fx" };
+    return n[juce::jlimit (0, kNumLoopKinds - 1, (int) k)];
 }
 
 } // namespace lp::song

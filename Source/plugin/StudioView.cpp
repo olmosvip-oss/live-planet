@@ -7,7 +7,21 @@ using lp::ui::font;
 
 Rectangle<float> StudioView::rowBounds (int row) const
 {
-    return { 10.0f, 30.0f + (float) row * 27.0f, (float) getWidth() - 20.0f, 25.0f };
+    return { 10.0f, 30.0f + (float) (row - scroll) * 27.0f, (float) getWidth() - 20.0f, 25.0f };
+}
+
+int StudioView::visibleRows() const
+{
+    return std::max (1, (int) ((getHeight() - 30 - 22) / 27));
+}
+
+void StudioView::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
+{
+    const int total = (int) proc.songJob.getStatus().tracks.size() + 1; // + the "add" row
+    const int maxScroll = std::max (0, total - visibleRows());
+    scroll = jlimit (0, maxScroll, scroll + (w.deltaY < 0 ? 1 : -1));
+    hoverRow = -1;
+    repaint();
 }
 
 Rectangle<float> StudioView::colBounds (int row, Col c) const
@@ -27,6 +41,28 @@ Rectangle<float> StudioView::colBounds (int row, Col c) const
         case PitchUp:   return { r.getRight() - 22, y + 2, 20, h - 4 };
         default:        return {};
     }
+}
+
+Rectangle<float> StudioView::addBounds (int numTracks) const
+{
+    auto r = rowBounds (numTracks);
+    return { r.getX() + 50.0f, r.getY() + 2.0f, 150.0f, r.getHeight() - 4.0f };
+}
+
+void StudioView::showAddMenu()
+{
+    const auto st = proc.songJob.getStatus();
+    using LK = lp::song::LoopKind;
+    PopupMenu m;
+    m.addSectionHeader ("add a loop from your library (in key and tempo)");
+    for (LK k : { LK::Keys, LK::Guitar, LK::Synth, LK::Lead, LK::Pluck, LK::Pad, LK::Strings, LK::Brass, LK::Woodwind,
+                  LK::Mallet, LK::Vocal, LK::Bass, LK::Drums, LK::Perc, LK::FX, LK::Other })
+    {
+        const int n = (size_t) k < st.kindCounts.size() ? st.kindCounts[(size_t) k] : 0;
+        m.addItem ((int) k, String (lp::song::loopKindName (k)) + "   (" + String (n) + ")", n > 0);
+    }
+    m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (addBounds ((int) st.tracks.size()).toNearestInt())),
+                     [this] (int r) { if (r > 0) { proc.songJob.editTrack (r, SongJob::EditOp::Add); repaint(); } });
 }
 
 StudioView::Col StudioView::colAt (int row, Point<float> p) const
@@ -58,8 +94,23 @@ void StudioView::paint (Graphics& g)
         g.drawText ("updating...", head, Justification::centredRight, false);
     }
 
+    {
+        const int total = (int) st.tracks.size() + 1;
+        scroll = jlimit (0, std::max (0, total - visibleRows()), scroll);
+        const int hiddenBelow = total - (scroll + visibleRows()), hiddenAbove = scroll;
+        if (hiddenBelow > 0 || hiddenAbove > 0)
+        {
+            g.setColour (accent);
+            g.setFont (font (10.5f, lp::ui::Medium));
+            String more;
+            if (hiddenAbove > 0) more << hiddenAbove << " more above";
+            if (hiddenBelow > 0) more << (more.isEmpty() ? "" : "  -  ") << hiddenBelow << " more below";
+            g.drawText (more + "  (scroll)", Rectangle<float> (110.0f, 8.0f, 160.0f, 16.0f), Justification::centredLeft, false);
+        }
+    }
     for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
     {
+        if (! rowShown (i)) continue;
         const auto& t = st.tracks[(size_t) i];
         auto& m = proc.studio.mix[(size_t) i];
         auto row = rowBounds (i);
@@ -118,6 +169,17 @@ void StudioView::paint (Graphics& g)
         button (colBounds (i, PitchUp), "+", true, false);
     }
 
+    // add another instrument from your library
+    if (! st.tracks.empty() && (int) st.tracks.size() < StudioPlayer::maxTracks && rowShown ((int) st.tracks.size()))
+    {
+        auto r = addBounds ((int) st.tracks.size());
+        g.setColour (Colours::white.withAlpha (hoverAdd ? 0.16f : 0.08f));
+        g.fillRoundedRectangle (r, 6.0f);
+        g.setColour (Colours::white.withAlpha (0.85f));
+        g.setFont (font (11.5f, lp::ui::Medium));
+        g.drawText ("+  add instrument", r, Justification::centred, false);
+    }
+
     // how the hovered track was made
     if (hoverRow >= 0 && hoverRow < (int) st.tracks.size())
     {
@@ -144,9 +206,15 @@ void StudioView::mouseDown (const MouseEvent& e)
 {
     const auto st = proc.songJob.getStatus();
     dragRow = -1;
+    if (! st.tracks.empty() && (int) st.tracks.size() < StudioPlayer::maxTracks && rowShown ((int) st.tracks.size())
+        && addBounds ((int) st.tracks.size()).contains (e.position))
+    {
+        showAddMenu();
+        return;
+    }
     for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
     {
-        if (! rowBounds (i).expanded (0.0f, 1.0f).contains (e.position)) continue;
+        if (! rowShown (i) || ! rowBounds (i).expanded (0.0f, 1.0f).contains (e.position)) continue;
         const auto c = colAt (i, e.position);
         auto& m = proc.studio.mix[(size_t) i];
         switch (c)
@@ -182,6 +250,8 @@ void StudioView::mouseMove (const MouseEvent& e)
 {
     int h = -1;
     for (int i = 0; i < StudioPlayer::maxTracks; ++i)
-        if (rowBounds (i).contains (e.position)) h = i;
-    if (h != hoverRow) { hoverRow = h; repaint(); }
+        if (rowShown (i) && rowBounds (i).contains (e.position)) h = i;
+    const auto n = (int) proc.songJob.getStatus().tracks.size();
+    const bool ha = n > 0 && rowShown (n) && addBounds (n).contains (e.position);
+    if (h != hoverRow || ha != hoverAdd) { hoverRow = h; hoverAdd = ha; repaint(); }
 }

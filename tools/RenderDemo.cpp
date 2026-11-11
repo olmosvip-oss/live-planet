@@ -6,6 +6,7 @@
 #include "../Source/engine/Engine.h"
 #include "../Source/song/Song.h"
 #include "../Source/song/Library.h"
+#include "../Source/engine/SampleFx.h"
 
 namespace
 {
@@ -440,7 +441,7 @@ static int libraryTest (const juce::File& outDir)
 }
 
 // a 2-bar loop at 155 bpm (tone + a click each beat), fitted into a 120 bpm song: beats must land on 120's grid
-int stretchTest (const juce::File& dir)
+int stretchTest (const juce::File& dir, int tune = 0)
 {
     const double sr = 48000.0, srcBpm = 155.0, songBpm = 120.0;
     const int len = (int) std::round (8 * 60.0 / srcBpm * sr);
@@ -465,7 +466,7 @@ int stretchTest (const juce::File& dir)
     song.sections.push_back ({ "verse", 0, 4, 0.6f });
     lp::song::Part part;
     part.name = "loop"; part.kind = lp::song::PartKind::Loop;
-    part.samplePath = f.getFullPathName(); part.loopBars = 2; part.loopStartBars = { 0, 2 };
+    part.samplePath = f.getFullPathName(); part.loopBars = 2; part.loopStartBars = { 0, 2 }; part.autoTune = tune;
     lp::song::RenderSettings rs;
     juce::AudioBuffer<float> out;
     if (! lp::song::renderPart (song, part, rs, out)) { std::printf ("render failed\n"); return 1; }
@@ -498,6 +499,167 @@ int stretchTest (const juce::File& dir)
     return worst < 8.0 && std::abs (hz - 440.0) < 6.0 ? 0 : 1;
 }
 
+// key-finding accuracy: synthetic songs / loops in all 24 keys, with bright tones, drums, detuning
+juce::AudioBuffer<float> keySong (int key, bool minor, double seconds, bool drums, bool bassy, juce::Random& rng, double& detuneCents, int type = 0)
+{
+    const double sr = 44100.0, bpm = 100.0 + rng.nextInt (40);
+    const int n = (int) (seconds * sr);
+    juce::AudioBuffer<float> b (1, n);
+    b.clear();
+    float* x = b.getWritePointer (0);
+    detuneCents = rng.nextFloat() * 70.0 - 35.0;
+    const double tune = std::pow (2.0, detuneCents / 1200.0);
+    auto hz = [&] (int midi) { return 440.0 * std::pow (2.0, (midi - 69) / 12.0) * tune; };
+    const int majS[7] = { 0, 2, 4, 5, 7, 9, 11 }, minS[7] = { 0, 2, 3, 5, 7, 8, 10 };
+    const int* sc = minor ? minS : majS;
+    // progressions by scale degree
+    const int majP[4] = { 0, 4, 5, 3 }, minP[4] = { 0, 5, 2, 6 };
+    const int* prog = minor ? minP : majP;
+    const double bar = 240.0 / bpm;
+    auto addTone = [&] (double f, double t0, double dur, float amp, int harmonics)
+    {
+        const int i0 = (int) (t0 * sr), i1 = std::min (n, (int) ((t0 + dur) * sr));
+        for (int i = i0; i < i1; ++i)
+        {
+            const double t = (i - i0) / sr;
+            double v = 0;
+            for (int h = 1; h <= harmonics; ++h) if (f * h < 8000) v += std::sin (2 * juce::MathConstants<double>::pi * f * h * t) / h;
+            x[i] += (float) (amp * v * std::exp (-t * 1.5) * std::min (1.0, t * 200));
+        }
+    };
+    for (int barN = 0; barN * bar < seconds; ++barN)
+    {
+        const int deg = type == 1 ? (barN % 2 == 0 ? 0 : (minor ? 6 : 3)) : prog[barN % 4];
+        const double t0 = barN * bar;
+        if (type == 0 || type == 1)
+            for (int k = 0; k < 3; ++k)
+            {
+                const int d = deg + 2 * k;
+                const int pc = sc[d % 7] + 12 * (d / 7);
+                addTone (hz (key + 60 + pc), t0, bar, 0.12f, 12);
+            }
+        if (type == 3)
+            for (int k : { 0, 7, 12 }) addTone (hz (key + 48 + sc[deg] + k), t0, bar, 0.15f, 16);
+        if (type == 2)
+        {
+            const int riff[8] = { 0, 0, 12, 7, 0, 10, 7, 3 };
+            for (int q = 0; q < 8; ++q)
+            {
+                int iv = riff[q];
+                if (iv == 3 && ! minor) iv = 4;
+                if (iv == 10 && ! minor) iv = 9;
+                addTone (hz (key + 36 + iv), t0 + q * bar / 8, bar / 8, 0.4f, 6);
+            }
+        }
+        else if (type != 4)
+            addTone (hz (key + 36 + sc[deg]), t0, bar, bassy ? 0.35f : 0.15f, 4);
+        if (type == 0 || type == 4)
+            for (int q = 0; q < 4; ++q)
+            {
+                const int d = type == 4 ? (int[]) { 0, 2, 4, 1, 0, 4, 5, 2 }[(barN * 4 + q) % 8] : rng.nextInt (7);
+                addTone (hz (key + 72 + sc[d]), t0 + q * bar / 4, bar / 4, 0.12f, 5);
+            }
+        if (drums)
+            for (int q = 0; q < 8; ++q)
+            {
+                const int i0 = (int) ((t0 + q * bar / 8) * sr);
+                for (int i = 0; i < 4000 && i0 + i < n; ++i)
+                {
+                    const double t = i / sr;
+                    float v = (float) (rng.nextFloat() * 2 - 1) * (float) std::exp (-t * 60) * 0.3f; // hat
+                    if (q % 4 == 0) v += (float) std::sin (2 * juce::MathConstants<double>::pi * (50 + 120 * std::exp (-t * 30)) * t) * (float) std::exp (-t * 12) * 0.8f;
+                    if (q % 4 == 2) v += (float) (rng.nextFloat() * 2 - 1) * (float) std::exp (-t * 20) * 0.5f;
+                    x[i0 + i] += v;
+                }
+            }
+    }
+    return b;
+}
+
+int keyTest()
+{
+    juce::Random rng (7);
+    int songExact = 0, songNotes = 0, loopExact = 0, loopNotes = 0, loopUnclear = 0, total = 0, loopsTotal = 0;
+    int missBy[5] {}, unclearBy[5] {}, badBy[5] {};
+    int decEar[3] {}, decName[3] {};
+    for (int trial = 0; trial < 2; ++trial)
+        for (int key = 0; key < 12; ++key)
+            for (int mi = 0; mi < 2; ++mi)
+            {
+                ++total;
+                double det;
+                auto song = keySong (key, mi == 1, 40.0, true, true, rng, det);
+                auto prof = lp::song::analyse (song.getReadPointer (0), song.getNumSamples(), 44100.0);
+                const bool sameNotes = lp::song::tuneShift (prof.key, prof.minor, key, mi == 1) == 0;
+                songNotes += sameNotes;
+                songExact += prof.key == key && prof.minor == (mi == 1);
+                if (! sameNotes) std::printf ("  song miss: %s%s heard %s%s (detune %.0f c)\n", lp::noteName (key), mi ? "m" : "", lp::noteName (prof.key), prof.minor ? "m" : "", det);
+                for (int type = 0; type < 5; ++type)
+                {
+                    ++loopsTotal;
+                    auto loop = keySong (key, mi == 1, 8.0, trial == 1, false, rng, det, type);
+                    int k = -1; bool m = false;
+                    lp::song::KeyReading rd;
+                    const bool clear = lp::song::detectKey (loop.getReadPointer (0), loop.getNumSamples(), 44100.0, k, m, &rd);
+                    // the decision: song in the same key, and song 2 semitones up (loop must be moved +2)
+                    for (int songOff : { 0, 2 })
+                    {
+                        const int want = songOff;
+                        const int sk = (key + songOff) % 12;
+                        for (int named = 0; named < 2; ++named)
+                        {
+                            const int t = lp::song::loopTune (rd, clear, named ? key : -1, mi == 1, sk, mi == 1);
+                            auto& c = named ? decName : decEar;
+                            if (t == 99 || std::abs (t) > 3) ++c[1];      // skipped (harmless)
+                            else if (t == want) ++c[0];                    // right
+                            else { ++c[2]; ++badBy[type]; }               // wrong tuning applied
+                        }
+                    }
+                    if (! clear) { ++loopUnclear; ++unclearBy[type]; continue; }
+                    const bool ln = lp::song::tuneShift (k, m, key, mi == 1) == 0;
+                    loopNotes += ln;
+                    loopExact += k == key && m == (mi == 1);
+                    if (! ln) ++missBy[type];
+                }
+            }
+    std::printf ("songs: right notes %d/%d, exact key %d/%d\nloops: right notes %d/%d, exact %d/%d, unclear %d\n",
+                 songNotes, total, songExact, total, loopNotes, loopsTotal, loopExact, loopsTotal, loopUnclear);
+    const char* names[5] = { "full", "two-chord vamp", "bass riff", "power chords", "melody only" };
+    for (int t = 0; t < 5; ++t) std::printf ("  %-15s wrong %d  unclear %d  wrong tuning applied %d (of %d)\n", names[t], missBy[t], unclearBy[t], badBy[t], total * 4);
+    std::printf ("tuning decisions, ear only:  right %d  skipped %d  WRONG %d\n", decEar[0], decEar[1], decEar[2]);
+    std::printf ("tuning decisions, with name: right %d  skipped %d  WRONG %d\n", decName[0], decName[1], decName[2]);
+    return 0;
+}
+
+int fxTest()
+{
+    const int sr = 48000, n = 512, blocks = 400;
+    for (int mode = 0; mode < 3; ++mode)
+    {
+        lp::SampleFx fx; fx.prepare (sr, n);
+        lp::SampleFxSettings s;
+        if (mode == 0) { s.warmth = s.echo = s.space = s.shimmer = s.nostalgia = s.atmos = 0; }
+        if (mode == 2) { s.warmth = s.echo = s.space = s.shimmer = s.nostalgia = s.atmos = 1; s.gainDb = 6; }
+        double err = 0, sig = 0, peak = 0; bool finite = true;
+        float L[n], R[n], sl[n], sr2[n];
+        for (int b = 0; b < blocks; ++b)
+        {
+            for (int i = 0; i < n; ++i) { const int k = b * n + i; L[i] = R[i] = sl[i] = sr2[i] = 0.5f * std::sin (k * 0.02f) * ((k / 6000) % 2); }
+            float inL[n]; std::copy (L, L + n, inL);
+            fx.process (L, R, sl, sr2, n, s);
+            for (int i = 0; i < n; ++i)
+            {
+                finite = finite && std::isfinite (L[i]) && std::isfinite (R[i]);
+                err += (L[i] - inL[i]) * (L[i] - inL[i]); sig += inL[i] * inL[i];
+                peak = std::max (peak, (double) std::abs (L[i]));
+            }
+        }
+        std::printf ("%s: difference from dry %.1f%%  peak %.2f  finite %s\n", mode == 0 ? "all knobs 0 " : mode == 1 ? "defaults    " : "all knobs max",
+                     100.0 * std::sqrt (err / sig), peak, finite ? "yes" : "NO");
+    }
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -513,7 +675,11 @@ int main (int argc, char** argv)
     if (argc > 2 && juce::String (argv[1]) == "--samples")
         return sampleTest (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--stretch")
-        return stretchTest (juce::File (argv[2]));
+        return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
+    if (argc > 1 && juce::String (argv[1]) == "--fx")
+        return fxTest();
+    if (argc > 1 && juce::String (argv[1]) == "--keys")
+        return keyTest();
     if (argc > 1 && juce::String (argv[1]) == "--knobs")
         return knobTest();
 

@@ -6,6 +6,7 @@
 #include "WeatherService.h"
 #include "SongJob.h"
 #include "StudioPlayer.h"
+#include "../engine/SampleFx.h"
 
 class LivePlanetProcessor : public juce::AudioProcessor, private juce::Timer
 {
@@ -66,6 +67,8 @@ public:
 
     // the studio: the song's tracks with a live mixer, and a preview transport
     StudioPlayer studio;
+    lp::SampleFx sampleFx;                      // the knobs, for your Splice samples
+    std::vector<float> fxL, fxR, sendL, sendR;
     std::atomic<bool> previewPlaying { false };
     std::atomic<double> previewPos { 0.0 };   // in 48 kHz samples
     std::atomic<double> dawBpm { 0.0 };       // your project's tempo, as last reported

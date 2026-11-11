@@ -14,7 +14,13 @@ public:
     {
         std::atomic<float> gainDb { 0.0f }, pan { 0.0f }, tone { 0.0f }; // tone: -1 darker .. 0 .. +1 thinner
         std::atomic<bool> mute { false }, solo { false };
+        // your samples go through the knobs' effects; group: 0 none, 1 chords, 2 melody, 3 bass, 4 drums
+        std::atomic<bool> sample { false };
+        std::atomic<int> group { 0 };
     };
+
+    // the mix knobs (chords / melody / bass) as gains for each group; [0] unused
+    std::array<std::atomic<float>, 5> groupGain { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 
     StudioPlayer() { thread.startThread (juce::Thread::Priority::normal); }
     ~StudioPlayer() { clear(); thread.stopThread (2000); }
@@ -51,7 +57,9 @@ public:
     juce::int64 length() const { return lengthSamples.load(); }
 
     // audio thread: adds the mixed tracks into L/R. pos and inc are in file samples.
-    void render (float* L, float* R, int n, double pos, double inc, double sampleRate)
+    // samples go to fxL/R (and their echo / room send to sendL/R) instead of L/R
+    void render (float* L, float* R, int n, double pos, double inc, double sampleRate,
+                 float* fxL = nullptr, float* fxR = nullptr, float* sendL = nullptr, float* sendR = nullptr)
     {
         const juce::SpinLock::ScopedTryLockType tl (lock);
         if (! tl.isLocked() || readers.empty() || pos < 0) return;
@@ -68,7 +76,12 @@ public:
             if (start >= r->lengthInSamples) continue;
             scratch.clear();
             r->read (&scratch, 0, need, start, true, true);
-            const float g = juce::Decibels::decibelsToGain (m.gainDb.load());
+            const bool toFx = fxL != nullptr && m.sample.load();
+            const int grp = juce::jlimit (0, 4, m.group.load());
+            const float g = juce::Decibels::decibelsToGain (m.gainDb.load()) * (toFx ? groupGain[(size_t) grp].load() : 1.0f);
+            const float send = grp == 4 ? 0.3f : 1.0f; // drums: a little room, stays punchy
+            float* oL = toFx ? fxL : L;
+            float* oR = toFx ? fxR : R;
             const float p = m.pan.load();
             const float gl = g * std::min (1.0f, 1.0f - p), gr = g * std::min (1.0f, 1.0f + p);
             // tone: a gentle low-pass going down, a high-pass going up
@@ -92,8 +105,9 @@ public:
                 float xr = b[i0] + (b[i0 + 1] - b[i0]) * fr;
                 if (tone < -0.01f) { f.l.tick (xl); f.r.tick (xr); xl = f.l.lp; xr = f.r.lp; }
                 else if (tone > 0.01f) { f.l.tick (xl); f.r.tick (xr); xl = f.l.hp; xr = f.r.hp; }
-                L[i] += xl * gl;
-                R[i] += xr * gr;
+                oL[i] += xl * gl;
+                oR[i] += xr * gr;
+                if (toFx) { sendL[i] += xl * gl * send; sendR[i] += xr * gr * send; }
             }
         }
     }

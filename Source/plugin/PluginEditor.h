@@ -192,7 +192,8 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
-    void mouseExit (const juce::MouseEvent&) override { hoverRow = -1; repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { hoverRow = -1; hoverAdd = false; repaint(); }
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     std::function<void()> onMixChanged;
     bool mixDirty = false;
 
@@ -200,6 +201,12 @@ private:
     enum Col { None, Mute, Solo, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp };
     juce::Rectangle<float> rowBounds (int row) const;
     juce::Rectangle<float> colBounds (int row, Col c) const;
+    juce::Rectangle<float> addBounds (int numTracks) const;
+    void showAddMenu();
+    bool hoverAdd = false;
+    int scroll = 0;                 // first track row shown
+    int visibleRows() const;
+    bool rowShown (int row) const { return row >= scroll && row < scroll + visibleRows(); }
     Col colAt (int row, juce::Point<float> p) const;
     void setFromX (int row, Col c, float x);
     LivePlanetProcessor& proc;

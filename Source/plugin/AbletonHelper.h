@@ -132,7 +132,15 @@ inline juce::String helperPatcher()
               "outlettype": [ "bang", "" ], "patching_rect": [ 200.0, 60.0, 50.0, 22.0 ] } },
    { "box": { "id": "obj-7", "maxclass": "message", "text": "build", "numinlets": 2, "numoutlets": 1,
               "outlettype": [ "" ], "patching_rect": [ 200.0, 95.0, 50.0, 22.0 ] } },
-   { "box": { "id": "obj-3", "maxclass": "message", "text": "make a song in Live Planet, then press", "numinlets": 2, "numoutlets": 1,
+   { "box": { "id": "obj-8", "maxclass": "newobj", "text": "live.thisdevice", "numinlets": 1, "numoutlets": 3,
+              "outlettype": [ "bang", "int", "int" ], "patching_rect": [ 380.0, 20.0, 100.0, 22.0 ] } },
+   { "box": { "id": "obj-9", "maxclass": "newobj", "text": "deferlow", "numinlets": 1, "numoutlets": 1,
+              "outlettype": [ "" ], "patching_rect": [ 380.0, 60.0, 70.0, 22.0 ] } },
+   { "box": { "id": "obj-10", "maxclass": "newobj", "text": "plugin~", "numinlets": 2, "numoutlets": 2,
+              "outlettype": [ "signal", "signal" ], "patching_rect": [ 380.0, 120.0, 60.0, 22.0 ] } },
+   { "box": { "id": "obj-11", "maxclass": "newobj", "text": "plugout~", "numinlets": 2, "numoutlets": 0,
+              "patching_rect": [ 380.0, 170.0, 60.0, 22.0 ] } },
+   { "box": { "id": "obj-3", "maxclass": "message", "text": "drop me on any track: I set the tempo + song locators", "numinlets": 2, "numoutlets": 1,
               "outlettype": [ "" ], "patching_rect": [ 20.0, 130.0, 330.0, 22.0 ],
               "presentation": 1, "presentation_rect": [ 8.0, 48.0, 348.0, 22.0 ] } }
   ],
@@ -142,7 +150,11 @@ inline juce::String helperPatcher()
    { "patchline": { "source": [ "obj-2", 0 ], "destination": [ "obj-3", 0 ] } },
    { "patchline": { "source": [ "obj-5", 0 ], "destination": [ "obj-6", 0 ] } },
    { "patchline": { "source": [ "obj-6", 0 ], "destination": [ "obj-7", 0 ] } },
-   { "patchline": { "source": [ "obj-7", 0 ], "destination": [ "obj-2", 0 ] } }
+   { "patchline": { "source": [ "obj-7", 0 ], "destination": [ "obj-2", 0 ] } },
+   { "patchline": { "source": [ "obj-8", 0 ], "destination": [ "obj-9", 0 ] } },
+   { "patchline": { "source": [ "obj-9", 0 ], "destination": [ "obj-2", 0 ] } },
+   { "patchline": { "source": [ "obj-10", 0 ], "destination": [ "obj-11", 0 ] } },
+   { "patchline": { "source": [ "obj-10", 1 ], "destination": [ "obj-11", 1 ] } }
   ],
   "dependency_cache": [ { "name": "lp_helper.js", "type": "TEXT", "implicit": 1 } ],
   "latency": 0,
@@ -160,7 +172,15 @@ inline juce::File installHelper (const juce::File& latestPointer)
 {
     auto dir = helperFolder();
     dir.createDirectory();
-    dir.getChildFile ("lp_helper.js").replaceWithText (helperScript (latestPointer));
+    const auto script = helperScript (latestPointer);
+    dir.getChildFile ("lp_helper.js").replaceWithText (script);
+    // also where Max always looks, so the device finds its script whichever Max version Live uses
+    const auto docs = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+    for (auto v : { "Max 8", "Max 9" })
+    {
+        auto lib = docs.getChildFile (v).getChildFile ("Library");
+        if (lib.createDirectory()) lib.getChildFile ("lp_helper.js").replaceWithText (script);
+    }
 
     // .amxd = a small binary header, then the patcher as JSON
     const auto json = helperPatcher();

@@ -10,7 +10,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown };
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add }; // Add: the "track" is the LoopKind to add
 
     struct TrackInfo
     {
@@ -20,6 +20,8 @@ public:
         int pitch = 0;
         bool reversed = false;
         int candidates = 0, candidate = 0;
+        bool sample = false; // from your library (the knobs' effects apply live)
+        int group = 0;       // 1 chords, 2 melody, 3 bass, 4 drums
     };
 
     struct Status
@@ -40,6 +42,7 @@ public:
         juce::String usedSamples; // what this song took from your library
         std::vector<TrackInfo> tracks;
         int version = 0;          // goes up whenever a track's audio file changes
+        std::vector<int> kindCounts; // loops of each LoopKind that fit this song's tempo (for "add instrument")
         bool editing = false;
     };
 
@@ -114,6 +117,7 @@ public:
         s.scanning = status.scanning;
         s.librarySounds = status.librarySounds;
         s.libraryLoops = status.libraryLoops;
+        s.kindCounts = status.kindCounts;
         s.usedSamples = status.usedSamples;
         s.tracks = status.tracks;
         s.version = status.version;
@@ -386,16 +390,39 @@ private:
             // samples only: no coded instruments, the song is built from your loops and one-shots
             song.parts.erase (std::remove_if (song.parts.begin(), song.parts.end(), [&] (const lp::song::Part& p2)
                 { return p2.kind != lp::song::PartKind::Drums || song.drumSamples.empty(); }), song.parts.end());
-            int melodic = 0;
-            for (auto& choice : picks.loopSet)
+            // a full band from your library: drums, percussion, bass, up to three melodic instruments
+            // (a different mix each time), a pad, a vocal and an fx
+            using LK = lp::song::LoopKind;
+            const lp::song::LoopChoice *drumC = nullptr, *percC = nullptr, *bassC = nullptr, *vocalC = nullptr, *padC = nullptr, *fxC = nullptr;
+            std::vector<const lp::song::LoopChoice*> melodic;
+            for (auto& c : picks.loopSet)
+                switch (c.kind)
+                {
+                    case LK::Drums: drumC = &c; break;
+                    case LK::Perc:  percC = &c; break;
+                    case LK::Bass:  bassC = &c; break;
+                    case LK::Vocal: vocalC = &c; break;
+                    case LK::Pad:   padC = &c; break;
+                    case LK::FX:    fxC = &c; break;
+                    default:        melodic.push_back (&c); break;
+                }
+            // the main loop's instrument leads; the others are shuffled by the song's seed
+            juce::Random mix ((juce::int64) o.seed * 13 + 5);
+            for (size_t i = melodic.size(); i > 2; --i) std::swap (melodic[i - 1], melodic[1 + (size_t) mix.nextInt ((int) i - 1)]);
+            const bool kit = ! song.drumSamples.empty();
+            if (drumC != nullptr)
             {
-                using LK = lp::song::LoopKind;
-                if (choice.kind == LK::Drums)        { if (song.drumSamples.empty()) addLoop (choice, "drum loop", { "verse", "pre-chorus", "chorus", "bridge" }); }
-                else if (choice.kind == LK::Bass)    addLoop (choice, "bass loop", { "verse", "chorus" });
-                else if (choice.kind == LK::Vocal)   addLoop (choice, "vocal", { "chorus", "bridge" });
-                else if (melodic == 0)               { addLoop (choice, lp::song::loopKindName (choice.kind), { "intro", "verse", "pre-chorus", "chorus", "outro" }); ++melodic; }
-                else if (melodic == 1)               { addLoop (choice, lp::song::loopKindName (choice.kind), { "chorus", "bridge" }); ++melodic; }
+                if (kit) addLoop (*drumC, "drum loop", { "chorus", "bridge" });                      // layered on the kit
+                else     addLoop (*drumC, "drum loop", { "verse", "pre-chorus", "chorus", "bridge" });
             }
+            if (percC != nullptr)  addLoop (*percC, "percussion", { "pre-chorus", "chorus" });
+            if (bassC != nullptr)  addLoop (*bassC, "bass loop", { "verse", "pre-chorus", "chorus" });
+            if (melodic.size() > 0) addLoop (*melodic[0], lp::song::loopKindName (melodic[0]->kind), { "intro", "verse", "pre-chorus", "chorus", "outro" });
+            if (melodic.size() > 1) addLoop (*melodic[1], lp::song::loopKindName (melodic[1]->kind), { "chorus", "bridge" });
+            if (melodic.size() > 2) addLoop (*melodic[2], lp::song::loopKindName (melodic[2]->kind), { "pre-chorus", "chorus", "outro" });
+            if (padC != nullptr)   addLoop (*padC, "pad", { "intro", "bridge", "outro" });
+            if (vocalC != nullptr) addLoop (*vocalC, "vocal", { "chorus", "bridge" });
+            if (fxC != nullptr)    addLoop (*fxC, "fx", { "pre-chorus" });
         }
         else if (picks.loop != nullptr && ! picks.loopSet.empty())
             addLoop (picks.loopSet.front(), "loop", { "chorus", "bridge" });
@@ -441,20 +468,25 @@ private:
         files.mixAudio.reset();
         status.files = files;  // (without the audio itself)
         status.abletonSet = als;
+        status.kindCounts.assign (lp::song::kNumLoopKinds, 0);
+        for (int k = 1; k < lp::song::kNumLoopKinds; ++k)
+            status.kindCounts[(size_t) k] = (int) library.loopsOfKind ((lp::song::LoopKind) k, song.bpm).size();
         status.haveSong = true;
         status.stage = Stage::Done;
         status.progress = 1.0f;
-        status.message = "\"" + song.title + "\" is ready";
+        status.message = "\"" + song.title + "\" is ready. locators: drag the locators button onto any track in ableton";
     }
 
     // semitones to put a sample in the song's key (99 = it has no clear key). Listens once per file.
+    struct Heard { lp::song::KeyReading reading; bool clear = false; int key = -1; bool minor = false; };
+
+    // semitones to put a loop into the song's key (99 = too unsure): listens to it, and checks the file name
     int tuneFor (const juce::String& path, int songKey, bool songMinor)
     {
         auto it = keyCache.find (path);
         if (it == keyCache.end())
         {
-            int key = -1;
-            bool minor = false;
+            Heard h;
             juce::AudioFormatManager fm;
             fm.registerBasicFormats();
             std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (path)));
@@ -470,12 +502,12 @@ private:
                     for (int ch = 0; ch < b.getNumChannels(); ++ch) v += b.getSample (ch, i);
                     mono[(size_t) i] = v;
                 }
-                if (! lp::song::detectKey (mono.data(), len, rd->sampleRate, key, minor)) key = -1;
+                h.clear = lp::song::detectKey (mono.data(), len, rd->sampleRate, h.key, h.minor, &h.reading);
             }
-            it = keyCache.emplace (path, std::make_pair (key, minor)).first;
+            it = keyCache.emplace (path, h).first;
         }
-        if (it->second.first < 0) return 99;
-        return lp::song::tuneShift (it->second.first, it->second.second, songKey, songMinor);
+        const auto* e = library.find (path);
+        return lp::song::loopTune (it->second.reading, it->second.clear, e != nullptr ? e->key : -1, e != nullptr && e->minor, songKey, songMinor);
     }
 
     juce::String remixText (const lp::song::Part& loop, double fitPercent, const lp::song::Song& song) const
@@ -492,18 +524,18 @@ private:
         }
         if (t == "plays as recorded" && std::abs (fitPercent) > 0.05)
             t << ", fitted to " << juce::roundToInt (song.bpm) << " bpm (" << (fitPercent > 0 ? "+" : "") << juce::String (fitPercent, 1) << "%)";
-        auto it = keyCache.find (loop.samplePath);
         const juce::String songKey = juce::String (lp::noteName (song.key)) + (song.minor ? " minor" : " major");
-        if (loop.autoTune != 0 && it != keyCache.end() && it->second.first >= 0)
-            t << ", tuned " << (loop.autoTune > 0 ? "+" : "") << loop.autoTune << " st to " << songKey
-              << " (it was " << lp::noteName (it->second.first) << (it->second.second ? " minor" : " major") << ")";
-        else if (it != keyCache.end() && it->second.first >= 0)
+        const auto* e = library.find (loop.samplePath);
+        const juce::String was = e != nullptr && e->key >= 0 ? juce::String (" (it was ") + lp::noteName (e->key) + (e->minor ? " minor)" : " major)") : juce::String();
+        if (loop.autoTune != 0)
+            t << ", tuned " << (loop.autoTune > 0 ? "+" : "") << loop.autoTune << " st into " << songKey << was;
+        else
             t << ", already in " << songKey;
         t << ", arranged into this song's sections";
         return t;
     }
 
-    std::map<juce::String, std::pair<int, bool>> keyCache;
+    std::map<juce::String, Heard> keyCache;
 
     static TrackInfo trackInfo (const lp::song::Part& p, const juce::File& stem)
     {
@@ -518,11 +550,98 @@ private:
         t.canSwap = true;
         t.candidates = p.candidates.size();
         t.candidate = p.candidate;
+        t.sample = p.source.startsWith ("splice");
+        const juce::String n (p.name);
+        if (p.kind == lp::song::PartKind::Drums || n.contains ("drum") || n == "percussion") t.group = 4;
+        else if (p.kind == lp::song::PartKind::Bass || n.contains ("bass"))                t.group = 3;
+        else if (n == "keys" || n == "guitar" || n == "pad" || n == "strings" || n == "loop" || p.kind == lp::song::PartKind::Chords || p.kind == lp::song::PartKind::Pad)
+            t.group = 1;
+        else t.group = 2;
         return t;
+    }
+
+    // adds a track: a loop of one kind from your library, in tempo and in key, placed where that kind fits
+    void addInstrument (lp::song::LoopKind kind)
+    {
+        using LK = lp::song::LoopKind;
+        lp::song::Song song;
+        {
+            const juce::ScopedLock sl (lock);
+            if (current.parts.empty() || (int) current.parts.size() >= 12) return;
+            song = current;
+        }
+        // favour packs already in the song (same vibe), then the genre, shuffled so adding twice gives something new
+        juce::StringArray packsInSong;
+        for (auto& p : song.parts)
+            if (const auto* e = library.find (p.samplePath)) packsInSong.addIfNotAlreadyThere (e->pack);
+        const auto styleBit = 1u << (int) song.style;
+        juce::Random rng;
+        std::vector<std::pair<float, const lp::song::LibraryEntry*>> pool;
+        for (auto* e : library.loopsOfKind (kind, song.bpm))
+        {
+            bool used = false;
+            for (auto& p : song.parts) used = used || p.samplePath == e->path;
+            if (used) continue;
+            pool.push_back ({ (packsInSong.contains (e->pack) ? 2.5f : 0.0f) + ((e->styles & styleBit) ? 1.5f : 0.0f) + rng.nextFloat() * 2.0f, e });
+        }
+        std::sort (pool.begin(), pool.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+        const bool tonal = kind != LK::Drums && kind != LK::Perc && kind != LK::FX;
+        lp::song::Part part;
+        part.name = lp::song::loopKindName (kind);
+        part.kind = lp::song::PartKind::Loop;
+        int bars = 0;
+        for (size_t i = 0; i < pool.size() && i < 40 && part.candidates.size() < 5; ++i)
+        {
+            const auto* e = pool[i].second;
+            const int b = songBars (e->path, e->bpm, song.bpm);
+            if (b <= 0) continue;
+            const int tune = tonal ? tuneFor (e->path, song.key, song.minor) : 0;
+            if (tune == 99 || std::abs (tune) > 3) continue;
+            if (part.candidates.isEmpty()) bars = b;
+            part.candidates.add (e->path);
+            part.candidateTunes.add (tune);
+        }
+        if (part.candidates.isEmpty())
+        {
+            const juce::ScopedLock sl (lock);
+            status.message = juce::String ("no ") + part.name + " loops in your library fit this song's key and tempo";
+            return;
+        }
+        part.samplePath = part.candidates[0];
+        part.autoTune = part.candidateTunes[0];
+        part.loopBars = bars;
+        std::vector<std::string> where { "verse", "chorus" };
+        if (kind == LK::Pad)                            where = { "intro", "bridge", "outro" };
+        else if (kind == LK::FX)                        where = { "pre-chorus" };
+        else if (kind == LK::Perc || kind == LK::Drums) where = { "pre-chorus", "chorus" };
+        else if (kind == LK::Vocal)                     where = { "chorus", "bridge" };
+        for (auto& sec : song.sections)
+            for (auto& want : where)
+                if (sec.name.rfind (want, 0) == 0)
+                    for (int b = sec.startBar; b + bars <= sec.startBar + sec.bars; b += bars)
+                        part.loopStartBars.push_back (b);
+        if (part.loopStartBars.empty())
+            for (int b = 0; b + bars <= song.totalBars(); b += bars) part.loopStartBars.push_back (b);
+        part.source = "splice: " + juce::File (part.samplePath).getFileNameWithoutExtension();
+        part.remix = remixText (part, 0.0, song) + " (added by you)";
+        song.parts.push_back (part);
+        juce::AudioBuffer<float> buf;
+        if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
+        const int tr = (int) song.parts.size() - 1;
+        const auto stem = currentFolder.getChildFile ("stems").getChildFile (
+            juce::String (tr + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (added " + juce::String (++editCounter) + ").wav");
+        if (! writeStem (stem, buf, currentRs.sampleRate)) return;
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks.push_back (trackInfo (part, stem));
+        status.message = "added " + juce::String (part.name) + ": " + juce::File (part.samplePath).getFileNameWithoutExtension();
+        ++status.version;
     }
 
     void applyEdit (int tr, EditOp op)
     {
+        if (op == EditOp::Add) { addInstrument ((lp::song::LoopKind) tr); return; }
         lp::song::Song song;
         {
             const juce::ScopedLock sl (lock);

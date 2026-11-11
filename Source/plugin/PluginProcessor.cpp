@@ -103,6 +103,9 @@ LivePlanetProcessor::LivePlanetProcessor()
     // for testing: LP_LOAD_SAMPLE=/path/to/file.wav loads a sample at start-up
     if (auto* path = std::getenv ("LP_LOAD_SAMPLE"))
         loadSample (juce::File (juce::String (path)));
+    // for testing: LP_DAW_BPM=120 acts as if the DAW reported that tempo
+    if (auto* bpm = std::getenv ("LP_DAW_BPM"))
+        dawBpm = juce::String (bpm).getDoubleValue();
     // for testing: LP_SONG_REF=/path/to/song.wav gives song mode a reference at start-up
     if (auto* ref = std::getenv ("LP_SONG_REF"))
         songJob.setReference (juce::File (juce::String (ref)));
@@ -123,6 +126,9 @@ void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     engine.prepare (sampleRate);
     keyEvents.reserve (1024);
     studio.prepare (std::max (samplesPerBlock, 4096));
+    const int maxBlock = std::max (samplesPerBlock, 4096);
+    sampleFx.prepare (sampleRate, maxBlock);
+    for (auto* v : { &fxL, &fxR, &sendL, &sendR }) v->assign ((size_t) maxBlock, 0.0f);
 }
 
 lp::Weather LivePlanetProcessor::getManualWeather() const
@@ -276,7 +282,25 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             pos = std::max (0.0, t.ppq) * 60.0 / sbpm * StudioPlayer::fileRate;
             inc = StudioPlayer::fileRate / getSampleRate() * (hostBpm / sbpm);
         }
-        studio.render (L, R, n, pos, inc, getSampleRate());
+        // your samples go through the knobs (warmth, echo, space, shimmer, nostalgia, atmosphere, volume);
+        // the chords / melody / bass knobs set the level of those tracks
+        auto v = [this] (const char* id) { return params.getRawParameterValue (id)->load(); };
+        studio.groupGain[1] = v ("pad") / 0.75f;
+        studio.groupGain[2] = v ("drops") / 0.7f;
+        studio.groupGain[3] = v ("bass") / 0.45f;
+        const bool fx = (size_t) n <= fxL.size();
+        if (fx) for (auto* b : { &fxL, &fxR, &sendL, &sendR }) std::fill (b->begin(), b->begin() + n, 0.0f);
+        studio.render (L, R, n, pos, inc, getSampleRate(),
+                       fx ? fxL.data() : nullptr, fx ? fxR.data() : nullptr, fx ? sendL.data() : nullptr, fx ? sendR.data() : nullptr);
+        if (fx)
+        {
+            lp::SampleFxSettings fs;
+            fs.warmth = v ("warmth"); fs.echo = v ("echo"); fs.space = v ("space"); fs.shimmer = v ("shimmer");
+            fs.nostalgia = v ("nostalgia"); fs.atmos = v ("atmos"); fs.gainDb = v ("gain");
+            fs.bpm = preview ? sbpm : (t.bpm > 0.0 ? t.bpm : sbpm);
+            sampleFx.process (fxL.data(), fxR.data(), sendL.data(), sendR.data(), n, fs);
+            for (int i = 0; i < n; ++i) { L[i] += fxL[(size_t) i]; R[i] += fxR[(size_t) i]; }
+        }
         for (int i = 0; i < n; ++i) { L[i] = std::tanh (L[i]); R[i] = std::tanh (R[i]); }
         const double next = pos + n * inc;
         playheadPos = next;
@@ -318,6 +342,11 @@ void LivePlanetProcessor::timerCallback()
             loadedStudioVersion = st.version;
             juce::Array<juce::File> stems;
             for (auto& t : st.tracks) stems.add (t.stem);
+            for (size_t i = 0; i < st.tracks.size() && i < (size_t) StudioPlayer::maxTracks; ++i)
+            {
+                studio.mix[i].sample = st.tracks[i].sample;
+                studio.mix[i].group = st.tracks[i].group;
+            }
             songBpm = st.song.bpm;
             studio.load (stems);
         }

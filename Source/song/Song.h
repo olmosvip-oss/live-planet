@@ -43,8 +43,11 @@ struct Profile
 // Analyses mono audio. Runs in well under a second per minute of music.
 Profile analyse (const float* mono, int numSamples, double sampleRate);
 
+// What the ear heard: how well every key fits ([key + 12 * minor]), and whether a third was heard
+struct KeyReading { std::array<float, 24> scores {}; float best = 0; float tuningCents = 0; bool hasThird = true; };
+
 // Listens for the key of a (short) recording. Returns false if it has no clear key.
-bool detectKey (const float* mono, int numSamples, double sampleRate, int& key, bool& minor);
+bool detectKey (const float* mono, int numSamples, double sampleRate, int& key, bool& minor, KeyReading* reading = nullptr);
 
 // Semitones to move something in one key so its notes fit another (relative keys count as the same).
 inline int tuneShift (int fromKey, bool fromMinor, int toKey, bool toMinor)
@@ -54,6 +57,33 @@ inline int tuneShift (int fromKey, bool fromMinor, int toKey, bool toMinor)
     int d = ((b - a) % 12 + 12) % 12;
     if (d > 6) d -= 12;
     return d;
+}
+
+// Decides how far to tune a loop into the song's key, from what the ear heard plus what the file name says
+// (nameKey -1 = the name says nothing). Returns semitones, or 99 when it's too unsure to use the loop.
+// The name is trusted unless the audio clearly disagrees; among keys that fit about equally well, the one
+// needing the least tuning wins, so a loop is only moved when it clearly needs it.
+inline int loopTune (const KeyReading& r, bool clear, int nameKey, bool nameMinor, int songKey, bool songMinor)
+{
+    auto score = [&] (int k, bool m) { return r.scores[(size_t) ((k + 120) % 12 + (m ? 12 : 0))]; };
+    if (nameKey >= 0)
+    {
+        const int rk = nameMinor ? (nameKey + 3) % 12 : (nameKey + 9) % 12;
+        const float s = std::max (score (nameKey, nameMinor), score (rk, ! nameMinor));
+        if (! clear || s >= r.best - 0.15f) return tuneShift (nameKey, nameMinor, songKey, songMinor);
+    }
+    if (! clear) return 99;
+    int bestShift = 99; float bestS = -2;
+    for (int i = 0; i < 24; ++i)
+    {
+        const int k = i % 12; const bool m = i >= 12;
+        float s = r.scores[(size_t) i];
+        if (! r.hasThird) s = std::max (s, score (k, ! m)); // no third heard: major or minor is a guess
+        if (s < r.best - 0.06f) continue;
+        const int sh = tuneShift (k, m, songKey, songMinor);
+        if (std::abs (sh) < std::abs (bestShift) || (std::abs (sh) == std::abs (bestShift) && s > bestS)) { bestShift = sh; bestS = s; }
+    }
+    return bestShift;
 }
 
 // ---------- the new song

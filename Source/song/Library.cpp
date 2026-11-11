@@ -33,6 +33,96 @@ juce::Array<juce::File> Library::defaultFolders()
     return f;
 }
 
+void Library::classify (LibraryEntry& e, const juce::String& fileName, const juce::String& path)
+{
+    auto tokensOf = [] (const juce::String& text)
+    {
+        juce::StringArray t;
+        t.addTokens (text.toLowerCase().replaceCharacters ("-./\\ ()[]&+,", "____________"), "_", "");
+        t.removeEmptyStrings();
+        return t;
+    };
+    // the file's own name decides first; the folders only when the name says nothing
+    const auto nameTokens = tokensOf (fileName), pathTokens = tokensOf (path);
+    classifyKind (e, nameTokens);
+    if (e.kind == SampleKind::Other || (e.kind == SampleKind::Loop && e.loop == LoopKind::Other))
+    {
+        LibraryEntry byPath = e;
+        classifyKind (byPath, pathTokens);
+        if (e.kind == SampleKind::Other || byPath.loop != LoopKind::Other) { e.kind = byPath.kind; e.loop = byPath.loop; }
+    }
+    const auto& tokens = pathTokens;
+    e.styles = 0;
+    // which grooves it seems made for (the pack and folder names help here)
+    auto tag = [&] (Style st, std::initializer_list<const char*> words) { if (hasToken (tokens, words)) e.styles |= 1u << (int) st; };
+    tag (Style::Dusty, { "lofi", "lo", "dusty", "vinyl", "chill", "tape", "jazzy", "chillhop", "nostalgic", "vintage", "rnb", "neosoul" });
+    tag (Style::BoomBap, { "boombap", "boom", "hiphop", "hip", "soul", "dilla", "90s", "rap", "funk", "soulful", "gospel" });
+    tag (Style::Trap, { "trap", "drill", "808", "rage", "plugg", "phonk", "dark", "hard", "jersey" });
+    tag (Style::House, { "house", "deep", "disco", "garage", "techno", "dance", "afro", "afrobeat", "afrobeats", "amapiano", "latin", "reggaeton", "dancehall" });
+    tag (Style::Brushes, { "jazz", "brush", "brushes", "acoustic", "live", "folk", "indie", "cinematic", "ambient", "orchestral", "rock" });
+    tag (Style::Electronic, { "edm", "electronic", "future", "glitch", "idm", "synthwave", "pop", "hyperpop", "kpop", "dubstep", "dnb", "electro" });
+}
+
+void Library::classifyKind (LibraryEntry& e, const juce::StringArray& tokens)
+{
+    e.kind = SampleKind::Other;
+    e.loop = LoopKind::None;
+    const bool isLoop = hasToken (tokens, { "loop", "loops" }) || (e.bpm > 0.0 && ! hasToken (tokens, { "oneshot", "one", "shot", "shots", "hit" }));
+    if (! isLoop)
+    {
+        if (hasToken (tokens, { "808" }))                                          e.kind = SampleKind::Bass808;
+        else if (hasToken (tokens, { "kick", "kicks", "kck", "bd", "bassdrum" }))   e.kind = SampleKind::Kick;
+        else if (hasToken (tokens, { "clap", "claps", "clp" }))                     e.kind = SampleKind::Clap;
+        else if (hasToken (tokens, { "snare", "snares", "snr", "sd", "rimshot" }))  e.kind = SampleKind::Snare;
+        else if (hasToken (tokens, { "open", "ohh", "openhat", "oh" }) && hasToken (tokens, { "hat", "hats", "hh", "hihat", "hihats", "openhat", "ohh" }))
+                                                                                    e.kind = SampleKind::OpenHat;
+        else if (hasToken (tokens, { "hat", "hats", "hh", "hihat", "hihats", "chh" })) e.kind = SampleKind::Hat;
+        else if (hasToken (tokens, { "perc", "percs", "percussion", "shaker", "tamb", "tambourine", "rim", "conga", "bongo", "cowbell", "clave", "snap" }))
+                                                                                    e.kind = SampleKind::Perc;
+    }
+    else
+    {
+        e.kind = SampleKind::Loop;
+        auto is = [&] (std::initializer_list<const char*> w) { return hasToken (tokens, w); };
+        if (is ({ "drum", "drums", "beat", "beats", "break", "breaks", "groove", "kick", "fill", "fills" }))           e.loop = LoopKind::Drums;
+        else if (is ({ "perc", "percs", "percussion", "top", "tops", "shaker", "shakers", "hat", "hats", "conga", "congas",
+                       "bongo", "bongos", "tambourine", "tamb", "clap", "claps", "rim", "timbale", "timbales" }))            e.loop = LoopKind::Perc;
+        else if (is ({ "bass", "808", "sub", "bassline", "reese" }))                                                       e.loop = LoopKind::Bass;
+        else if (is ({ "vox", "vocal", "vocals", "chop", "chops", "voice", "choir", "adlib", "adlibs", "hook", "acapella", "sing" })) e.loop = LoopKind::Vocal;
+        else if (is ({ "brass", "horn", "horns", "trumpet", "trumpets", "trombone", "tuba", "flugelhorn" }))              e.loop = LoopKind::Brass;
+        else if (is ({ "flute", "flutes", "sax", "saxophone", "clarinet", "woodwind", "woodwinds", "oboe", "recorder", "pan", "panflute", "ocarina", "whistle" }))
+                                                                                                                          e.loop = LoopKind::Woodwind;
+        else if (is ({ "marimba", "kalimba", "vibes", "vibraphone", "glock", "glockenspiel", "bell", "bells", "mallet", "mallets",
+                       "celesta", "musicbox", "xylophone", "steelpan", "chime", "chimes" }))                               e.loop = LoopKind::Mallet;
+        else if (is ({ "guitar", "gtr", "guitars", "nylon", "strum", "banjo", "ukulele", "uke", "mandolin", "sitar" })) e.loop = LoopKind::Guitar;
+        else if (is ({ "piano", "keys", "rhodes", "ep", "organ", "wurli", "wurlitzer", "clav", "keyboard" }))              e.loop = LoopKind::Keys;
+        else if (is ({ "acoustic", "electric" }))                                                                          e.loop = LoopKind::Guitar;
+        else if (is ({ "chords", "chord" }))                                                                               e.loop = LoopKind::Keys;
+        else if (is ({ "strings", "string", "violin", "violins", "cello", "viola", "orchestral", "orchestra", "harp", "pizzicato", "pizz" }))
+                                                                                                                          e.loop = LoopKind::Strings;
+        else if (is ({ "pad", "pads", "atmos", "atmosphere", "ambient", "ambience", "drone", "texture", "textures" }))   e.loop = LoopKind::Pad;
+        else if (is ({ "fx", "sfx", "riser", "risers", "sweep", "impact", "noise", "foley", "transition", "downlifter", "uplifter" })) e.loop = LoopKind::FX;
+        else if (is ({ "lead", "leads" }))                                                                                 e.loop = LoopKind::Lead;
+        else if (is ({ "pluck", "plucks", "arp", "arps", "arpeggio", "arpeggiated" }))                                   e.loop = LoopKind::Pluck;
+        else if (is ({ "synth", "synths", "melody", "melodic", "melodies", "songstarter", "starter", "sample", "riff" }))  e.loop = LoopKind::Synth;
+        else                                                                                                              e.loop = LoopKind::Other;
+    }
+
+}
+
+std::vector<const LibraryEntry*> Library::loopsOfKind (LoopKind k, double songBpm) const
+{
+    std::vector<const LibraryEntry*> out;
+    for (auto& e : entries)
+    {
+        if (e.kind != SampleKind::Loop || e.loop != k || e.bpm <= 0) continue;
+        bool ok = false;
+        for (double m : { 0.5, 1.0, 2.0 }) ok = ok || std::abs (e.bpm * m / songBpm - 1.0) < 0.10;
+        if (ok) out.push_back (&e);
+    }
+    return out;
+}
+
 LibraryEntry Library::parse (const juce::File& file, const juce::File& root)
 {
     LibraryEntry e;
@@ -93,41 +183,7 @@ LibraryEntry Library::parse (const juce::File& file, const juce::File& root)
         }
     }
 
-    // what it is
-    const bool isLoop = hasToken (tokens, { "loop", "loops" }) || (e.bpm > 0.0 && ! hasToken (tokens, { "oneshot", "one", "shot", "shots", "hit" }));
-    if (! isLoop)
-    {
-        if (hasToken (tokens, { "808" }))                                          e.kind = SampleKind::Bass808;
-        else if (hasToken (tokens, { "kick", "kicks", "kck", "bd", "bassdrum" }))   e.kind = SampleKind::Kick;
-        else if (hasToken (tokens, { "clap", "claps", "clp" }))                     e.kind = SampleKind::Clap;
-        else if (hasToken (tokens, { "snare", "snares", "snr", "sd", "rimshot" }))  e.kind = SampleKind::Snare;
-        else if (hasToken (tokens, { "open", "ohh", "openhat", "oh" }) && hasToken (tokens, { "hat", "hats", "hh", "hihat", "hihats", "openhat", "ohh" }))
-                                                                                    e.kind = SampleKind::OpenHat;
-        else if (hasToken (tokens, { "hat", "hats", "hh", "hihat", "hihats", "chh" })) e.kind = SampleKind::Hat;
-        else if (hasToken (tokens, { "perc", "percs", "percussion", "shaker", "tamb", "tambourine", "rim", "conga", "bongo", "cowbell", "clave", "snap" }))
-                                                                                    e.kind = SampleKind::Perc;
-    }
-    else
-    {
-        e.kind = SampleKind::Loop;
-        if (hasToken (tokens, { "drum", "drums", "beat", "beats", "break", "breaks", "top", "tops", "groove", "kick", "hat", "hats", "perc" })) e.loop = LoopKind::Drums;
-        else if (hasToken (tokens, { "bass", "808", "sub" }))                                                  e.loop = LoopKind::Bass;
-        else if (hasToken (tokens, { "piano", "keys", "key", "rhodes", "ep", "organ", "wurli", "chords" }))   e.loop = LoopKind::Keys;
-        else if (hasToken (tokens, { "guitar", "gtr", "guitars" }))                                           e.loop = LoopKind::Guitar;
-        else if (hasToken (tokens, { "vox", "vocal", "vocals", "chop", "voice", "choir" }))                   e.loop = LoopKind::Vocal;
-        else if (hasToken (tokens, { "strings", "string", "violin", "cello", "orchestral" }))                 e.loop = LoopKind::Strings;
-        else if (hasToken (tokens, { "synth", "pad", "pads", "lead", "pluck", "arp", "bell", "bells", "melody", "melodic" })) e.loop = LoopKind::Synth;
-        else                                                                                                  e.loop = LoopKind::Other;
-    }
-
-    // which grooves it seems made for
-    auto tag = [&] (Style s, std::initializer_list<const char*> words) { if (hasToken (tokens, words)) e.styles |= 1u << (int) s; };
-    tag (Style::Dusty, { "lofi", "lo", "dusty", "vinyl", "chill", "tape", "jazzy" });
-    tag (Style::BoomBap, { "boombap", "boom", "hiphop", "hip", "soul", "dilla", "90s" });
-    tag (Style::Trap, { "trap", "drill", "808", "rage", "plugg" });
-    tag (Style::House, { "house", "deep", "disco", "garage", "techno", "dance" });
-    tag (Style::Brushes, { "jazz", "brush", "brushes", "acoustic", "live" });
-    tag (Style::Electronic, { "edm", "electronic", "future", "glitch", "idm", "synthwave", "pop" });
+    classify (e, file.getFileNameWithoutExtension(), where);
     return e;
 }
 
@@ -179,6 +235,7 @@ bool Library::load (const juce::File& cache)
         e.path = row[0].toString(); e.pack = row[1].toString();
         e.kind = (SampleKind) (int) row[2]; e.loop = (LoopKind) (int) row[3];
         e.bpm = (double) row[4]; e.key = (int) row[5]; e.minor = (bool) row[6]; e.styles = (juce::uint32) (int) row[7];
+        classify (e, juce::File (e.path).getFileNameWithoutExtension(), e.path);
         entries.push_back (e);
     }
     return true;
@@ -207,7 +264,10 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
     for (auto& [pack, c] : packs)
     {
         if (c[0] == 0 || (c[1] == 0 && c[2] == 0) || c[3] == 0) continue; // needs kick, snare or clap, hat
-        kitPacks.push_back ({ (float) (c[0] + c[1] + c[2] + c[3] + c[4] + c[5]) + rng.nextFloat() * 4.0f, pack });
+        // a full kit counts; a huge pack doesn't win just for being huge, so different kits get their turn
+        float sc = 0;
+        for (int v : c) sc += (float) std::min (v, 6);
+        kitPacks.push_back ({ sc + rng.nextFloat() * 14.0f, pack });
     }
     std::sort (kitPacks.begin(), kitPacks.end(), [] (auto& a, auto& b) { return a.first > b.first; });
     for (size_t i = 0; i < std::min<size_t> (8, kitPacks.size()); ++i) picks.drumPacks.add (kitPacks[i].second);
@@ -290,7 +350,7 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
             bool tempoOk = false;
             for (double m : { 0.5, 1.0, 2.0 }) tempoOk = tempoOk || std::abs (e.bpm * m / target.bpm - 1.0) < 0.10; // stretched to fit
             if (! tempoOk) continue;
-            const bool tonal = e.loop != LoopKind::Drums;
+            const bool tonal = e.loop != LoopKind::Drums && e.loop != LoopKind::Perc && e.loop != LoopKind::FX;
             if (tonal && ! tuneFor)
             {
                 if (e.key < 0) continue;
@@ -300,21 +360,27 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
             }
             auto& choice = byKind[e.loop];
             choice.kind = e.loop;
-            if (choice.options.size() >= 40) continue;
-            // name says the right key: try it first
-            const bool nameFits = e.key >= 0 && ((e.key == target.key && e.minor == target.minor) || (e.key == relative && e.minor != target.minor));
-            if (nameFits) choice.options.insert (choice.options.begin(), { &e, 0, 0 });
-            else choice.options.push_back ({ &e, 0, 0 });
+            choice.options.push_back ({ &e, 0, 0 });
+        }
+        // best first: the name says the right key, same pack as the main loop (same vibe), the song's genre;
+        // a seeded shuffle among equals so "write another" finds new sounds. Keep the top 40.
+        for (auto& [kind, choice] : byKind)
+        {
+            std::vector<std::pair<float, LoopOption>> scored;
+            for (auto& o : choice.options)
+            {
+                const auto& e = *o.entry;
+                const bool nameFits = e.key >= 0 && ((e.key == target.key && e.minor == target.minor) || (e.key == relative && e.minor != target.minor));
+                const float sc = (nameFits ? 4.0f : 0.0f) + (e.pack == picks.loop->pack ? 2.5f : 0.0f)
+                               + ((e.styles & styleBit) ? 1.5f : 0.0f) + rng.nextFloat() * 2.0f;
+                scored.push_back ({ sc, o });
+            }
+            std::sort (scored.begin(), scored.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+            choice.options.clear();
+            for (size_t i = 0; i < std::min<size_t> (40, scored.size()); ++i) choice.options.push_back (scored[i].second);
         }
         for (auto& [kind, choice] : byKind)
         {
-            // shuffle a little (seeded) so "write another" finds new sounds, then keep ones that are whole bars
-            // shuffle within "name fits" and "other" groups so "write another" finds new sounds
-            auto firstOther = std::find_if (choice.options.begin(), choice.options.end(), [&] (const LoopOption& o)
-                { return ! (o.entry->key >= 0 && ((o.entry->key == target.key && o.entry->minor == target.minor) || (o.entry->key == relative && o.entry->minor != target.minor))); });
-            const size_t split = (size_t) (firstOther - choice.options.begin());
-            for (size_t i = split; i > 1; --i) std::swap (choice.options[i - 1], choice.options[(size_t) rng.nextInt ((int) i)]);
-            for (size_t i = choice.options.size(); i > split + 1; --i) std::swap (choice.options[i - 1], choice.options[split + (size_t) rng.nextInt ((int) (i - split))]);
             if (kind == picks.loop->loop)
                 for (size_t i = 0; i < choice.options.size(); ++i)
                     if (choice.options[i].entry == picks.loop) std::swap (choice.options[0], choice.options[i]);
@@ -325,13 +391,13 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
                 const int bars = loopLengthBars ? loopLengthBars (o.entry->path, o.entry->bpm) : 0;
                 if (bars <= 0) continue;
                 int tune = 0;
-                if (kind != LoopKind::Drums && tuneFor)
+                if (kind != LoopKind::Drums && kind != LoopKind::Perc && kind != LoopKind::FX && tuneFor)
                 {
                     tune = tuneFor (o.entry->path);
                     if (tune == 99 || std::abs (tune) > 3) continue; // no clear key, or too far to tune cleanly
                 }
                 ok.push_back ({ o.entry, bars, tune });
-                if (ok.size() >= 6) break;
+                if (ok.size() >= 5) break;
             }
             // in key first, then the smallest tuning
             std::stable_sort (ok.begin(), ok.end(), [] (const LoopOption& a, const LoopOption& b) { return std::abs (a.tune) < std::abs (b.tune); });

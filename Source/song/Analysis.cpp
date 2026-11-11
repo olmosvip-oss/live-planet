@@ -40,6 +40,62 @@ namespace
     const float kMajor[12] = { 6.35f, 2.23f, 3.48f, 2.33f, 4.38f, 4.09f, 2.52f, 5.19f, 2.39f, 3.66f, 2.29f, 2.88f };
     const float kMinor[12] = { 6.33f, 2.68f, 3.52f, 5.38f, 2.60f, 3.53f, 2.54f, 4.75f, 3.98f, 2.69f, 3.34f, 3.17f };
 
+    // Temperley (Kostka-Payne) profiles: better on pop and dance music; used together with Krumhansl
+    const float tMajor[12] = { 0.748f, 0.060f, 0.488f, 0.082f, 0.670f, 0.460f, 0.096f, 0.715f, 0.104f, 0.366f, 0.057f, 0.400f };
+    const float tMinor[12] = { 0.712f, 0.084f, 0.474f, 0.618f, 0.049f, 0.460f, 0.105f, 0.747f, 0.404f, 0.067f, 0.133f, 0.330f };
+
+    float corr (const float* a, const float* b, int rot);
+
+    // how well a pitch profile fits each key: [key + 12 * minor]
+    std::array<float, 24> keyScores (const float* chroma)
+    {
+        std::array<float, 24> s {};
+        for (int k = 0; k < 12; ++k)
+        {
+            s[(size_t) k] = 0.5f * (corr (chroma, kMajor, k) + corr (chroma, tMajor, k));
+            s[(size_t) (k + 12)] = 0.5f * (corr (chroma, kMinor, k) + corr (chroma, tMinor, k));
+        }
+        return s;
+    }
+
+    // spectral peaks of one window (freq, compressed weight), so noise and drums count far less than notes
+    struct Peak { float freq, w; };
+    void findPeaks (const std::vector<cpx>& spec, int N, double sr, double fLo, double fHi, std::vector<Peak>& out)
+    {
+        const int k0 = std::max (2, (int) (fLo * N / sr)), k1 = std::min (N / 2 - 2, (int) (fHi * N / sr));
+        float maxM = 1e-12f;
+        for (int k = k0; k <= k1; ++k) maxM = std::max (maxM, std::abs (spec[(size_t) k]));
+        for (int k = k0; k <= k1; ++k)
+        {
+            const float m = std::abs (spec[(size_t) k]);
+            if (m < maxM * 0.04f) continue;
+            const float l = std::abs (spec[(size_t) (k - 1)]), r = std::abs (spec[(size_t) (k + 1)]);
+            if (m <= l || m < r) continue;
+            const float la = std::log (l + 1e-12f), ma = std::log (m + 1e-12f), ra = std::log (r + 1e-12f);
+            const float den = la - 2 * ma + ra;
+            const float d = std::abs (den) > 1e-9f ? 0.5f * (la - ra) / den : 0.0f;
+            out.push_back ({ (float) ((k + juce::jlimit (-0.5f, 0.5f, d)) * sr / N), std::sqrt (m) });
+        }
+    }
+
+    // how far (in semitones, -0.5..0.5) the recording sits from A440 tuning
+    double tuningOffset (const std::vector<Peak>& peaks)
+    {
+        double c = 0, sn = 0;
+        for (auto& p : peaks)
+        {
+            const double semis = 12.0 * std::log2 (p.freq / 440.0);
+            const double ang = 2.0 * juce::MathConstants<double>::pi * (semis - std::round (semis));
+            c += p.w * std::cos (ang); sn += p.w * std::sin (ang);
+        }
+        return std::atan2 (sn, c) / (2.0 * juce::MathConstants<double>::pi);
+    }
+
+    int pitchClass (float freq, double offset)
+    {
+        return (int) ((std::lround (12.0 * std::log2 (freq / 440.0) - offset) + 69 + 1200) % 12);
+    }
+
     float corr (const float* a, const float* b, int rot)
     {
         float ma = 0, mb = 0;
@@ -55,7 +111,7 @@ namespace
     }
 }
 
-bool detectKey (const float* input, int numSamples, double sampleRate, int& key, bool& minor)
+bool detectKey (const float* input, int numSamples, double sampleRate, int& key, bool& minor, KeyReading* reading)
 {
     constexpr int N = 8192;
     const int step = std::max (1, (int) std::round (sampleRate / 22050.0));
@@ -65,34 +121,40 @@ bool detectKey (const float* input, int numSamples, double sampleRate, int& key,
     if ((int) x.size() < N) return false;
     std::vector<float> win (N);
     for (int i = 0; i < N; ++i) win[(size_t) i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * (float) i / (float) (N - 1));
-    float total[12] {};
-    double bass[12] {};
+    std::vector<Peak> peaks;
     std::vector<cpx> b (N);
-    for (int start = 0; start + N <= (int) x.size(); start += N / 2)
+    for (int start = 0; start + N <= (int) x.size(); start += N / 4)
     {
         for (int i = 0; i < N; ++i) b[(size_t) i] = cpx (x[(size_t) (start + i)] * win[(size_t) i], 0.0f);
         fft (b);
-        for (int k = 1; k < N / 2; ++k)
-        {
-            const double f = k * sr / N;
-            if (f < 90.0 || f > 2500.0) continue;
-            const int pc = (int) ((std::lround (12.0 * std::log2 (f / 440.0)) + 69 + 1200) % 12);
-            const float m = std::abs (b[(size_t) k]);
-            total[pc] += m * m;
-            if (f < 260.0) bass[pc] += m * m;
-        }
+        findPeaks (b, N, sr, 50.0, 2500.0, peaks);
     }
-    float best = -2, second = -2;
-    for (int k = 0; k < 12; ++k)
-        for (int q = 0; q < 2; ++q)
-        {
-            const float c = corr (total, q ? kMinor : kMajor, k);
-            if (c > best) { second = best; best = c; key = k; minor = q == 1; }
-            else if (c > second) second = c;
-        }
+    if (peaks.empty()) return false;
+    const double off = tuningOffset (peaks);
+    float total[12] {}, bass[12] {};
+    for (auto& p : peaks)
+    {
+        const int pc = pitchClass (p.freq, off);
+        total[pc] += p.w;
+        if (p.freq < 260.0f) bass[pc] += p.w;
+    }
+    const auto sc = keyScores (total);
+    int bi = 0;
+    for (int i = 1; i < 24; ++i) if (sc[(size_t) i] > sc[(size_t) bi]) bi = i;
+    key = bi % 12; minor = bi >= 12;
     const int rel = minor ? (key + 3) % 12 : (key + 9) % 12;
-    if (bass[rel] > bass[key] * 1.6) { key = rel; minor = ! minor; }
-    return best > 0.55f; // a clear enough key
+    if (bass[rel] > bass[key] * 1.6f) { key = rel; minor = ! minor; }
+    if (reading != nullptr)
+    {
+        reading->scores = sc;
+        reading->best = sc[(size_t) bi];
+        reading->tuningCents = (float) (off * 100.0);
+        // is there a third at all? (bass riffs and power chords often have none, so major vs minor is a guess)
+        const float m3 = total[(key + (minor ? 3 : 4)) % 12], other3 = total[(key + (minor ? 4 : 3)) % 12];
+        float mx = 0; for (float v : total) mx = std::max (mx, v);
+        reading->hasThird = std::max (m3, other3) > 0.25f * mx;
+    }
+    return sc[(size_t) bi] > 0.5f; // a clear enough key
 }
 
 Profile analyse (const float* input, int numSamples, double sampleRate)
@@ -180,18 +242,27 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
                 pc2[(size_t) b] = (int) ((std::lround (12.0 * std::log2 (f / 440.0)) + 69 + 1200) % 12);
         }
         std::vector<cpx> b2 (N2);
+        std::vector<std::vector<Peak>> winPeaks;
+        std::vector<Peak> allPeaks;
         for (int start = 0; start + N2 < (int) x.size(); start += hop2)
         {
             for (int i = 0; i < N2; ++i) b2[(size_t) i] = cpx (x[(size_t) (start + i)] * win2[(size_t) i], 0.0f);
             fft (b2);
+            winPeaks.emplace_back();
+            findPeaks (b2, N2, sr, 50.0, 2500.0, winPeaks.back());
+            if (winPeaks.size() % 3 == 0) allPeaks.insert (allPeaks.end(), winPeaks.back().begin(), winPeaks.back().end());
+        }
+        const double off = tuningOffset (allPeaks);
+        size_t wi = 0;
+        for (int start = 0; start + N2 < (int) x.size(); start += hop2, ++wi)
+        {
             std::array<float, 12> c {};
-            for (int b = 1; b < N2 / 2; ++b)
-                if (pc2[(size_t) b] >= 0)
-                {
-                    const float m = std::abs (b2[(size_t) b]);
-                    c[(size_t) pc2[(size_t) b]] += m * m;
-                    if (b * sr / N2 < 260.0) bassChroma[(size_t) pc2[(size_t) b]] += m * m;
-                }
+            for (auto& pk : winPeaks[wi])
+            {
+                const int pc = pitchClass (pk.freq, off);
+                c[(size_t) pc] += pk.w;
+                if (pk.freq < 260.0f) bassChroma[(size_t) pc] += pk.w;
+            }
             // spread this window's chroma over the onset frames it covers
             const int f0 = (start + N2 / 2 - hop2 / 2) / hop, f1 = std::min (frames, (start + N2 / 2 + hop2 / 2) / hop);
             for (int f = std::max (0, f0); f < f1; ++f) chroma[(size_t) f] = c;
@@ -288,12 +359,11 @@ Profile analyse (const float* input, int numSamples, double sampleRate)
     // 4. key: whole-song chroma against the major / minor profiles
     float total[12] {};
     for (auto& c : chroma) for (int i = 0; i < 12; ++i) total[i] += c[(size_t) i];
-    float best = -2;
-    for (int k = 0; k < 12; ++k)
     {
-        const float a = corr (total, kMajor, k), b = corr (total, kMinor, k);
-        if (a > best) { best = a; p.key = k; p.minor = false; }
-        if (b > best) { best = b; p.key = k; p.minor = true; }
+        const auto sc = keyScores (total);
+        int bi = 0;
+        for (int i = 1; i < 24; ++i) if (sc[(size_t) i] > sc[(size_t) bi]) bi = i;
+        p.key = bi % 12; p.minor = bi >= 12;
     }
     {
         const int rel = p.minor ? (p.key + 3) % 12 : (p.key + 9) % 12;
