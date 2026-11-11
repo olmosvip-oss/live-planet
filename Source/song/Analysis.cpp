@@ -211,7 +211,74 @@ Tone measureTone (const float* x, int n, double sr)
     return t;
 }
 
-Profile analyse (const float* input, int numSamples, double sampleRate, double knownBpm)
+// ---------- splitting into parts (measurement only): harmonic / percussive separation by median filtering,
+// then the harmonic part split into bass (low), vocals (the centre of the stereo picture) and the rest
+namespace
+{
+    struct StemFrames { std::vector<std::array<float, 4>> e; double framesPerSecond = 0; bool vocals = false; };
+
+    StemFrames splitIntoParts (const std::vector<float>& x, const std::vector<float>* side, double sr)
+    {
+        StemFrames out;
+        constexpr int N = 2048, hop = 1024, K = N / 2, med = 17;
+        const int frames = (int) ((x.size() - N) / hop);
+        if (frames < med * 2) return out;
+        out.framesPerSecond = sr / hop;
+        out.vocals = side != nullptr;
+        std::vector<float> win (N);
+        for (int i = 0; i < N; ++i) win[(size_t) i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * (float) i / (float) (N - 1));
+        std::vector<float> mag ((size_t) frames * K), sideMag (side ? (size_t) frames * K : 0);
+        std::vector<cpx> b (N);
+        for (int f = 0; f < frames; ++f)
+        {
+            for (int i = 0; i < N; ++i) b[(size_t) i] = cpx (x[(size_t) (f * hop + i)] * win[(size_t) i], 0.0f);
+            fft (b);
+            for (int k = 0; k < K; ++k) mag[(size_t) f * K + (size_t) k] = std::abs (b[(size_t) k]);
+            if (side)
+            {
+                for (int i = 0; i < N; ++i) b[(size_t) i] = cpx ((*side)[(size_t) (f * hop + i)] * win[(size_t) i], 0.0f);
+                fft (b);
+                for (int k = 0; k < K; ++k) sideMag[(size_t) f * K + (size_t) k] = std::abs (b[(size_t) k]);
+            }
+        }
+        const double binHz = sr / N;
+        const int kBass = (int) (160.0 / binHz), kVoxLo = (int) (200.0 / binHz), kVoxHi = (int) (4000.0 / binHz);
+        out.e.assign ((size_t) frames, { 0, 0, 0, 0 });
+        std::array<float, med> tmp {};
+        for (int f = 0; f < frames; ++f)
+            for (int k = 1; k < K; ++k)
+            {
+                // sustained (median across time) vs. hits (median across frequency)
+                int c = 0;
+                for (int d = -med / 2; d <= med / 2; ++d) tmp[(size_t) c++] = mag[(size_t) juce::jlimit (0, frames - 1, f + d) * K + (size_t) k];
+                std::nth_element (tmp.begin(), tmp.begin() + med / 2, tmp.end());
+                const float H = tmp[med / 2];
+                c = 0;
+                for (int d = -med / 2; d <= med / 2; ++d) tmp[(size_t) c++] = mag[(size_t) f * K + (size_t) juce::jlimit (1, K - 1, k + d)];
+                std::nth_element (tmp.begin(), tmp.begin() + med / 2, tmp.end());
+                const float P = tmp[med / 2];
+                const float m = mag[(size_t) f * K + (size_t) k];
+                const float e = m * m;
+                const float hMask = H * H / (H * H + P * P + 1e-12f);
+                auto& fr = out.e[(size_t) f];
+                if (k <= kBass) { fr[StemBass] += e * hMask; fr[StemDrums] += e * (1 - hMask); continue; }
+                fr[StemDrums] += e * (1 - hMask);
+                const float harm = e * hMask;
+                if (side && k >= kVoxLo && k <= kVoxHi)
+                {
+                    // how much of it sits in the middle (mid much louder than side)
+                    const float sm = sideMag[(size_t) f * K + (size_t) k];
+                    const float centre = juce::jlimit (0.0f, 1.0f, 1.0f - 2.5f * sm / (m + 1e-9f));
+                    fr[StemVocals] += harm * centre;
+                    fr[StemMusic] += harm * (1 - centre);
+                }
+                else fr[StemMusic] += harm;
+            }
+        return out;
+    }
+}
+
+Profile analyse (const float* input, int numSamples, double sampleRate, double knownBpm, const float* sideIn)
 {
     Profile p;
     if (numSamples < (int) (sampleRate * 8.0)) return p;
@@ -228,6 +295,17 @@ Profile analyse (const float* input, int numSamples, double sampleRate, double k
     }
     p.lengthSeconds = (double) x.size() / sr;
     p.tone = measureTone (input, numSamples, sampleRate);
+    std::vector<float> sideX;
+    if (sideIn != nullptr)
+    {
+        sideX.resize (x.size());
+        for (size_t i = 0; i < x.size(); ++i)
+        {
+            float s2 = 0;
+            for (int k = 0; k < step; ++k) s2 += sideIn[i * (size_t) step + (size_t) k];
+            sideX[i] = s2 / (float) step;
+        }
+    }
 
     // 2. spectra: onset strength, low-band onsets (kick), chroma, loudness, brightness
     constexpr int N = 2048, hop = 512;
@@ -649,6 +727,43 @@ Profile analyse (const float* input, int numSamples, double sampleRate, double k
     float br = 0;
     for (auto v : bright) br += v;
     p.brightness = juce::jlimit (0.0f, 1.0f, (br / (float) frames - 800.0f) / 2200.0f);
+
+    // 8. the parts: how loud the drums, bass, vocals and music are, overall and in each section
+    {
+        const auto parts = splitIntoParts (x, sideX.empty() ? nullptr : &sideX, sr);
+        if (! parts.e.empty())
+        {
+            const double toStem = parts.framesPerSecond / fps; // onset frames -> part frames
+            // whole song: loudness while it plays (the mean of the louder half); a section: its typical level (median)
+            auto levelDb = [&] (int stem, double f0, double f1, bool typical = false)
+            {
+                std::vector<float> v;
+                for (int f = std::max (0, (int) (f0 * toStem)); f < (int) (f1 * toStem) && f < (int) parts.e.size(); ++f) v.push_back (parts.e[(size_t) f][(size_t) stem]);
+                if (v.empty()) return -100.0f;
+                std::sort (v.begin(), v.end());
+                if (typical) return (float) (10.0 * std::log10 (v[v.size() / 2] + 1e-12));
+                double sum = 0; int c = 0;
+                for (size_t i = v.size() / 2; i < v.size(); ++i) { sum += v[i]; ++c; }
+                return (float) (10.0 * std::log10 (sum / std::max (1, c) + 1e-12));
+            };
+            const double songF0 = firstBar, songF1 = firstBar + bars * barLen;
+            for (int st = 0; st < 4; ++st) p.stemDb[(size_t) st] = levelDb (st, songF0, songF1);
+            p.hasStems = true;
+            p.vocalsHeard = parts.vocals && p.stemDb[StemVocals] > p.stemDb[StemMusic] - 9.0f;
+            if (! parts.vocals) p.stemDb[StemVocals] = -100.0f;
+            for (auto& sec : p.sections)
+            {
+                const double f0 = firstBar + sec.startBar * barLen, f1 = f0 + sec.bars * barLen;
+                for (int st = 0; st < 4; ++st)
+                {
+                    sec.stemDb[(size_t) st] = levelDb (st, f0, f1, true);
+                    // playing here = within 12 dB of its usual level
+                    sec.present[(size_t) st] = sec.stemDb[(size_t) st] > p.stemDb[(size_t) st] - 12.0f;
+                }
+                if (! p.vocalsHeard) sec.present[StemVocals] = false;
+            }
+        }
+    }
     p.valid = true;
     return p;
 }

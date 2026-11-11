@@ -753,10 +753,20 @@ static int makeFromReference (const juce::File& refFile, const juce::File& outDi
     const int n = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 600));
     juce::AudioBuffer<float> b (2, n);
     rd->read (&b, 0, n, 0, true, true);
-    std::vector<float> mono ((size_t) n);
-    for (int i = 0; i < n; ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+    std::vector<float> mono ((size_t) n), side ((size_t) n);
+    for (int i = 0; i < n; ++i) { mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i)); side[(size_t) i] = 0.5f * (b.getSample (0, i) - b.getSample (1, i)); }
     const auto hint0 = Library::parse (refFile, refFile.getParentDirectory());
-    auto prof = analyse (mono.data(), n, rd->sampleRate, hint0.bpm >= 60.0 && hint0.bpm <= 200.0 ? hint0.bpm : 0.0);
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    auto prof = analyse (mono.data(), n, rd->sampleRate, hint0.bpm >= 60.0 && hint0.bpm <= 200.0 ? hint0.bpm : 0.0, side.data());
+    std::printf ("analysed in %.1f s\n", (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0);
+    if (prof.hasStems)
+    {
+        std::printf ("parts (loudness while playing): drums %.1f  bass %.1f  vocals %.1f%s  music %.1f dB\n", prof.stemDb[0], prof.stemDb[1],
+                     prof.stemDb[2], prof.vocalsHeard ? "" : " (no vocals heard)", prof.stemDb[3]);
+        for (auto& sec : prof.sections)
+            std::printf ("  %-8s bar %3d x%2d: [%.0f %.0f %.0f %.0f dB] drums %s bass %s vocals %s music %s\n", sec.label.c_str(), sec.startBar, sec.bars, sec.stemDb[0], sec.stemDb[1], sec.stemDb[2], sec.stemDb[3],
+                         sec.present[0] ? "yes" : " - ", sec.present[1] ? "yes" : " - ", sec.present[2] ? "yes" : " - ", sec.present[3] ? "yes" : " - ");
+    }
     std::printf ("heard: %.1f bpm, %s %s, %d sections, density %.2f, sustain %.2f, 808 held %.2f\n", prof.bpm, lp::noteName (prof.key), prof.minor ? "minor" : "major",
                  (int) prof.sections.size(), prof.density, prof.sustain, prof.lowSustain);
     for (auto* row : { &prof.grooveLow, &prof.grooveMid, &prof.grooveHigh })

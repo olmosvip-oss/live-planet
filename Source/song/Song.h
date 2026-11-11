@@ -23,7 +23,12 @@ struct RefSection
     float energy = 0.5f;        // 0..1, relative to the loudest part of the song
     std::vector<int> chordRoot; // per bar: pitch class of the chord root, -1 = unclear
     std::vector<bool> chordMinor;
+    // what plays here, from splitting the reference into parts (measured only, never reused)
+    std::array<float, 4> stemDb { -100.0f, -100.0f, -100.0f, -100.0f }; // drums, bass, vocals, music
+    std::array<bool, 4> present { true, true, true, true };
 };
+
+enum Stem { StemDrums = 0, StemBass = 1, StemVocals = 2, StemMusic = 3 };
 
 // The sound of a recording, measured (never copied): balance across 10 octave bands,
 // how bright and airy it is, how loud. Used to pick samples that sound like your reference
@@ -61,6 +66,10 @@ struct Profile
     float brightness = 0.5f;    // how bright the sound is, 0..1
     double lengthSeconds = 0.0;
     Tone tone;                  // its overall sound
+    // the reference split into drums / bass / vocals / music, measured: how loud each is where it plays
+    bool hasStems = false;
+    bool vocalsHeard = false;   // vocals are found by what sits in the middle of the stereo picture (needs a stereo file)
+    std::array<float, 4> stemDb { -100.0f, -100.0f, -100.0f, -100.0f };
     float sustain = 0.5f;       // 0 short, plucky notes .. 1 long, held, singing notes
     float lowSustain = 0.5f;    // 0 punchy bass hits .. 1 a constant, held 808
     std::vector<RefSection> sections;
@@ -69,7 +78,8 @@ struct Profile
 
 // Analyses mono audio. Runs in well under a second per minute of music.
 // knownBpm > 0: the tempo is already known (say, from the file name), so the groove and sections use its grid
-Profile analyse (const float* mono, int numSamples, double sampleRate, double knownBpm = 0.0);
+// side: (left - right) / 2 of a stereo file, so vocals in the middle can be told apart (optional)
+Profile analyse (const float* mono, int numSamples, double sampleRate, double knownBpm = 0.0, const float* side = nullptr);
 
 // What the ear heard: how well every key fits ([key + 12 * minor]), and whether a third was heard
 struct KeyReading { std::array<float, 24> scores {}; float best = 0; float tuningCents = 0; bool hasThird = true; };

@@ -14,15 +14,18 @@ public:
     void prepare (double sampleRate, float ceilingDb = -1.0f)
     {
         sr = sampleRate;
-        look = std::max (1, (int) (0.003 * sr));           // 3 ms look-ahead
+        look = std::max (8, (int) (0.004 * sr));            // 4 ms look-ahead
         bufL.assign ((size_t) look, 0.0f);
         bufR.assign ((size_t) look, 0.0f);
+        qIdx.assign ((size_t) look + 2, 0);
+        qVal.assign ((size_t) look + 2, 1.0f);
+        qHead = qTail = 0;
         pos = 0;
+        count = 0;
         gain = 1.0f;
         ceiling = juce::Decibels::decibelsToGain (ceilingDb);
-        release = std::exp (-1.0f / (0.12f * (float) sr));  // 120 ms recovery
-        attack = 1.0f - std::exp (-1.0f / (0.0015f * (float) sr));
-        holdLeft = 0;
+        release = 1.0f - std::exp (-1.0f / (0.12f * (float) sr)); // 120 ms recovery
+        attack = 1.0f - std::pow (0.002f, 1.0f / (float) look);    // all the way down within the look-ahead
     }
 
     // in place; `makeupDb` is applied before limiting (to bring the mix up to its loudness)
@@ -32,13 +35,17 @@ public:
         for (int i = 0; i < n; ++i)
         {
             const float inL = L[i] * makeup, inR = R[i] * makeup;
-            // the gain this incoming sample needs, and hold it for the look-ahead so the peak is caught in time
             const float peak = std::max (std::abs (inL), std::abs (inR));
             const float need = peak > ceiling ? ceiling / peak : 1.0f;
-            if (need < target) { target = need; holdLeft = look; }
-            else if (holdLeft > 0) --holdLeft;
-            else target = 1.0f - (1.0f - target) * release;
-            gain = target < gain ? gain + (target - gain) * attack * 4.0f : target;
+            // the lowest gain any sample in the look-ahead needs (a sliding minimum)
+            // (a fixed-size ring, so nothing is allocated while playing)
+            const long now = count++;
+            const int Q = (int) qIdx.size();
+            while (qHead != qTail && qVal[(size_t) ((qTail - 1 + Q) % Q)] >= need) qTail = (qTail - 1 + Q) % Q;
+            qIdx[(size_t) qTail] = now; qVal[(size_t) qTail] = need; qTail = (qTail + 1) % Q;
+            while (qIdx[(size_t) qHead] < now - look) qHead = (qHead + 1) % Q;
+            const float target = qVal[(size_t) qHead];
+            gain += (target - gain) * (target < gain ? attack : release);
             const float outL = bufL[(size_t) pos], outR = bufR[(size_t) pos];
             bufL[(size_t) pos] = inL; bufR[(size_t) pos] = inR;
             pos = (pos + 1) % look;
@@ -51,9 +58,12 @@ public:
 
 private:
     double sr = 48000;
-    int look = 144, pos = 0, holdLeft = 0;
-    std::vector<float> bufL, bufR;
-    float gain = 1.0f, target = 1.0f, ceiling = 0.89f, release = 0.9999f, attack = 0.5f;
+    int look = 192, pos = 0;
+    long count = 0;
+    std::vector<float> bufL, bufR, qVal;
+    std::vector<long> qIdx;
+    int qHead = 0, qTail = 0;
+    float gain = 1.0f, ceiling = 0.89f, release = 0.0002f, attack = 0.03f;
 };
 
 } // namespace lp

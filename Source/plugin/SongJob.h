@@ -274,19 +274,24 @@ private:
         const int len = (int) std::min (reader->lengthInSamples, maxLen);
         juce::AudioBuffer<float> buf ((int) reader->numChannels, len);
         reader->read (&buf, 0, len, 0, true, true);
-        std::vector<float> mono ((size_t) len);
+        std::vector<float> mono ((size_t) len), side;
         for (int i = 0; i < len; ++i)
         {
             float v = 0;
             for (int ch = 0; ch < buf.getNumChannels(); ++ch) v += buf.getSample (ch, i);
             mono[(size_t) i] = v / (float) buf.getNumChannels();
         }
-        setStage (Stage::Listening, 0.5f, "finding tempo, key and sections...");
+        if (buf.getNumChannels() >= 2) // the stereo picture tells the vocals (in the middle) from the rest
+        {
+            side.resize ((size_t) len);
+            for (int i = 0; i < len; ++i) side[(size_t) i] = 0.5f * (buf.getSample (0, i) - buf.getSample (1, i));
+        }
+        setStage (Stage::Listening, 0.5f, "finding tempo, key and sections, splitting it into parts...");
         // producers often put the tempo and key in the name ("todavia-140-cm"): trust that over listening,
         // and measure the groove and sections on that tempo's grid
         const auto hint = lp::song::Library::parse (file, file.getParentDirectory());
         const double knownBpm = hint.bpm >= 60.0 && hint.bpm <= 200.0 ? hint.bpm : 0.0;
-        auto profile = lp::song::analyse (mono.data(), len, reader->sampleRate, knownBpm);
+        auto profile = lp::song::analyse (mono.data(), len, reader->sampleRate, knownBpm, side.empty() ? nullptr : side.data());
         profile.sourceName = file.getFileNameWithoutExtension();
         if (profile.valid && hint.key >= 0) { profile.key = hint.key; profile.minor = hint.minor; }
         const juce::ScopedLock sl (lock);
@@ -344,6 +349,31 @@ private:
         }
         auto song = lp::song::generate (ref, sky, opts);
         song.drumSamples = picks.drums;
+        if (ref.valid && ref.hasStems)
+        {
+            const auto adj = balanceFromRef (ref);
+            for (size_t si = 0; si < song.sections.size(); ++si)
+            {
+                const auto& sec = song.sections[si];
+                const auto present = refPresence (ref, sec.name);
+                const bool nextIsChorus = si + 1 < song.sections.size() && baseName (song.sections[si + 1].name) == "chorus";
+                const double b0 = sec.startBar * 4.0, b1 = (sec.startBar + sec.bars) * 4.0, fillFrom = nextIsChorus ? b1 - 4.0 : b1;
+                for (auto& part : song.parts)
+                {
+                    const bool drums = part.kind == lp::song::PartKind::Drums, bass = part.kind == lp::song::PartKind::Bass;
+                    if ((drums && ! present[lp::song::StemDrums]) || (bass && ! present[lp::song::StemBass]))
+                        part.notes.erase (std::remove_if (part.notes.begin(), part.notes.end(), [&] (const lp::song::Note& nt)
+                            { return nt.beat >= b0 && nt.beat < (drums ? fillFrom : b1); }), part.notes.end()); // (the fill into a chorus stays)
+                }
+            }
+            for (auto& part : song.parts)
+            {
+                using PK = lp::song::PartKind;
+                if (part.kind == PK::Bass) part.mixDb += adj[lp::song::StemBass];
+                else if (part.kind == PK::Melody) part.mixDb += adj[lp::song::StemVocals];
+                else if (part.kind == PK::Chords || part.kind == PK::Pad || part.kind == PK::Counter) part.mixDb += adj[lp::song::StemMusic];
+            }
+        }
         song.refTone = ref.valid ? ref.tone : lp::song::Tone {};
 
         // where each sound came from, and how it was changed, for the studio
@@ -445,11 +475,11 @@ private:
                 loop.autoTune = loop.candidateTunes[0];
                 loop.loopBars = songBars (loop.samplePath, choice.options[0].entry->bpm, song.bpm);
                 if (loop.loopBars <= 0) return;
-                arrange (loop, song, role, kit);
+                arrange (loop, song, role, kit, ref);
                 // mixed by role: the lead and the low end up front and centred, the rest a little back and to the sides
                 switch (role)
                 {
-                    case Role::Main:     loop.mixDb = +3.0f; loop.pan = 0.0f;   break;
+                    case Role::Main:     loop.mixDb = +5.5f; loop.pan = 0.0f;   break;
                     case Role::Second:   loop.mixDb = -2.0f; loop.pan = -0.3f;  break;
                     case Role::Third:    loop.mixDb = -5.0f; loop.pan = 0.35f;  break;
                     case Role::Fourth:   loop.mixDb = -6.0f; loop.pan = -0.45f; break;
@@ -457,9 +487,12 @@ private:
                     case Role::DrumLoop: loop.mixDb = kit ? -4.0f : +3.0f; loop.pan = 0.0f; break;
                     case Role::Perc:     loop.mixDb = -6.0f; loop.pan = 0.25f;  break;
                     case Role::Pad:      loop.mixDb = -7.0f; loop.pan = 0.0f;   break;
-                    case Role::Vocal:    loop.mixDb = +4.0f; loop.pan = 0.0f;   break;
+                    case Role::Vocal:    loop.mixDb = +7.0f; loop.pan = 0.0f;   break;
                     case Role::Fx:       loop.mixDb = -3.0f; loop.pan = 0.0f;   break;
                 }
+                const auto adj = balanceFromRef (ref);
+                const int stem = stemFor (role);
+                if (stem >= 0) loop.mixDb += adj[(size_t) stem];
                 if (std::none_of (loop.barSrc.begin(), loop.barSrc.end(), [] (int v) { return v >= 0; }) && loop.swellBars.empty()) return;
                 loop.source = "splice: " + juce::File (loop.samplePath).getFileNameWithoutExtension();
                 loop.remix = remixText (loop, 0.0, song) + arrangementText (loop);
@@ -867,7 +900,45 @@ private:
         return false;
     }
 
-    static void arrange (lp::song::Part& p, const lp::song::Song& song, Role role, bool kit)
+    // the matching section of the reference (same kind, same turn), and which of its parts play there
+    static std::array<bool, 4> refPresence (const lp::song::Profile& ref, const std::string& sectionName)
+    {
+        std::array<bool, 4> all { true, true, true, true };
+        if (! ref.valid || ! ref.hasStems) return all;
+        const auto base = baseName (sectionName);
+        std::vector<const lp::song::RefSection*> same;
+        for (auto& r : ref.sections) if (r.label == base) same.push_back (&r);
+        if (same.empty()) return all;
+        auto pr = same[(size_t) ((sectionNumber (sectionName) - 1) % (int) same.size())]->present;
+        if (! pr[lp::song::StemMusic] && ! pr[lp::song::StemVocals] && ! pr[lp::song::StemDrums]) return all; // never silence a whole section
+        return pr;
+    }
+
+    // how the reference balances its parts vs. a typical mix (bass ~3 dB over the drums, music ~2, the lead level with them)
+    static std::array<float, 4> balanceFromRef (const lp::song::Profile& ref)
+    {
+        std::array<float, 4> a { 0, 0, 0, 0 };
+        if (! ref.valid || ! ref.hasStems) return a;
+        const float d = ref.stemDb[lp::song::StemDrums];
+        a[lp::song::StemBass]  = juce::jlimit (-5.0f, 5.0f, (ref.stemDb[lp::song::StemBass] - d) - 3.0f);
+        a[lp::song::StemMusic] = juce::jlimit (-5.0f, 5.0f, (ref.stemDb[lp::song::StemMusic] - d) - 2.0f);
+        if (ref.vocalsHeard) a[lp::song::StemVocals] = juce::jlimit (-5.0f, 5.0f, ref.stemDb[lp::song::StemVocals] - d);
+        return a;
+    }
+
+    static int stemFor (Role r)
+    {
+        switch (r)
+        {
+            case Role::Bass:     return lp::song::StemBass;
+            case Role::DrumLoop: case Role::Perc: return lp::song::StemDrums;
+            case Role::Vocal:    return lp::song::StemVocals;
+            case Role::Fx:       return -1;
+            default:             return lp::song::StemMusic;
+        }
+    }
+
+    static void arrange (lp::song::Part& p, const lp::song::Song& song, Role role, bool kit, const lp::song::Profile& ref = {})
     {
         const int total = song.totalBars();
         p.barSrc.assign ((size_t) total, -1);
@@ -892,7 +963,12 @@ private:
                         if (s1 - L + k >= 0 && s1 - L + k < total) p.barSrc[(size_t) (s1 - L + k)] = k;
                 continue;
             }
-            if (plays (role, base, n, lastChorus, kit))
+            const auto present = refPresence (ref, sec.name);
+            const int stem = stemFor (role);
+            // the reference leaves this part out here: so do we (the lead stays if there's anything up front)
+            const bool refSaysNo = stem >= 0 && ! present[(size_t) stem]
+                                   && ! (role == Role::Main && (present[lp::song::StemMusic] || present[lp::song::StemVocals]));
+            if (plays (role, base, n, lastChorus, kit) && ! refSaysNo)
             {
                 for (int b = s0; b < s1 && b < total; ++b) p.barSrc[(size_t) b] = (b - s0) % L;
                 // the build: the last beat before a chorus drops out

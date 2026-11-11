@@ -932,16 +932,26 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
         }
     }
 
-    // level each part to where it sits in a mix (measured only where it actually plays)
+    // level each part to where it sits in a mix, by how loud it SOUNDS (the K-weighting behind LUFS:
+    // lows count less, the presence range more), measured over the moments it really plays
     {
-        double sum = 0;
-        long count = 0;
-        for (int i = 0; i < total; i += 4)
+        auto hp = Biquad::make (3, sr, 60.0, 0.5, 0), shelf = Biquad::make (2, sr, 1500.0, 0.7, 4.0);
+        std::vector<float> kw ((size_t) total);
+        for (int i = 0; i < total; ++i) kw[(size_t) i] = shelf.process (hp.process (0.5f * (L[i] + R[i])));
+        // 400 ms blocks; the ones that are playing (within 20 dB of the loudest) count
+        const int blk = (int) (0.4 * sr);
+        std::vector<double> blocks;
+        for (int i = 0; i + blk <= total; i += blk / 2)
         {
-            const float v = std::abs (L[i]) + std::abs (R[i]);
-            if (v > 2e-4f) { sum += (double) L[i] * L[i] + (double) R[i] * R[i]; ++count; }
+            double e = 0;
+            for (int k = i; k < i + blk; k += 2) e += (double) kw[(size_t) k] * kw[(size_t) k];
+            blocks.push_back (e / (blk / 2));
         }
-        const double rms = count > 0 ? std::sqrt (sum / (2.0 * (double) count)) : 0.0;
+        double loudest = 0;
+        for (double e : blocks) loudest = std::max (loudest, e);
+        double sum = 0; int count = 0;
+        for (double e : blocks) if (e > loudest * 0.01 && e > 1e-10) { sum += e; ++count; }
+        const double rms = count > 0 ? std::sqrt (sum / count) : 0.0;
         float targetDb = -16.0f;
         switch (part.kind)
         {
