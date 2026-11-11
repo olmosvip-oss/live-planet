@@ -204,6 +204,7 @@ struct Song
     Tone refTone;                            // the reference's sound, to shape the mix toward
     std::array<float, 10> matchEqDb {};      // the tone shaping found when the song was mixed (applied to every track)
     float matchGainDb = 0.0f;                // ...and the level
+    float playbackMakeupDb = 0.0f;           // the stems keep headroom; this (into a limiter) brings them up to the mix's loudness
     bool mixShaped = false;
     int totalBars() const { return sections.empty() ? 0 : sections.back().startBar + sections.back().bars; }
     double lengthSeconds() const { return totalBars() * 4.0 * 60.0 / bpm; }
@@ -256,6 +257,7 @@ struct Rendered
     std::shared_ptr<juce::AudioBuffer<float>> mixAudio; // the finished song, for playing it inside the plugin
     std::array<float, 10> matchEqDb {};  // the tone shaping used (kept, so edited tracks get the same)
     float matchGainDb = 0.0f;
+    float playbackMakeupDb = 0.0f;
 };
 
 // Renders every part to its own WAV file plus a full mix, and writes a multi-track MIDI file

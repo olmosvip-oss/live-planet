@@ -7,6 +7,7 @@
 #include "SongJob.h"
 #include "StudioPlayer.h"
 #include "../engine/SampleFx.h"
+#include "../engine/Limiter.h"
 
 class LivePlanetProcessor : public juce::AudioProcessor, private juce::Timer
 {
@@ -68,6 +69,8 @@ public:
     // the studio: the song's tracks with a live mixer, and a preview transport
     StudioPlayer studio;
     lp::SampleFx sampleFx;                      // the knobs, for your Splice samples
+    lp::Limiter masterLimiter;                  // the song's loudness, without squashing it
+    std::atomic<float> songMakeupDb { 0.0f };
     std::vector<float> fxL, fxR, sendL, sendR;
     std::atomic<bool> previewPlaying { false };
     std::atomic<double> previewPos { 0.0 };   // in 48 kHz samples

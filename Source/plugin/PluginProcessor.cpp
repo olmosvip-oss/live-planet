@@ -129,6 +129,7 @@ void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     studio.prepare (std::max (samplesPerBlock, 4096));
     const int maxBlock = std::max (samplesPerBlock, 4096);
     sampleFx.prepare (sampleRate, maxBlock);
+    masterLimiter.prepare (sampleRate, -1.0f);
     for (auto* v : { &fxL, &fxR, &sendL, &sendR }) v->assign ((size_t) maxBlock, 0.0f);
 }
 
@@ -302,7 +303,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             sampleFx.process (fxL.data(), fxR.data(), sendL.data(), sendR.data(), n, fs);
             for (int i = 0; i < n; ++i) { L[i] += fxL[(size_t) i]; R[i] += fxR[(size_t) i]; }
         }
-        for (int i = 0; i < n; ++i) { L[i] = std::tanh (L[i]); R[i] = std::tanh (R[i]); }
+        masterLimiter.process (L, R, n, songMakeupDb.load());
         const double next = pos + n * inc;
         playheadPos = next;
         if (preview)
@@ -349,6 +350,7 @@ void LivePlanetProcessor::timerCallback()
                 studio.mix[i].group = st.tracks[i].group;
             }
             songBpm = st.song.bpm;
+            songMakeupDb = st.song.playbackMakeupDb;
             studio.load (stems);
         }
         static bool scannedOnce = false;

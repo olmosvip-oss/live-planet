@@ -132,11 +132,17 @@ public:
         s.profile.key = status.profile.key;
         s.profile.minor = status.profile.minor;
         s.profile.lengthSeconds = status.profile.lengthSeconds;
+        s.profile.density = status.profile.density;
+        s.profile.sustain = status.profile.sustain;
+        s.profile.lowSustain = status.profile.lowSustain;
+        s.profile.tone = status.profile.tone;
+        s.profile.brightness = status.profile.brightness;
         for (auto& sec : status.profile.sections)
             s.profile.sections.push_back ({ sec.label, sec.startBar, sec.bars, sec.energy, {}, {} });
         s.haveSong = status.haveSong;
         s.song.title = status.song.title;
         s.song.bpm = status.song.bpm;
+        s.song.playbackMakeupDb = status.song.playbackMakeupDb;
         s.song.key = status.song.key;
         s.song.minor = status.song.minor;
         s.song.sections = status.song.sections;
@@ -443,15 +449,15 @@ private:
                 // mixed by role: the lead and the low end up front and centred, the rest a little back and to the sides
                 switch (role)
                 {
-                    case Role::Main:     loop.mixDb = +2.0f; loop.pan = 0.0f;   break;
-                    case Role::Second:   loop.mixDb = -1.0f; loop.pan = -0.3f;  break;
-                    case Role::Third:    loop.mixDb = -3.0f; loop.pan = 0.35f;  break;
-                    case Role::Fourth:   loop.mixDb = -4.0f; loop.pan = -0.45f; break;
-                    case Role::Bass:     loop.mixDb = +4.0f; loop.pan = 0.0f;   break;
-                    case Role::DrumLoop: loop.mixDb = kit ? -1.0f : +3.0f; loop.pan = 0.0f; break;
-                    case Role::Perc:     loop.mixDb = -3.0f; loop.pan = 0.25f;  break;
-                    case Role::Pad:      loop.mixDb = -4.0f; loop.pan = 0.0f;   break;
-                    case Role::Vocal:    loop.mixDb = +1.0f; loop.pan = 0.0f;   break;
+                    case Role::Main:     loop.mixDb = +3.0f; loop.pan = 0.0f;   break;
+                    case Role::Second:   loop.mixDb = -2.0f; loop.pan = -0.3f;  break;
+                    case Role::Third:    loop.mixDb = -5.0f; loop.pan = 0.35f;  break;
+                    case Role::Fourth:   loop.mixDb = -6.0f; loop.pan = -0.45f; break;
+                    case Role::Bass:     loop.mixDb = +1.0f; loop.pan = 0.0f;   break;
+                    case Role::DrumLoop: loop.mixDb = kit ? -4.0f : +3.0f; loop.pan = 0.0f; break;
+                    case Role::Perc:     loop.mixDb = -6.0f; loop.pan = 0.25f;  break;
+                    case Role::Pad:      loop.mixDb = -7.0f; loop.pan = 0.0f;   break;
+                    case Role::Vocal:    loop.mixDb = +4.0f; loop.pan = 0.0f;   break;
                     case Role::Fx:       loop.mixDb = -3.0f; loop.pan = 0.0f;   break;
                 }
                 if (std::none_of (loop.barSrc.begin(), loop.barSrc.end(), [] (int v) { return v >= 0; }) && loop.swellBars.empty()) return;
@@ -521,6 +527,7 @@ private:
 
         song.matchEqDb = files.matchEqDb;  // edited tracks later get the same tone and level
         song.matchGainDb = files.matchGainDb;
+        song.playbackMakeupDb = files.playbackMakeupDb;
         song.mixShaped = true;
         const juce::ScopedLock sl (lock);
         current = song;
@@ -897,10 +904,10 @@ private:
                     if (base == "outro")  // and closes down at the end
                         for (int b = s0; b <= s1; ++b) p.barFilter[b] = 1.0f - 0.85f * (float) (b - s0) / (float) sec.bars;
                     if (base == "verse" && nextIsPre) p.stutterBars.insert (s1 - 1);
-                    if (base == "verse" && n >= 2)  // verse 2: chopped variations in its second half
-                        for (int b = s0 + sec.bars / 2; b < s1; b += 2) p.chopBars.insert (b + 1 < s1 ? b + 1 : b);
-                    if (lastChorus)                 // the last chorus: a chopped variation every 4th bar
-                        for (int b = s0 + 3; b < s1 - 1; b += 4) p.chopBars.insert (b);
+                    if (base == "verse" && n >= 2 && sec.bars >= 8)  // verse 2: one chopped variation near its end
+                        p.chopBars.insert (s1 - 2);
+                    if (lastChorus && sec.bars >= 16)               // the last chorus: a variation half way
+                        p.chopBars.insert (s0 + 7);
                 }
                 if (role == Role::Pad && base == "outro")
                     for (int b = s0; b <= s1; ++b) p.barFilter[b] = 1.0f - 0.8f * (float) (b - s0) / (float) sec.bars;
@@ -958,18 +965,19 @@ private:
                 const bool last = ++chorusNo == chorusCount;
                 // into it: a riser (or a reverse swell, taking turns); the last chorus gets both
                 const bool useReverse = ! reverses.isEmpty() && (chorusNo % 2 == 0 || risers.isEmpty());
-                if (useReverse) add (pick (reverses, chorusNo), at, true, -6.0f);
-                else            add (pick (risers, chorusNo), at, true, -6.0f);
-                if (last && ! useReverse) add (pick (reverses, chorusNo + 1), at, true, -8.0f);
+                // (levels: how loud each one's loudest moment is, under the music)
+                if (useReverse) add (pick (reverses, chorusNo), at, true, -30.0f);
+                else            add (pick (risers, chorusNo), at, true, -29.0f);
+                if (last && ! useReverse) add (pick (reverses, chorusNo + 1), at, true, -33.0f);
                 // on the "one": impact, crash, sub drop
-                add (pick (impacts, chorusNo), at, false, -4.0f);
-                add (pick (crashes, 0), at, false, -8.0f);
-                if (last || chorusNo == 1) add (pick (subs, 0), at, false, -5.0f);
+                add (pick (impacts, chorusNo), at, false, -27.0f);
+                add (pick (crashes, 0), at, false, -32.0f);
+                if (last || chorusNo == 1) add (pick (subs, 0), at, false, -28.0f);
             }
             else if (base == "bridge" || base == "outro" || (base == "verse" && sectionNumber (sec.name) >= 2))
-                add (pick (downs, (int) si), at, false, -8.0f); // the energy drops: a downlifter
+                add (pick (downs, (int) si), at, false, -33.0f); // the energy drops: a downlifter
             else if (base == "verse" && si > 0)
-                add (! reverses.isEmpty() ? pick (reverses, 0) : pick (crashes, 0), at, ! reverses.isEmpty(), -9.0f); // a small lift out of the intro
+                add (! reverses.isEmpty() ? pick (reverses, 0) : pick (crashes, 0), at, ! reverses.isEmpty(), -34.0f); // a small lift out of the intro
         }
         int n = (int) p.fxHits.size();
         p.source = n > 0 ? "splice: " + juce::String (n) + " transition fx" : juce::String();

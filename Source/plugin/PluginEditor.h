@@ -159,6 +159,7 @@ public:
     juce::Rectangle<int> dropZone() const { return getLocalBounds().removeFromTop (44); }
     void refresh(); // update the button from the message thread (never while drawing)
     juce::TextEditor promptBox;     // "describe your song"
+    juce::String autoDescription, describedRef; // what the box was filled with from your reference
 
 private:
     LivePlanetProcessor& proc;

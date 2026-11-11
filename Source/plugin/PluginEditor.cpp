@@ -750,6 +750,18 @@ void SongPanel::paint (Graphics& g)
 void SongPanel::refresh()
 {
     const auto st = proc.songJob.getStatus();
+    // a new reference: describe it in the box (unless you've typed your own words there)
+    if (st.haveReference && st.profile.valid && st.referenceName != describedRef && st.stage != SongJob::Stage::Listening)
+    {
+        describedRef = st.referenceName;
+        const auto now = promptBox.getText().trim();
+        if (now.isEmpty() || now == autoDescription)
+        {
+            autoDescription = lp::song::describeReference (st.profile);
+            promptBox.setText (autoDescription, false);
+            proc.songPrompt = autoDescription;
+        }
+    }
     const bool busy = st.stage == SongJob::Stage::Writing || st.stage == SongJob::Stage::Rendering || st.stage == SongJob::Stage::Listening;
     if (write.isEnabled() == busy) write.setEnabled (! busy);
     const String text = st.haveSong ? "write another" : "write a song";

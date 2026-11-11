@@ -1,4 +1,5 @@
 #include "Song.h"
+#include "../engine/Limiter.h"
 #include "../engine/Engine.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -769,11 +770,25 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
                     if (e > best) { best = e; anchor = i + w / 2; }
                 }
             }
+            // level it: its loudest 300 ms set to the hit's target loudness (gainDb), whatever the file's own level
+            float hitGainDb = h.gainDb;
+            {
+                const int w = std::min (n, (int) (0.3 * sr));
+                double best = 0;
+                for (int i = 0; i + w <= n; i += w / 4)
+                {
+                    double e = 0;
+                    for (int k = i; k < i + w; k += 2) e += (double) a.getSample (0, k) * a.getSample (0, k) + (double) a.getSample (1, k) * a.getSample (1, k);
+                    best = std::max (best, e / w);
+                }
+                if (best > 1e-12) hitGainDb = h.gainDb - (float) (10.0 * std::log10 (best));
+                hitGainDb = std::min (hitGainDb, 6.0f);
+            }
             const int at = (int) std::round (h.beat * spb) - anchor;
             const int maxLen = (int) (8 * 4 * spb); // never longer than 8 bars
             // a very long riser starts part-way (faded in); nothing plays before the song starts
             const int firstUsed = std::max ({ 0, -at, anchor - maxLen });
-            const float g = juce::Decibels::decibelsToGain (h.gainDb);
+            const float g = juce::Decibels::decibelsToGain (hitGainDb);
             const int fadeIn = (int) (0.03 * sr);
             for (int ch = 0; ch < 2; ++ch)
             {
@@ -1034,8 +1049,14 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
     const float rmsDb = (float) juce::Decibels::gainToDecibels (std::sqrt (sq / (2.0 * total)), -100.0);
     const float target = song.refTone.valid ? juce::jlimit (-20.0f, -10.0f, song.refTone.rmsDb) : -16.0f;
     const float loud = juce::jlimit (-24.0f, 18.0f, target - rmsDb);
-    // every track gets the same tone and level, so the stems add up to this mix (and edits match later)
-    out.matchGainDb = loud + juce::Decibels::gainToDecibels (1.6f);
+    // every track gets the same tone and level, so the stems add up to this mix (and edits match later);
+    // but they keep headroom so that, added up, they never clip: the limiter brings them up the rest of the way
+    float mixPeak = 0.0f;
+    for (int ch = 0; ch < 2; ++ch) mixPeak = std::max (mixPeak, mix.getMagnitude (ch, 0, total));
+    const float peakAfter = mixPeak * juce::Decibels::decibelsToGain (loud);
+    const float headroomDb = peakAfter > 0.79f ? juce::Decibels::gainToDecibels (0.79f / peakAfter) : 0.0f;
+    out.matchGainDb = loud + juce::Decibels::gainToDecibels (1.6f) + headroomDb;
+    out.playbackMakeupDb = -headroomDb;
     for (auto& stem : out.stems)
     {
         juce::AudioFormatManager fm;
@@ -1055,22 +1076,18 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
         if (shouldStop && shouldStop()) return false;
     }
 
-    // the full mix: up to the level, a soft limiter keeps peaks under -1 dB
+    // the full mix: up to its loudness through a look-ahead limiter (peaks under -1 dB, nothing squashed or distorted)
     {
-        const float gain = juce::Decibels::decibelsToGain (loud);
-        const float ceil = 0.89f;
-        float peak = 0.0f;
+        lp::Limiter lim;
+        lim.prepare (sr, -1.0f);
+        lim.process (mix.getWritePointer (0), mix.getWritePointer (1), total, loud);
+        const int lat = lim.latency();
         for (int ch = 0; ch < 2; ++ch)
         {
             auto* d = mix.getWritePointer (ch);
-            for (int i = 0; i < total; ++i)
-            {
-                const float x = d[i] * gain;
-                d[i] = std::abs (x) < 0.6f ? x : std::copysign (0.6f + (ceil - 0.6f) * std::tanh ((std::abs (x) - 0.6f) / (ceil - 0.6f)), x);
-                peak = std::max (peak, std::abs (d[i]));
-            }
+            std::memmove (d, d + lat, sizeof (float) * (size_t) (total - lat));
+            std::fill (d + total - lat, d + total, 0.0f);
         }
-        if (peak > ceil) mix.applyGain (ceil / peak);
     }
     out.mixFile = folder.getChildFile (song.title + " - full mix.wav");
     if (! writeWav (out.mixFile, mix, sr)) return false;

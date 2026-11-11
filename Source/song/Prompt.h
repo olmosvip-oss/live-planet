@@ -170,4 +170,33 @@ inline Prompt parsePrompt (const juce::String& textIn)
     return p;
 }
 
+// The other way round: describes a song you dropped in, in words the box understands (and you can edit)
+inline juce::String describeReference (const Profile& p)
+{
+    if (! p.valid) return {};
+    Options o; o.shiftKey = false;
+    const auto t = chooseTarget (p, lp::Weather {}, o);
+    juce::StringArray bits;
+    switch (t.style)
+    {
+        case Style::Trap:       bits.add (p.bpm >= 138 && p.bpm <= 146 && p.density > 0.6f ? "drill" : "trap"); break;
+        case Style::House:      bits.add ("house"); break;
+        case Style::BoomBap:    bits.add ("boom bap"); break;
+        case Style::Electronic: bits.add (p.bpm >= 124 ? "edm" : "pop"); break;
+        case Style::Brushes:    bits.add ("jazz"); break;
+        case Style::Dusty:      bits.add (p.minor ? "r&b" : "lofi"); break;
+    }
+    // (no tempo here: the song follows your project's tempo; type one if you want a different one)
+    bits.add (juce::String (lp::noteName (p.key)) + (p.minor ? " minor" : " major"));
+    const bool trapish = t.style == Style::Trap || t.style == Style::Electronic;
+    if (trapish && p.lowSustain > 0.62f) bits.add ("held 808");
+    else if (p.lowSustain > 0.62f)       bits.add ("deep bass");
+    else                                 bits.add ("punchy bass");
+    if (p.sustain > 0.83f) bits.add (trapish ? "sustained pads and lead" : "warm pads and strings");
+    else                   bits.add (p.minor ? "piano and plucks" : "keys and guitar");
+    if (p.density > 0.5f) bits.add ("busy hats");
+    if (p.tone.valid) bits.add (p.tone.rolloffHz < 600.0f ? "dark warm mix" : (p.tone.airDb > -18.0f ? "bright airy mix" : "smooth mix"));
+    return bits.joinIntoString (", ");
+}
+
 } // namespace lp::song

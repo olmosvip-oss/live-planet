@@ -765,6 +765,8 @@ static int makeFromReference (const juce::File& refFile, const juce::File& outDi
         for (float v : *row) std::printf ("%c", v > 0.66f ? '#' : v > 0.4f ? '+' : v > 0.2f ? '.' : ' ');
         std::printf ("|\n");
     }
+    std::printf ("described as: %s\n", describeReference (prof).toRawUTF8());
+    std::printf ("  ...which reads back as: %s\n", parsePrompt (describeReference (prof)).summary.toRawUTF8());
     if (std::getenv ("LP_ANALYSE_ONLY")) return 0;
     const auto hint = Library::parse (refFile, refFile.getParentDirectory());
     if (prof.valid && hint.bpm >= 60.0 && hint.bpm <= 200.0) prof.bpm = hint.bpm;
