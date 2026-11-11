@@ -468,6 +468,7 @@ int stretchTest (const juce::File& dir, int tune = 0)
     lp::song::Part part;
     part.name = "loop"; part.kind = lp::song::PartKind::Loop;
     part.samplePath = f.getFullPathName(); part.loopBars = 2; part.loopStartBars = { 0, 2 }; part.autoTune = tune;
+    if (std::getenv ("LP_GRAINS")) { part.grainAmount = 1.0f; part.grainChaos = juce::String (std::getenv ("LP_GRAINS")).getFloatValue(); part.grainRate = 2; part.grainSizeMs = 90.0f; part.grainPosition = 0.25f; }
     lp::song::RenderSettings rs;
     juce::AudioBuffer<float> out;
     if (! lp::song::renderPart (song, part, rs, out)) { std::printf ("render failed\n"); return 1; }
@@ -491,6 +492,11 @@ int stretchTest (const juce::File& dir, int tune = 0)
     int crossings = 0;
     for (int i = a + 1; i < z; ++i) if ((out.getSample (0, i - 1) < 0) != (out.getSample (0, i) < 0)) ++crossings;
     const double hz = crossings / 2.0 / ((z - a) / sr);
+    {
+        double q = 0; float pk = 0; bool fin = true;
+        for (int i = 0; i < out.getNumSamples(); ++i) { const float v = out.getSample (0, i); q += (double) v * v; pk = std::max (pk, std::abs (v)); fin = fin && std::isfinite (v); }
+        std::printf ("level %.1f dB  peak %.2f  finite %s\n", 10.0 * std::log10 (q / out.getNumSamples() + 1e-12), pk, fin ? "yes" : "NO");
+    }
     std::printf ("length %.3f s (want %.3f)  beats checked %d  worst beat offset %.1f ms  pitch %.1f Hz (want 440)\n",
                  out.getNumSamples() / sr, 16 * 60.0 / songBpm, found, worst, hz);
     juce::WavAudioFormat wav;

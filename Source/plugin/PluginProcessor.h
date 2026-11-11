@@ -23,7 +23,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "Live Planet"; }
+    const juce::String getName() const override { return "Loopwright"; }
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
@@ -71,6 +71,7 @@ public:
     lp::SampleFx sampleFx;                      // the knobs, for your Splice samples
     lp::Limiter masterLimiter;                  // the song's loudness, without squashing it
     std::atomic<float> songMakeupDb { 0.0f };
+    juce::File loadedSongFolder;
     std::vector<float> fxL, fxR, sendL, sendR;
     std::atomic<bool> previewPlaying { false };
     std::atomic<double> previewPos { 0.0 };   // in 48 kHz samples

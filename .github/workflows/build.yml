@@ -1,4 +1,4 @@
-name: Build Live Planet
+name: Build Loopwright
 
 on:
   push:
@@ -43,12 +43,12 @@ jobs:
         run: |
           mkdir -p dist
           ART=build/LivePlanet_artefacts/Release
-          cp -R "$ART/VST3/Live Planet.vst3" dist/
-          cp -R "$ART/CLAP/Live Planet.clap" dist/
-          if [ -d "$ART/AU" ]; then cp -R "$ART/AU/Live Planet.component" dist/; fi
-          if [ -d "$ART/Standalone/Live Planet.app" ]; then cp -R "$ART/Standalone/Live Planet.app" dist/;
-          elif [ -f "$ART/Standalone/Live Planet.exe" ]; then cp "$ART/Standalone/Live Planet.exe" dist/;
-          else cp "$ART/Standalone/Live Planet" dist/; fi
+          cp -R "$ART/VST3/Loopwright.vst3" dist/
+          cp -R "$ART/CLAP/Loopwright.clap" dist/
+          if [ -d "$ART/AU" ]; then cp -R "$ART/AU/Loopwright.component" dist/; fi
+          if [ -d "$ART/Standalone/Loopwright.app" ]; then cp -R "$ART/Standalone/Loopwright.app" dist/;
+          elif [ -f "$ART/Standalone/Loopwright.exe" ]; then cp "$ART/Standalone/Loopwright.exe" dist/;
+          else cp "$ART/Standalone/Loopwright" dist/; fi
           cp INSTALL.md dist/
 
       # Mac: sign each bundle (ad-hoc) and zip with ditto, which keeps the
@@ -57,24 +57,24 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cd dist
-          lipo -info "Live Planet.vst3/Contents/MacOS/Live Planet"   # should list x86_64 and arm64
+          lipo -info "Loopwright.vst3/Contents/MacOS/Loopwright"   # should list x86_64 and arm64
           for b in *.vst3 *.component *.clap *.app; do
             [ -e "$b" ] && codesign --force --deep -s - "$b"
           done
           cd ..
           mkdir -p package
-          ditto -c -k --keepParent dist "package/LivePlanet-macOS.zip"
+          ditto -c -k --keepParent dist "package/Loopwright-macOS.zip"
 
       - name: Upload (macOS)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: LivePlanet-macOS
-          path: package/LivePlanet-macOS.zip
+          name: Loopwright-macOS
+          path: package/Loopwright-macOS.zip
 
       - name: Upload
         if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: LivePlanet-${{ matrix.name }}
+          name: Loopwright-${{ matrix.name }}
           path: dist

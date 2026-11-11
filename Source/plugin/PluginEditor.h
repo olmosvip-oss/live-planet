@@ -21,7 +21,7 @@ namespace lp::ui
     const Theme& theme (int index);
     constexpr int numThemes = 4;
     // the product's name, as shown in the wordmark (one place to change it)
-    inline const char* productName() { return "LIVE PLANET"; }
+    inline const char* productName() { return "LOOPWRIGHT"; }
 }
 
 class LivePlanetLookAndFeel : public juce::LookAndFeel_V4
@@ -215,6 +215,7 @@ public:
     void mouseExit (const juce::MouseEvent&) override { hoverRow = -1; hoverAdd = false; repaint(); }
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     std::function<void()> onMixChanged;
+    std::function<void (int)> onOpenTrack; // clicking a track's name opens it in the editor
     bool mixDirty = false;
 
 private:
@@ -232,6 +233,60 @@ private:
     LivePlanetProcessor& proc;
     int hoverRow = -1, dragRow = -1;
     Col dragCol = None;
+};
+
+// EDIT: one track at a time, like a sampler: its sample (choose which bars play), its own effects and remix tools
+class TrackEditor : public juce::Component
+{
+public:
+    TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void select (int track);
+    void refresh();     // message thread, every frame while showing
+    int selected() const { return track; }
+
+private:
+    // a dial is either live (the mixer: plays as you turn it) or re-records the track when you let go (grains)
+    struct Dial { juce::Slider s; std::function<std::atomic<float>& (int)> value; float* local = nullptr; int row = 0; };
+    Dial& addDial (const char* name, double lo, double hi, std::function<std::atomic<float>& (int)> value, int size, int row = 0);
+    Dial& addGrainDial (const char* name, double lo, double hi, float* local, int size);
+    SongJob::GrainSettings grains;
+    float grainRateF = 2.0f;
+    const std::vector<float>& peaksFor (const juce::File& f, bool wholeSong);
+    juce::Rectangle<float> screen() const;
+    int barAt (float x) const;
+
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    int track = 0, version = -1;
+    std::vector<std::unique_ptr<Dial>> dials;
+    juce::TextButton prev { "<" }, next { ">" }, swap { "Swap sample" }, rev { "Reverse" }, pitchDown { "-" }, pitchUp { "+" },
+                     mute { "M" }, solo { "S" };
+    std::map<juce::String, std::vector<float>> peakCache;
+    int dragFrom = -1, dragTo = -1;
+};
+
+// SOUND: a little screen of the sound being played, with its grains appearing as they would
+// (where they come from = position, how spread = scatter, how wide = grain size, bright high ones = sparkle)
+class GrainView : public juce::Component
+{
+public:
+    explicit GrainView (LivePlanetProcessor& p) : proc (p) {}
+    void paint (juce::Graphics&) override;
+
+private:
+    struct G { float x, w, born, life, high; };
+    LivePlanetProcessor& proc;
+    std::vector<G> grains;
+    std::vector<float> peaks;
+    int peaksFor = -1;
+    juce::Random rng;
+    double last = 0;
 };
 
 // A pill you drag into your DAW (or click to show in Finder)
@@ -286,7 +341,7 @@ private:
     void runSearch();
     void setPage (int p);
     void applyTheme();
-    enum Page { Write = 0, Studio, Sound, Sky };
+    enum Page { Write = 0, Studio, Edit, Sound };
     juce::Rectangle<int> tabBounds (int i) const;
 
     struct Knob
@@ -310,6 +365,8 @@ private:
     SongPanel songPanel;
     SongView songView;
     StudioView studioView;
+    TrackEditor trackEditor;
+    GrainView grainView;
     FilePill pillMidi, pillStems, pillMix, pillHelper, pillFolder;
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;

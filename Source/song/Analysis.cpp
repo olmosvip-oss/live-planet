@@ -157,6 +157,36 @@ bool detectKey (const float* input, int numSamples, double sampleRate, int& key,
     return sc[(size_t) bi] > 0.5f; // a clear enough key
 }
 
+Feel measureFeel (const float* x, int n, double sr)
+{
+    Feel f;
+    f.tone = measureTone (x, n, sr);
+    if (! f.tone.valid) return f;
+    // a 20 ms loudness envelope: held sounds stay up, plucks and hits fall away; sharp rises are hits
+    const int w = std::max (1, (int) (0.02 * sr));
+    std::vector<float> env;
+    for (int i = 0; i + w <= n; i += w)
+    {
+        double e = 0;
+        for (int k = i; k < i + w; k += 2) e += (double) x[k] * x[k];
+        env.push_back ((float) std::sqrt (e / (w / 2)));
+    }
+    if (env.size() < 8) return f;
+    auto sorted = env;
+    std::sort (sorted.begin(), sorted.end());
+    const float loud = sorted[sorted.size() * 9 / 10];
+    int held = 0, hits = 0;
+    for (size_t i = 1; i < env.size(); ++i)
+    {
+        held += env[i] > loud * 0.5f ? 1 : 0;
+        if (env[i] > env[i - 1] * 1.8f && env[i] > loud * 0.3f) ++hits;
+    }
+    f.sustain = (float) held / (float) env.size();
+    f.busy = juce::jlimit (0.0f, 1.0f, (float) hits / ((float) n / (float) sr) / 8.0f);
+    f.valid = true;
+    return f;
+}
+
 Tone measureTone (const float* x, int n, double sr)
 {
     Tone t;
@@ -215,7 +245,8 @@ Tone measureTone (const float* x, int n, double sr)
 // then the harmonic part split into bass (low), vocals (the centre of the stereo picture) and the rest
 namespace
 {
-    struct StemFrames { std::vector<std::array<float, 4>> e; double framesPerSecond = 0; bool vocals = false; };
+    struct StemFrames { std::vector<std::array<float, 4>> e; double framesPerSecond = 0; bool vocals = false;
+                        std::array<std::array<double, 10>, 4> bands {}; };
 
     StemFrames splitIntoParts (const std::vector<float>& x, const std::vector<float>* side, double sr)
     {
@@ -243,6 +274,12 @@ namespace
         }
         const double binHz = sr / N;
         const int kBass = (int) (160.0 / binHz), kVoxLo = (int) (200.0 / binHz), kVoxHi = (int) (4000.0 / binHz);
+        std::vector<int> bandOf ((size_t) K, -1);
+        for (int k = 1; k < K; ++k)
+        {
+            const int bnd = (int) std::floor (std::log2 (k * binHz / 31.25) + 0.5);
+            bandOf[(size_t) k] = bnd >= 0 && bnd < 10 ? bnd : -1;
+        }
         out.e.assign ((size_t) frames, { 0, 0, 0, 0 });
         std::array<float, med> tmp {};
         for (int f = 0; f < frames; ++f)
@@ -261,18 +298,20 @@ namespace
                 const float e = m * m;
                 const float hMask = H * H / (H * H + P * P + 1e-12f);
                 auto& fr = out.e[(size_t) f];
-                if (k <= kBass) { fr[StemBass] += e * hMask; fr[StemDrums] += e * (1 - hMask); continue; }
-                fr[StemDrums] += e * (1 - hMask);
+                const int bnd = bandOf[(size_t) k];
+                auto add = [&] (int stem, float v) { fr[(size_t) stem] += v; if (bnd >= 0) out.bands[(size_t) stem][(size_t) bnd] += v; };
+                if (k <= kBass) { add (StemBass, e * hMask); add (StemDrums, e * (1 - hMask)); continue; }
+                add (StemDrums, e * (1 - hMask));
                 const float harm = e * hMask;
                 if (side && k >= kVoxLo && k <= kVoxHi)
                 {
                     // how much of it sits in the middle (mid much louder than side)
                     const float sm = sideMag[(size_t) f * K + (size_t) k];
                     const float centre = juce::jlimit (0.0f, 1.0f, 1.0f - 2.5f * sm / (m + 1e-9f));
-                    fr[StemVocals] += harm * centre;
-                    fr[StemMusic] += harm * (1 - centre);
+                    add (StemVocals, harm * centre);
+                    add (StemMusic, harm * (1 - centre));
                 }
-                else fr[StemMusic] += harm;
+                else add (StemMusic, harm);
             }
         return out;
     }
@@ -749,6 +788,16 @@ Profile analyse (const float* input, int numSamples, double sampleRate, double k
             const double songF0 = firstBar, songF1 = firstBar + bars * barLen;
             for (int st = 0; st < 4; ++st) p.stemDb[(size_t) st] = levelDb (st, songF0, songF1);
             p.hasStems = true;
+            for (int st = 0; st < 4; ++st)
+            {
+                float mean = 0; int used = 0;
+                for (int b = 0; b < 10; ++b)
+                {
+                    p.stemBands[(size_t) st][(size_t) b] = (float) (10.0 * std::log10 (parts.bands[(size_t) st][(size_t) b] + 1e-9));
+                    if (b < 9) { mean += p.stemBands[(size_t) st][(size_t) b]; ++used; }
+                }
+                for (auto& v : p.stemBands[(size_t) st]) v -= mean / (float) std::max (1, used);
+            }
             p.vocalsHeard = parts.vocals && p.stemDb[StemVocals] > p.stemDb[StemMusic] - 9.0f;
             if (! parts.vocals) p.stemDb[StemVocals] = -100.0f;
             for (auto& sec : p.sections)

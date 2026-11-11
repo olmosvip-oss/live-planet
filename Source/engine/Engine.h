@@ -89,6 +89,8 @@ public:
     // what is playing right now, for the screen (read from the UI thread; small
     // races only affect a label)
     std::atomic<bool> uiRunning { false };
+    // the sound being played, for drawing (built once, never changed while playing)
+    const SourceSound& soundForDisplay (SoundId id) const { return sourceFor (id); }
     std::atomic<int> uiStep { 0 }, uiSound { 0 }, uiKey { 0 }, uiScale { 0 }, uiChordRoot { 0 }, uiChordMinor { 0 };
     std::atomic<float> uiBpm { 80.0f };
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Live Planet on your own Mac and installs it (VST3 + Audio Unit).
+# Builds Loopwright on your own Mac and installs it (VST3 + Audio Unit).
 # Use it when the GitHub build is slow or down. Run from the live-planet folder:
 #   bash tools/build-mac.sh
 set -e
@@ -38,9 +38,9 @@ ARCH=$(uname -m)   # just this Mac's chip, which is faster to build
 echo "== 4/4 installing"
 ART=build-mac/LivePlanet_artefacts/Release
 mkdir -p "$HOME/Library/Audio/Plug-Ins/VST3" "$HOME/Library/Audio/Plug-Ins/Components"
-rm -rf "$HOME/Library/Audio/Plug-Ins/VST3/Live Planet.vst3" "$HOME/Library/Audio/Plug-Ins/Components/Live Planet.component"
-cp -R "$ART/VST3/Live Planet.vst3" "$HOME/Library/Audio/Plug-Ins/VST3/"
-cp -R "$ART/AU/Live Planet.component" "$HOME/Library/Audio/Plug-Ins/Components/"
-xattr -cr "$HOME/Library/Audio/Plug-Ins/VST3/Live Planet.vst3" "$HOME/Library/Audio/Plug-Ins/Components/Live Planet.component"
-codesign --force --deep -s - "$HOME/Library/Audio/Plug-Ins/VST3/Live Planet.vst3" "$HOME/Library/Audio/Plug-Ins/Components/Live Planet.component"
+rm -rf "$HOME/Library/Audio/Plug-Ins/VST3/Loopwright.vst3" "$HOME/Library/Audio/Plug-Ins/Components/Loopwright.component"
+cp -R "$ART/VST3/Loopwright.vst3" "$HOME/Library/Audio/Plug-Ins/VST3/"
+cp -R "$ART/AU/Loopwright.component" "$HOME/Library/Audio/Plug-Ins/Components/"
+xattr -cr "$HOME/Library/Audio/Plug-Ins/VST3/Loopwright.vst3" "$HOME/Library/Audio/Plug-Ins/Components/Loopwright.component"
+codesign --force --deep -s - "$HOME/Library/Audio/Plug-Ins/VST3/Loopwright.vst3" "$HOME/Library/Audio/Plug-Ins/Components/Loopwright.component"
 echo "installed. open Ableton (Settings > Plug-Ins > Rescan if it doesn't show up)."

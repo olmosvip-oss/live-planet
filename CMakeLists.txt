@@ -29,11 +29,11 @@ set(LP_ENGINE_SOURCES
 option(LP_BUILD_PLUGIN "Build the plugin" ON)
 if(LP_BUILD_PLUGIN)
 juce_add_plugin(LivePlanet
-    PRODUCT_NAME "Live Planet"
-    COMPANY_NAME "Live Planet Audio"
-    BUNDLE_ID "com.liveplanetaudio.liveplanet"
-    PLUGIN_MANUFACTURER_CODE Lpla
-    PLUGIN_CODE Lpln
+    PRODUCT_NAME "Loopwright"
+    COMPANY_NAME "Loopwright"
+    BUNDLE_ID "com.loopwright.loopwright"
+    PLUGIN_MANUFACTURER_CODE Lpwt
+    PLUGIN_CODE Lpw1
     FORMATS ${LP_FORMATS}
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE
@@ -57,6 +57,8 @@ target_sources(LivePlanet PRIVATE
     Source/plugin/PluginProcessor.cpp
     Source/plugin/PluginEditor.cpp
     Source/plugin/StudioView.cpp
+    Source/plugin/TrackEditor.cpp
+    Source/plugin/GrainView.cpp
     Source/plugin/WeatherService.cpp)
 
 target_compile_definitions(LivePlanet PUBLIC

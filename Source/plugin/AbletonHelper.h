@@ -1,4 +1,5 @@
 #pragma once
+#include "AppFolder.h"
 #include <juce_core/juce_core.h>
 
 // Writes the "Live Planet Song Helper" Max for Live device (needs Ableton Live Suite).
@@ -9,7 +10,7 @@ namespace lp::ableton
 
 inline juce::File helperFolder()
 {
-    return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("Ableton Helper");
+    return lp::appFolder().getChildFile ("Ableton Helper");
 }
 
 inline juce::String helperScript (const juce::File& latest)
@@ -38,7 +39,7 @@ function readPlan()
 {
     var txt = null;
     for (var i = 0; i < PATHS.length && ! txt; i++) txt = readText (PATHS[i]);
-    if (! txt) { outlet (0, "set", "no song yet: make one in Live Planet first"); return null; }
+    if (! txt) { outlet (0, "set", "no song yet: make one in Loopwright first"); return null; }
     return JSON.parse (txt);
 }
 
@@ -61,7 +62,7 @@ function build()
         track.call ("create_audio_clip", file, 0);
     }
     bang();
-    outlet (0, "set", plan.stems.length + " tracks + locators for '" + plan.title + "'. turn off 'play with my song' in live planet.");
+    outlet (0, "set", plan.stems.length + " tracks + locators for '" + plan.title + "'. turn off 'play with my song' in loopwright.");
 }
 
 function bang()
@@ -192,7 +193,7 @@ inline juce::File installHelper (const juce::File& latestPointer)
     out.write ("ptch", 4); u32 ((juce::uint32) json.getNumBytesAsUTF8() + 1);
     out.write (json.toRawUTF8(), json.getNumBytesAsUTF8());
     out.writeByte (0);
-    auto device = dir.getChildFile ("Live Planet Song Helper.amxd");
+    auto device = dir.getChildFile ("Loopwright Song Helper.amxd");
     device.replaceWithData (out.getData(), out.getDataSize());
     return device;
 }

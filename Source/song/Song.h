@@ -44,6 +44,16 @@ struct Tone
 };
 Tone measureTone (const float* mono, int numSamples, double sampleRate);
 
+// How a sample feels: its tone, how held (vs. plucky) and how busy it is
+struct Feel
+{
+    bool valid = false;
+    Tone tone;
+    float sustain = 0.5f; // 0 short plucks / hits .. 1 long held notes
+    float busy = 0.5f;    // hits per second, roughly 0..1 (0 = calm, 1 = very busy)
+};
+Feel measureFeel (const float* mono, int numSamples, double sampleRate);
+
 // How alike two sounds are in character (bright / dark, lo-fi / polished), 0..1
 inline float toneLikeness (const Tone& a, const Tone& b)
 {
@@ -70,6 +80,7 @@ struct Profile
     bool hasStems = false;
     bool vocalsHeard = false;   // vocals are found by what sits in the middle of the stereo picture (needs a stereo file)
     std::array<float, 4> stemDb { -100.0f, -100.0f, -100.0f, -100.0f };
+    std::array<std::array<float, 10>, 4> stemBands {}; // each part's tone (octave bands, dB around their average)
     float sustain = 0.5f;       // 0 short, plucky notes .. 1 long, held, singing notes
     float lowSustain = 0.5f;    // 0 punchy bass hits .. 1 a constant, held 808
     std::vector<RefSection> sections;
@@ -191,6 +202,10 @@ struct Part
     std::set<int> swellBars;         // a reversed swell of the loop rising into the next bar
     std::vector<FxHit> fxHits;       // Fx parts: the transition sounds and where they land
     float mixDb = 0.0f;              // where it sits in the mix vs. its kind's usual level (lead up, background down)
+    int regionStart = 0, regionBars = 0; // loops: play only this part of the sample (in the song's bars; 0 = all of it)
+    // grains: the track re-played as tiny slices in time with the song (0 = off)
+    float grainAmount = 0.0f, grainSizeMs = 120.0f, grainChaos = 0.0f, grainPosition = 0.0f;
+    int grainRate = 2;               // 0 = 1/4, 1 = 1/8, 2 = 1/16, 3 = 1/32 notes
     float pan = 0.0f;                // -1 left .. 0 centre .. +1 right
 };
 
@@ -220,6 +235,9 @@ struct Song
     double lengthSeconds() const { return totalBars() * 4.0 * 60.0 / bpm; }
 };
 
+// what the words you typed ask of the sounds: +1 / -1 / 0 (don't care)
+struct SoundWish { int dark = 0, plucky = 0, punchy = 0, lofi = 0, warm = 0, airy = 0; };
+
 struct Options
 {
     bool shiftKey = true;         // move to a nearby key so it doesn't sit on top of the reference
@@ -239,6 +257,7 @@ struct Options
     int promptMood = 0;           // -1 dark, +1 bright
     juce::StringArray genreWords;
     std::vector<int> wantKinds;   // instruments you asked for (LoopKind)
+    SoundWish wish;               // "dark", "plucky", "punchy", "lofi", "warm", "airy"...
 };
 
 // The tempo / key / groove a song would get before any sample choices
@@ -246,6 +265,7 @@ struct Target
 {
     double bpm; int key; bool minor; Style style;
     juce::StringArray genreWords; // from "describe your song": look for these in your sample folders
+    SoundWish wish;
 };
 Target chooseTarget (const Profile& ref, const lp::Weather& sky, const Options& options);
 

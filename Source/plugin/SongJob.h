@@ -1,4 +1,5 @@
 #pragma once
+#include "AppFolder.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../song/Song.h"
 #include "../song/Library.h"
@@ -10,7 +11,8 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add }; // Add: the "track" is the LoopKind to add
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains }; // Add: the "track" is the LoopKind to add
+    struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
     {
@@ -22,6 +24,12 @@ public:
         int candidates = 0, candidate = 0;
         bool sample = false; // from your library (the knobs' effects apply live)
         int group = 0;       // 1 chords, 2 melody, 3 bass, 4 drums
+        float space = 0, echo = 0, warmth = 0, nostalgia = 0; // its own effects to start with
+        // for the editor: the sample it plays and which part of it
+        juce::String samplePath;
+        int loopBars = 0, regionStart = 0, regionBars = 0;
+        bool isLoop = false;
+        GrainSettings grains;
     };
 
     struct Status
@@ -81,7 +89,7 @@ public:
 
     static juce::File libraryCache()
     {
-        return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("library-v2.json");
+        return lp::appFolder().getChildFile ("library-v2.json");
     }
 
     void makeSong (const lp::song::Options& o, const lp::song::RenderSettings& rs, const lp::Weather& sky, bool useLibrary, bool onlySamples = false)
@@ -94,6 +102,30 @@ public:
             settings = rs;
             weather = sky;
             task = Task::Write;
+        }
+        startIfNeeded();
+    }
+
+    // play only part of a track's sample (in the song's bars; bars 0 = all of it)
+    void setRegion (int track, int startBar, int bars)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingRegion[track] = { startBar, bars };
+            edits.push_back ({ track, EditOp::Region });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
+    // re-play a track as grains (re-recorded in the background)
+    void setGrains (int track, GrainSettings g)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingGrains[track] = g;
+            edits.push_back ({ track, EditOp::Grains });
+            status.editing = true;
         }
         startIfNeeded();
     }
@@ -158,13 +190,13 @@ public:
     // where songs are saved: ~/Music/Live Planet/Songs
     static juce::File songsFolder()
     {
-        return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("Songs");
+        return lp::appFolder().getChildFile ("Songs");
     }
 
     // the Ableton helper device reads this to find the newest song
     static juce::File latestPointer()
     {
-        return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("latest-song.json");
+        return lp::appFolder().getChildFile ("latest-song.json");
     }
 
     std::function<juce::File (const lp::song::Song&, const lp::song::Rendered&)> writeAbletonSet; // set by the processor
@@ -189,6 +221,7 @@ private:
     void run() override
     {
         // start with the library found last time, so songs can use it straight away
+        loadFeatures();
         if (library.load (libraryCache()))
         {
             const juce::ScopedLock sl (lock);
@@ -336,7 +369,7 @@ private:
             setStage (Stage::Writing, 0.03f, "looking through your samples...");
             picks = lp::song::pickFromLibrary (library, target, o.seed, [] (const juce::String& path, double bpm) { return loopBars (path, bpm); },
                                                {}, [this, &target] (const juce::String& path) { return tuneFor (path, target.key, target.minor); },
-                                               [this, &ref] (const juce::String& path) { return soundsLike (path, ref.tone); });
+                                               [this, &ref, &target] (const juce::String& path) { return soundsLike (path, ref, target.wish); });
             if (picks.loop != nullptr)
             {
                 const bool tempoSet = o.dawBpm > 0.0 || o.promptBpm > 0.0 || o.genreBpm > 0.0;
@@ -385,7 +418,7 @@ private:
             using PK = lp::song::PartKind;
             if (part.kind == PK::Drums)
             {
-                part.source = song.drumSamples.empty() ? juce::String ("live planet: ") + lp::song::styleName (song.style) + " kit"
+                part.source = song.drumSamples.empty() ? juce::String ("loopwright: ") + lp::song::styleName (song.style) + " kit"
                                                        : "splice: " + picks.drumPack + " kit";
                 part.remix = song.drumSamples.empty() ? "a new groove, played on coded drums"
                                                       : juce::String ("one-shots re-sequenced into a new ") + lp::song::styleName (song.style) + " groove";
@@ -393,12 +426,12 @@ private:
             }
             else if (part.kind == PK::Bass)
             {
-                part.source = juce::String ("live planet: ") + (part.variant == 1 ? "808" : "bass");
+                part.source = juce::String ("loopwright: ") + (part.variant == 1 ? "808" : "bass");
                 part.remix = "new bass line on the song's chords";
             }
             else
             {
-                part.source = juce::String ("live planet: ") + lp::profileFor (part.sound).name;
+                part.source = juce::String ("loopwright: ") + lp::profileFor (part.sound).name;
                 part.remix = "new notes written for this song";
             }
         }
@@ -547,6 +580,7 @@ private:
             folder = songsFolder().getChildFile (juce::File::createLegalFileName (song.title + " " + juce::String (n)));
 
         setStage (Stage::Rendering, 0.05f, "recording \"" + song.title + "\"...");
+        saveFeatures(); // what was heard while choosing, remembered for next time
         lp::song::Rendered files;
         const bool ok = lp::song::render (song, rs, folder, files,
                                           [this] (float p) { const juce::ScopedLock sl (lock); status.progress = 0.05f + 0.9f * p; },
@@ -571,6 +605,7 @@ private:
         currentFolder = folder;
         currentPicksDrumPacks = picks.drumPacks;
         currentTarget = target;
+        currentRef = ref;
         currentSeed = o.seed;
         status.tracks.clear();
         for (int i = 0; i < (int) song.parts.size(); ++i)
@@ -597,15 +632,104 @@ private:
     }
 
     // semitones to put a sample in the song's key (99 = it has no clear key). Listens once per file.
-    struct Heard { lp::song::KeyReading reading; bool clear = false; int key = -1; bool minor = false; lp::song::Tone tone; };
+    struct Heard { lp::song::KeyReading reading; bool clear = false; int key = -1; bool minor = false; lp::song::Tone tone; lp::song::Feel feel; };
 
     // how much a sample sounds like your reference (0..1)
-    float soundsLike (const juce::String& path, const lp::song::Tone& ref)
+    // how well a sample fits, 0..1: its tone against the matching part of the reference (a bass loop against
+    // the reference's bass...), held vs. plucky and busy against the reference, and the words you typed
+    float soundsLike (const juce::String& path, const lp::song::Profile& ref, const lp::song::SoundWish& wish)
     {
-        if (! ref.valid) return 0.5f;
-        tuneFor (path, 0, false); // listens once (key and sound)
+        tuneFor (path, 0, false); // listens once (key and sound), remembered on disk
         auto it = keyCache.find (path);
-        return it != keyCache.end() ? lp::song::toneLikeness (it->second.tone, ref) : 0.5f;
+        if (it == keyCache.end() || ! it->second.feel.valid) return 0.5f;
+        const auto& f = it->second.feel;
+        const auto* e = library.find (path);
+        using LK = lp::song::LoopKind;
+        const LK kind = e != nullptr ? e->loop : LK::Other;
+        double sum = 0, weight = 0;
+        auto add = [&] (double v, double w) { sum += juce::jlimit (0.0, 1.0, v) * w; weight += w; };
+
+        // tone: shaped like the matching part of the reference
+        if (ref.valid && ref.hasStems)
+        {
+            const int stem = kind == LK::Bass ? lp::song::StemBass : (kind == LK::Drums || kind == LK::Perc) ? lp::song::StemDrums
+                           : kind == LK::Vocal ? lp::song::StemVocals : lp::song::StemMusic;
+            const int b0 = stem == lp::song::StemBass ? 0 : (stem == lp::song::StemDrums ? 1 : 3), b1 = stem == lp::song::StemBass ? 5 : 9;
+            double ma = 0, mb = 0; int n = 0;
+            for (int b = b0; b <= b1; ++b) { ma += f.tone.bandsDb[(size_t) b]; mb += ref.stemBands[(size_t) stem][(size_t) b]; ++n; }
+            ma /= n; mb /= n;
+            double num = 0, da = 0, db = 0;
+            for (int b = b0; b <= b1; ++b)
+            {
+                const double x = f.tone.bandsDb[(size_t) b] - ma, y = ref.stemBands[(size_t) stem][(size_t) b] - mb;
+                num += x * y; da += x * x; db += y * y;
+            }
+            const double corr = num / std::sqrt (std::max (1e-9, da * db));
+            add ((corr + 1.0) * 0.5, 3.0);
+        }
+        else if (ref.valid && ref.tone.valid)
+            add (lp::song::toneLikeness (f.tone, ref.tone), 2.0);
+        // held vs. plucky (melodic sounds), busy (drums)
+        const bool melodic = kind != LK::Drums && kind != LK::Perc && kind != LK::FX && kind != LK::Bass;
+        if (ref.valid && melodic) add (1.0 - std::abs (f.sustain - (ref.sustain > 0.83f ? 0.75f : 0.4f)) * 2.0, 1.5);
+        if (ref.valid && (kind == LK::Drums || kind == LK::Perc)) add (1.0 - std::abs (f.busy - ref.density) * 1.5, 1.5);
+        // the words you typed
+        const double octaves = std::log2 (std::max (200.0f, f.tone.rolloffHz) / 1500.0); // < 0 dark, > 0 bright
+        if (wish.dark)   add (0.5 - wish.dark * octaves * 0.35, 2.0);
+        if (wish.lofi)   add (0.5 - wish.lofi * (octaves * 0.25 + (f.tone.airDb + 30.0f) / 40.0), 2.0);
+        if (wish.airy)   add (0.5 + wish.airy * (f.tone.airDb + 30.0f) / 30.0, 1.5);
+        if (wish.punchy) add (0.5 + wish.punchy * (f.tone.crestDb - 12.0f) / 10.0, 1.5);
+        if (wish.plucky && melodic) add (0.5 + wish.plucky * (0.5f - f.sustain) * 1.5, 2.0);
+        if (wish.warm)   add (0.5 + wish.warm * ((f.tone.bandsDb[3] + f.tone.bandsDb[4]) * 0.5f - f.tone.bandsDb[7]) / 20.0, 1.5);
+        return weight > 0 ? (float) (sum / weight) : 0.5f;
+    }
+
+    // what was heard in each sample, kept on disk so your library is only listened to once
+    static juce::File featuresFile() { return lp::appFolder().getChildFile ("sample-features.json"); }
+    bool featuresDirty = false;
+
+    void loadFeatures()
+    {
+        auto v = juce::JSON::parse (featuresFile());
+        if (auto* obj = v.getDynamicObject())
+            for (auto& prop : obj->getProperties())
+            {
+                const auto& a = prop.value;
+                if (! a.isArray() || a.size() < 38) continue;
+                Heard h;
+                h.key = (int) a[0]; h.minor = (bool) a[1]; h.clear = (bool) a[2];
+                for (int i = 0; i < 24; ++i) h.reading.scores[(size_t) i] = (float) (double) a[3 + i];
+                h.reading.best = (float) (double) a[27]; h.reading.hasThird = (bool) a[28];
+                auto& t = h.feel.tone;
+                for (int i = 0; i < 10; ++i) t.bandsDb[(size_t) i] = (float) (double) a[29 + i];
+                if (a.size() >= 45)
+                {
+                    t.rolloffHz = (float) (double) a[39]; t.airDb = (float) (double) a[40]; t.rmsDb = (float) (double) a[41];
+                    t.crestDb = (float) (double) a[42]; h.feel.sustain = (float) (double) a[43]; h.feel.busy = (float) (double) a[44];
+                    t.valid = h.feel.valid = true;
+                }
+                h.tone = t;
+                keyCache[prop.name.toString()] = h;
+            }
+    }
+
+    void saveFeatures()
+    {
+        if (! featuresDirty) return;
+        auto obj = std::make_unique<juce::DynamicObject>();
+        for (auto& [path, h] : keyCache)
+        {
+            juce::Array<juce::var> a { h.key, h.minor, h.clear };
+            for (float v : h.reading.scores) a.add (v);
+            a.add (h.reading.best); a.add (h.reading.hasThird);
+            for (float v : h.feel.tone.bandsDb) a.add (v);
+            a.add (h.feel.tone.rolloffHz); a.add (h.feel.tone.airDb); a.add (h.feel.tone.rmsDb); a.add (h.feel.tone.crestDb);
+            a.add (h.feel.sustain); a.add (h.feel.busy);
+            obj->setProperty (juce::Identifier (path), a);
+        }
+        featuresFile().getParentDirectory().createDirectory();
+        featuresFile().replaceWithText (juce::JSON::toString (juce::var (obj.release()), true));
+        featuresDirty = false;
     }
 
     // semitones to put a loop into the song's key (99 = too unsure): listens to it, and checks the file name
@@ -631,7 +755,9 @@ private:
                     mono[(size_t) i] = v;
                 }
                 h.clear = lp::song::detectKey (mono.data(), len, rd->sampleRate, h.key, h.minor, &h.reading);
-                h.tone = lp::song::measureTone (mono.data(), len, rd->sampleRate);
+                h.feel = lp::song::measureFeel (mono.data(), len, rd->sampleRate);
+                h.tone = h.feel.tone;
+                featuresDirty = true;
             }
             it = keyCache.emplace (path, h).first;
         }
@@ -693,6 +819,22 @@ private:
         else if (n == "keys" || n == "guitar" || n == "pad" || n == "strings" || n == "loop" || p.kind == lp::song::PartKind::Chords || p.kind == lp::song::PartKind::Pad)
             t.group = 1;
         else t.group = 2;
+        // its own effects to start with, like a mixer would set them
+        const juce::String nm (p.name);
+        if (p.kind == lp::song::PartKind::Fx)                 { t.space = 0.25f; }
+        else if (nm == "vocal")                               { t.space = 0.32f; t.echo = 0.16f; t.warmth = 0.1f; }
+        else if (nm == "pad" || p.kind == lp::song::PartKind::Pad) { t.space = 0.4f; t.warmth = 0.15f; }
+        else if (t.group == 4)                                { t.space = nm == "percussion" ? 0.14f : 0.06f; t.echo = nm == "percussion" ? 0.06f : 0.0f; }
+        else if (t.group == 3)                                { t.warmth = 0.12f; }
+        else if (nm == "bells" || nm == "pluck" || nm == "lead" || p.kind == lp::song::PartKind::Melody)
+                                                              { t.space = 0.24f; t.echo = 0.12f; t.warmth = 0.1f; }
+        else                                                  { t.space = 0.2f; t.echo = 0.05f; t.warmth = 0.12f; }
+        t.samplePath = p.samplePath;
+        t.loopBars = p.loopBars;
+        t.regionStart = p.regionStart;
+        t.regionBars = p.regionBars;
+        t.isLoop = p.kind == lp::song::PartKind::Loop;
+        t.grains = { p.grainAmount, p.grainSizeMs, p.grainChaos, p.grainPosition, p.grainRate };
         return t;
     }
 
@@ -735,7 +877,7 @@ private:
             if (b <= 0) continue;
             const int tune = tonal ? tuneFor (e->path, song.key, song.minor) : 0;
             if (tune == 99) continue;
-            found.push_back ({ e, b, tune, soundsLike (e->path, song.refTone) });
+            found.push_back ({ e, b, tune, soundsLike (e->path, currentRef, currentTarget.wish) });
         }
         // the ones that sound most like your reference first
         std::stable_sort (found.begin(), found.end(), [] (const Found& a, const Found& b)
@@ -769,6 +911,7 @@ private:
             for (int b = 0; b + bars <= song.totalBars(); b += bars) part.loopStartBars.push_back (b);
         part.source = "splice: " + juce::File (part.samplePath).getFileNameWithoutExtension();
         part.remix = remixText (part, 0.0, song) + " (added by you)";
+        saveFeatures();
         song.parts.push_back (part);
         juce::AudioBuffer<float> buf;
         if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
@@ -796,6 +939,20 @@ private:
         auto& part = song.parts[(size_t) tr];
         using PK = lp::song::PartKind;
         if (op == EditOp::Reverse) part.reversed = ! part.reversed;
+        if (op == EditOp::Grains)
+        {
+            const juce::ScopedLock sl (lock);
+            const auto gs = pendingGrains[tr];
+            part.grainAmount = gs.amount; part.grainSizeMs = gs.sizeMs; part.grainChaos = gs.chaos;
+            part.grainPosition = gs.position; part.grainRate = gs.rate;
+        }
+        if (op == EditOp::Region)
+        {
+            const juce::ScopedLock sl (lock);
+            const auto r = pendingRegion[tr];
+            part.regionStart = r.first;
+            part.regionBars = r.second >= part.loopBars ? 0 : r.second;
+        }
         if (op == EditOp::PitchUp) part.pitchSemis = std::min (12, part.pitchSemis + 1);
         if (op == EditOp::PitchDown) part.pitchSemis = std::max (-12, part.pitchSemis - 1);
         if (op == EditOp::Swap)
@@ -804,6 +961,7 @@ private:
             {
                 part.candidate = (part.candidate + 1) % part.candidates.size();
                 part.samplePath = part.candidates[part.candidate];
+                part.regionStart = 0; part.regionBars = 0;
                 part.autoTune = part.candidate < part.candidateTunes.size() ? part.candidateTunes[part.candidate] : 0;
                 const auto* entry = library.find (part.samplePath);
                 const int bars = songBars (part.samplePath, entry != nullptr ? entry->bpm : song.bpm, song.bpm);
@@ -845,12 +1003,12 @@ private:
             else if (part.kind == PK::Drums)
             {
                 part.variant = (part.variant + 1) % lp::song::kNumStyles; // another coded kit
-                part.source = juce::String ("live planet: ") + lp::song::styleName ((lp::song::Style) part.variant) + " kit";
+                part.source = juce::String ("loopwright: ") + lp::song::styleName ((lp::song::Style) part.variant) + " kit";
             }
             else if (part.kind != PK::Bass)
             {
                 part.sound = (lp::SoundId) (((int) part.sound + 1) % lp::kNumBuiltIns); // another instrument
-                part.source = juce::String ("live planet: ") + lp::profileFor (part.sound).name;
+                part.source = juce::String ("loopwright: ") + lp::profileFor (part.sound).name;
             }
         }
         juce::AudioBuffer<float> buf;
@@ -1066,7 +1224,7 @@ private:
         if (! impacts.isEmpty() || ! crashes.isEmpty()) kinds.add ("impacts / crashes on the downbeat");
         if (! subs.isEmpty()) kinds.add ("sub drops");
         if (! downs.isEmpty()) kinds.add ("downlifters where the energy drops");
-        p.remix = "placed by Live Planet: " + kinds.joinIntoString (", ") + ". swap for a different set";
+        p.remix = "placed by Loopwright: " + kinds.joinIntoString (", ") + ". swap for a different set";
         p.candidate = 0;
         return p;
     }
@@ -1137,8 +1295,11 @@ private:
     juce::File currentFolder;
     juce::StringArray currentPicksDrumPacks;
     lp::song::Target currentTarget {};
+    lp::song::Profile currentRef;
     juce::uint32 currentSeed = 1;
     std::vector<std::pair<int, EditOp>> edits;
+    std::map<int, std::pair<int, int>> pendingRegion;
+    std::map<int, GrainSettings> pendingGrains;
     Task task = Task::None;
     juce::File pendingReference;
     lp::song::Options options;

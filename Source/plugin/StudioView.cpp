@@ -88,6 +88,7 @@ void StudioView::paint (Graphics& g)
     g.setColour (dim);
     auto head = Rectangle<float> (12.0f, 8.0f, b.getWidth() - 24.0f, 16.0f);
     g.drawText ("TRACKS", head.withTrimmedLeft (6.0f), Justification::centredLeft, false);
+    g.drawText ("CLICK A TRACK TO EDIT IT", head.withTrimmedLeft (90.0f).withWidth (260.0f), Justification::centredLeft, false);
     for (auto [label, c] : { std::pair { "VOLUME", Volume }, { "PAN", Pan }, { "TONE", Tone }, { "SWAP", Swap }, { "REV", Reverse }, { "PITCH", PitchDown } })
         g.drawText (label, Rectangle<float> (colBounds (scroll, c).getX(), 8.0f, 80.0f, 16.0f), Justification::centredLeft, false);
     if (st.editing)
@@ -218,6 +219,11 @@ void StudioView::mouseDown (const MouseEvent& e)
     {
         if (! rowShown (i) || ! rowBounds (i).expanded (0.0f, 1.0f).contains (e.position)) continue;
         const auto c = colAt (i, e.position);
+        if (c == None && e.position.x > rowBounds (i).getX() + 50.0f && e.position.x < colBounds (i, Volume).getX() - 10.0f)
+        {
+            if (onOpenTrack) onOpenTrack (i);
+            return;
+        }
         auto& m = proc.studio.mix[(size_t) i];
         switch (c)
         {

@@ -135,10 +135,16 @@ void LivePlanetLookAndFeel::drawRotarySlider (Graphics& g, int x, int y, int w, 
         g.drawText (txt, Rectangle<float> (c.x - r, c.y - r * 0.3f, r * 2.0f, r * 0.6f), Justification::centred, false);
     }
 
-    auto labels = Rectangle<float> (area.getX(), c.y + r + 8.0f, area.getWidth(), labelH);
+    auto labels = Rectangle<float> (area.getX(), c.y + r + 8.0f, area.getWidth(), labelH + 14.0f);
     g.setFont (lp::ui::mono (10.5f, false, 0.12f));
     g.setColour (th->inkDim.withMultipliedAlpha (alpha));
     g.drawText (s.getName().toUpperCase(), labels.removeFromTop (14.0f), Justification::centred, false);
+    if (! small)
+    {
+        g.setFont (font (12.0f, lp::ui::Medium));
+        g.setColour (th->ink.withMultipliedAlpha (alpha * 0.75f));
+        g.drawText (s.getTextFromValue (s.getValue()).toLowerCase(), labels.removeFromTop (16.0f), Justification::centred, false);
+    }
     if (small)
     {
         g.setFont (lp::ui::mono (10.5f));
@@ -871,7 +877,7 @@ void SongPanel::mouseUp (const MouseEvent& e)
         repaint();
         return;
     }
-    chooser = std::make_unique<FileChooser> ("Choose a song for Live Planet to learn the feel of", File(),
+    chooser = std::make_unique<FileChooser> ("Choose a song for Loopwright to learn the feel of", File(),
                                              "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
     chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
                           [this] (const FileChooser& fc)
@@ -1041,6 +1047,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       songPanel (p, lnf.th),
       songView (p),
       studioView (p),
+      trackEditor (p, lnf.th),
+      grainView (p),
       pillMidi ("drag midi", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.midiFile.getFullPathName()) : StringArray(); }),
       pillStems ("drag stems", [&p] { auto st = p.songJob.getStatus(); StringArray a; if (st.haveSong) for (auto& t : st.tracks) a.add (t.stem.getFullPathName()); return a; }),
       pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray(); }),
@@ -1072,7 +1080,10 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (songPanel);
     addChildComponent (songView);
     addChildComponent (studioView);
-    playButton.songMode = [this] { return page == Write || page == Studio; };
+    addChildComponent (trackEditor);
+    addChildComponent (grainView);
+    studioView.onOpenTrack = [this] (int t) { trackEditor.select (t); setPage (Edit); };
+    playButton.songMode = [this] { return page == Write || page == Studio || page == Edit; };
     for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         addChildComponent (pill);
     addAndMakeVisible (themeDots);
@@ -1090,20 +1101,20 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     };
     addChildComponent (loadButton);
 
-    addKnob ("pad", "chords", 0.86f, 60);
-    addKnob ("drops", "melody", 0.78f, 60);
-    addKnob ("bass", "bass", 0.68f, 60);
-    addKnob ("grain", "grain", 0.08f, 104);
+    addKnob ("pad", "chords", 0.86f, 52);
+    addKnob ("drops", "melody", 0.78f, 52);
+    addKnob ("bass", "bass", 0.68f, 52);
+    addKnob ("grain", "grain", 0.08f, 84);
     addKnob ("texture", "scatter", 0.12f, 56);
     addKnob ("sparkle", "sparkle", 0.16f, 56);
     addKnob ("position", "position", 0.2f, 56);
-    addKnob ("warmth", "warmth", 0.03f, 56);
-    addKnob ("echo", "echo", 0.45f, 56);
-    addKnob ("space", "space", 0.52f, 56);
-    addKnob ("shimmer", "shimmer", 0.58f, 56);
-    addKnob ("atmos", "atmos", 0.36f, 56);
-    addKnob ("gain", "output", 0.0f, 56);
-    addKnob ("nostalgia", "nostalgia", 0.1f, 56);
+    addKnob ("warmth", "warmth", 0.03f, 50);
+    addKnob ("echo", "echo", 0.45f, 50);
+    addKnob ("space", "space", 0.52f, 50);
+    addKnob ("shimmer", "shimmer", 0.58f, 50);
+    addKnob ("atmos", "atmos", 0.36f, 50);
+    addKnob ("gain", "output", 0.0f, 50);
+    addKnob ("nostalgia", "nostalgia", 0.1f, 50);
 
     const char* skyIds[] = { "temp", "rain", "snow", "wind", "clouds", "pressure", "humidity" };
     for (int i = 0; i < 7; ++i)
@@ -1177,7 +1188,7 @@ void LivePlanetEditor::applyTheme()
 
 Rectangle<int> LivePlanetEditor::tabBounds (int i) const
 {
-    static const int widths[] = { 64, 72, 64, 44 };
+    static const int widths[] = { 64, 72, 52, 64 };
     int x = 300;
     for (int k = 0; k < i; ++k) x += widths[k] + 22;
     return { x, 20, widths[i], 30 };
@@ -1186,7 +1197,9 @@ Rectangle<int> LivePlanetEditor::tabBounds (int i) const
 void LivePlanetEditor::setPage (int p)
 {
     page = p;
-    const bool write = p == Write, studio = p == Studio, sound = p == Sound, sky = p == Sky;
+    const bool write = p == Write, studio = p == Studio, edit = p == Edit, sound = p == Sound, sky = false; // (the weather page is gone)
+    trackEditor.setVisible (edit);
+    grainView.setVisible (p == Sound);
     const bool haveSong = proc.songJob.getStatus().haveSong;
     songPanel.setVisible (write);
     songView.setVisible (write || studio);
@@ -1210,7 +1223,7 @@ void LivePlanetEditor::setPage (int p)
         knobById[id]->slider.setVisible (sky);
     dayToggle.setVisible (sky);
     thunderToggle.setVisible (sky);
-    playButton.setVisible (write || studio || sound);
+    playButton.setVisible (write || studio || sound || edit);
     resized();
     repaint();
 }
@@ -1288,10 +1301,11 @@ void LivePlanetEditor::timerCallback()
         if (sampleView.isVisible() != sampleMode) sampleView.setVisible (sampleMode);
         if (sampleMode) sampleView.repaint();
         repaint (cardInstrument);
+        grainView.repaint();
     }
     else if (sampleView.isVisible())
         sampleView.setVisible (false);
-    if (page == Sky) { liveSwitch.repaint(); repaint (cardSky); }
+    if (page == Edit) trackEditor.refresh();
     repaint (0, 0, getWidth(), 70); // the top bar (library and tempo)
 }
 
@@ -1357,7 +1371,7 @@ void LivePlanetEditor::paint (Graphics& g)
         g.setColour (th.grassLight);
         g.drawText ("BETA", badge, Justification::centred, false);
 
-        static const char* tabs[] = { "WRITE", "STUDIO", "SOUND", "SKY" };
+        static const char* tabs[] = { "WRITE", "STUDIO", "EDIT", "SOUND" };
         for (int i = 0; i < 4; ++i)
         {
             auto t = tabBounds (i).toFloat();
@@ -1428,7 +1442,9 @@ void LivePlanetEditor::paint (Graphics& g)
             heading (g, name, rect.toFloat().reduced (22.0f, 14.0f).withHeight (24.0f), th);
         }
     }
-    if (page == Sky)
+    if (page == Edit)
+        card (g, Rectangle<int> (28, 84, getWidth() - 56, 644), th);
+    if (false)
     {
         card (g, cardSky, th);
         auto r = cardSky.toFloat().reduced (24.0f, 20.0f);
@@ -1496,7 +1512,7 @@ void LivePlanetEditor::paintOverChildren (Graphics& g)
         g.fillPath (dashed);
         g.setColour (Colours::white);
         g.setFont (font (26.0f, lp::ui::Medium));
-        g.drawText (page == Sound || page == Sky ? "Drop to play this sound" : "Drop a song to learn its feel", getLocalBounds(), Justification::centred);
+        g.drawText (page == Sound ? "Drop to play this sound" : "Drop a song to learn its feel", getLocalBounds(), Justification::centred);
     }
 }
 
@@ -1522,6 +1538,8 @@ void LivePlanetEditor::resized()
         }
     }
     studioView.setBounds (M, 84, W - 2 * M, 432);
+    trackEditor.setBounds (M + 24, 84 + 18, W - 2 * M - 48, 644 - 36);
+    if (page == Edit) playButton.setBounds (W - M - 24 - 44, 84 + 644 - 18 - 44, 44, 44);
 
     // ---- sound: the instrument on the left, three knob cards on the right
     cardInstrument = { M, 84, 500, 644 };
@@ -1545,25 +1563,25 @@ void LivePlanetEditor::resized()
         if (page == Sound) playButton.setBounds (cardInstrument.getX() + 22, cardInstrument.getBottom() - 18 - 40, 40, 40);
     }
     const int rx = M + 500 + 16, rw = W - M - rx;
-    plateMix = { rx, 84, rw, 186 };
-    plateTex = { rx, 286, rw, 206 };
-    plateFx  = { rx, 508, rw, 220 };
+    plateMix = { rx, 84, rw, 158 };
+    plateTex = { rx, 258, rw, 300 };
+    plateFx  = { rx, 574, rw, 154 };
+    grainView.setBounds (rx + 20, plateTex.getY() + 50, rw - 40, 92);
     {
         const int cw = (rw - 24) / 3;
-        k ("pad")->setBounds   (rx + 12,          plateMix.getY() + 44, cw, 130);
-        k ("drops")->setBounds (rx + 12 + cw,     plateMix.getY() + 44, cw, 130);
-        k ("bass")->setBounds  (rx + 12 + 2 * cw, plateMix.getY() + 44, cw, 130);
+        k ("pad")->setBounds   (rx + 12,          plateMix.getY() + 40, cw, 112);
+        k ("drops")->setBounds (rx + 12 + cw,     plateMix.getY() + 40, cw, 112);
+        k ("bass")->setBounds  (rx + 12 + 2 * cw, plateMix.getY() + 40, cw, 112);
         const int c4 = (rw - 24) / 4;
-        k ("texture")->setBounds  (rx + 12,          plateTex.getY() + 52, c4, 140);
-        k ("sparkle")->setBounds  (rx + 12 + c4,     plateTex.getY() + 52, c4, 140);
-        k ("grain")->setBounds    (rx + 12 + 2 * c4, plateTex.getY() + 40, c4, 160);
-        k ("position")->setBounds (rx + 12 + 3 * c4, plateTex.getY() + 52, c4, 140);
+        const int ty = plateTex.getY() + 152;
+        k ("texture")->setBounds  (rx + 12,          ty + 8, c4, 132);
+        k ("sparkle")->setBounds  (rx + 12 + c4,     ty + 8, c4, 132);
+        k ("grain")->setBounds    (rx + 12 + 2 * c4, ty, c4, 146);
+        k ("position")->setBounds (rx + 12 + 3 * c4, ty + 8, c4, 132);
         const char* fx[] = { "warmth", "echo", "space", "shimmer", "nostalgia", "atmos", "gain" };
+        const int c7 = (rw - 16) / 7;
         for (int i = 0; i < 7; ++i)
-        {
-            const int row = i / 4, col = i % 4;
-            k (fx[i])->setBounds (rx + 12 + col * c4 + (row == 1 ? c4 / 2 : 0), plateFx.getY() + 44 + row * 86, c4, 86);
-        }
+            k (fx[i])->setBounds (rx + 8 + i * c7, plateFx.getY() + 40, c7, 108);
     }
 
     // ---- sky: the city on the left, your own weather on the right

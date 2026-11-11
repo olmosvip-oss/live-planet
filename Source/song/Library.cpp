@@ -433,7 +433,7 @@ LibraryPicks pickFromLibrary (const Library& lib, const Target& target, juce::ui
                     if (tune == 99) continue; // no clear key at all; any other key gets tuned into the song's
                 }
                 ok.push_back ({ o.entry, bars, tune, like (o.entry->path) });
-                if (ok.size() >= 8) break;
+                if (ok.size() >= 14) break;
             }
             // the ones that sound most like your reference (and need the least tuning) first; keep 5
             std::stable_sort (ok.begin(), ok.end(), [&] (const LoopOption& a, const LoopOption& b) { return rank (a.tune, a.like) > rank (b.tune, b.like); });

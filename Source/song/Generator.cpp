@@ -97,6 +97,7 @@ Target chooseTarget (const Profile& ref, const lp::Weather& sky, const Options& 
     if (o.promptKey >= 0) { t.key = o.promptKey; t.minor = o.promptMinor; }
     else if (o.promptMood != 0 && ! ref.valid) t.minor = o.promptMood < 0; // a song you dropped in keeps its own key
     t.genreWords = o.genreWords;
+    t.wish = o.wish;
     // tempo: a typed tempo wins; a genre keeps your project's tempo when it suits the genre; else your project's tempo
     if (o.promptBpm > 0.0) t.bpm = o.promptBpm;
     else if (o.genreBpm > 0.0)

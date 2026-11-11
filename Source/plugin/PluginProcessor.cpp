@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "AppFolder.h"
 #include "PluginEditor.h"
 #include "Presets.h"
 #include "AbletonHelper.h"
@@ -293,7 +294,8 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         const bool fx = (size_t) n <= fxL.size();
         if (fx) for (auto* b : { &fxL, &fxR, &sendL, &sendR }) std::fill (b->begin(), b->begin() + n, 0.0f);
         studio.render (L, R, n, pos, inc, getSampleRate(),
-                       fx ? fxL.data() : nullptr, fx ? fxR.data() : nullptr, fx ? sendL.data() : nullptr, fx ? sendR.data() : nullptr);
+                       fx ? fxL.data() : nullptr, fx ? fxR.data() : nullptr, fx ? sendL.data() : nullptr, fx ? sendR.data() : nullptr,
+                       preview ? sbpm : (t.bpm > 0.0 ? t.bpm : sbpm));
         if (fx)
         {
             lp::SampleFxSettings fs;
@@ -344,11 +346,27 @@ void LivePlanetProcessor::timerCallback()
             loadedStudioVersion = st.version;
             juce::Array<juce::File> stems;
             for (auto& t : st.tracks) stems.add (t.stem);
+            // a new song (not just an edited track): every track starts with its own effects, by role,
+            // and for songs made of your samples the master knobs start at zero (turn them up if you like)
+            const bool newSong = st.files.folder != loadedSongFolder;
+            loadedSongFolder = st.files.folder;
+            bool anySamples = false;
             for (size_t i = 0; i < st.tracks.size() && i < (size_t) StudioPlayer::maxTracks; ++i)
             {
-                studio.mix[i].sample = st.tracks[i].sample;
-                studio.mix[i].group = st.tracks[i].group;
+                auto& m = studio.mix[i];
+                const auto& tr = st.tracks[i];
+                m.sample = tr.sample;
+                m.group = tr.group;
+                anySamples = anySamples || tr.sample;
+                if (newSong)
+                {
+                    m.space = tr.space; m.echo = tr.echo; m.warmth = tr.warmth; m.nostalgia = tr.nostalgia;
+                    m.gainDb = 0.0f; m.pan = 0.0f; m.tone = 0.0f; m.mute = false; m.solo = false;
+                }
             }
+            if (newSong && anySamples)
+                for (auto id : { "warmth", "echo", "space", "shimmer", "nostalgia", "atmos" })
+                    if (auto* prm = params.getParameter (id)) prm->setValueNotifyingHost (0.0f);
             songBpm = st.song.bpm;
             songMakeupDb = st.song.playbackMakeupDb;
             studio.load (stems);
@@ -620,7 +638,7 @@ juce::File LivePlanetProcessor::exportRecentNotes (int bars)
     if (seq.getNumEvents() == 0) return {};
 
     juce::MidiMessageSequence track;
-    track.addEvent (juce::MidiMessage::textMetaEvent (3, "Live Planet"));
+    track.addEvent (juce::MidiMessage::textMetaEvent (3, "Loopwright"));
     track.addSequence (seq, 0.0);
     track.updateMatchedPairs();
     juce::MidiFile mf;
@@ -632,9 +650,9 @@ juce::File LivePlanetProcessor::exportRecentNotes (int bars)
         const juce::SpinLock::ScopedLockType sl (skyLock);
         cityName = city;
     }
-    auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("Live Planet");
+    auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("Loopwright");
     dir.createDirectory();
-    auto file = dir.getChildFile (juce::File::createLegalFileName ("Live Planet - " + cityName + " - "
+    auto file = dir.getChildFile (juce::File::createLegalFileName ("Loopwright - " + cityName + " - "
                                     + juce::String (lp::noteName (engine.uiKey.load())) + " "
                                     + lp::getScale ((lp::ScaleId) engine.uiScale.load()).name + ".mid"));
     file.deleteFile();
@@ -670,6 +688,7 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
         o.promptMinor = pr.minor;
         o.promptMood = pr.mood;
         for (auto k : pr.instruments) o.wantKinds.push_back ((int) k);
+        o.wish = pr.wish;
         if (pr.key >= 0) o.shiftKey = false;
         if (pr.sketch) o.full = false;
     }
@@ -689,7 +708,7 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
 juce::Array<juce::File> LivePlanetProcessor::libraryFolders() const
 {
     auto folders = lp::song::Library::defaultFolders();
-    const auto list = juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("sample-folders.txt");
+    const auto list = lp::appFolder().getChildFile ("sample-folders.txt");
     juce::StringArray lines;
     lines.addLines (list.loadFileAsString());
     for (auto& l : lines)
@@ -700,7 +719,7 @@ juce::Array<juce::File> LivePlanetProcessor::libraryFolders() const
 
 void LivePlanetProcessor::addLibraryFolder (const juce::File& f)
 {
-    const auto list = juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Live Planet").getChildFile ("sample-folders.txt");
+    const auto list = lp::appFolder().getChildFile ("sample-folders.txt");
     list.getParentDirectory().createDirectory();
     list.appendText (f.getFullPathName() + "\n");
     rescanLibrary();

@@ -63,6 +63,7 @@ struct Prompt
     int mood = 0;                // -1 dark / sad, +1 happy / bright (when no key was typed)
     std::vector<LoopKind> instruments;
     bool sketch = false;
+    SoundWish wish;              // how the sounds should feel
     juce::String summary;        // what was understood, to show back
 };
 
@@ -154,6 +155,20 @@ inline Prompt parsePrompt (const juce::String& textIn)
                 break;
             }
     p.sketch = has ("sketch") || has ("short") || has ("idea");
+    // how the sounds should feel
+    auto any = [&] (std::initializer_list<const char*> ws) { for (auto* w : ws) if (has (w)) return true; return false; };
+    if (any ({ "dark", "moody", "gritty", "murky", "deep" }))                p.wish.dark = 1;
+    if (any ({ "bright", "shiny", "sparkly", "crisp", "glossy" }))           p.wish.dark = -1;
+    if (any ({ "plucky", "plucked", "staccato", "bouncy", "choppy" }))       p.wish.plucky = 1;
+    if (any ({ "smooth", "sustained", "lush", "dreamy", "floaty", "held", "pads" })) p.wish.plucky = -1;
+    if (any ({ "punchy", "hard", "aggressive", "heavy", "hard-hitting" }))   p.wish.punchy = 1;
+    if (any ({ "soft", "gentle", "mellow", "calm", "chill" }))               p.wish.punchy = -1;
+    if (any ({ "lofi", "lo-fi", "dusty", "vintage", "vinyl", "tape", "old", "nostalgic", "retro" })) p.wish.lofi = 1;
+    if (any ({ "clean", "polished", "modern", "crystal", "hi-fi", "hifi" })) p.wish.lofi = -1;
+    if (any ({ "warm", "cozy", "analog", "analogue", "soulful" }))           p.wish.warm = 1;
+    if (any ({ "cold", "icy", "thin" }))                                     p.wish.warm = -1;
+    if (any ({ "airy", "breathy", "open", "spacious", "ethereal", "atmospheric" })) p.wish.airy = 1;
+    if (p.wish.dark || p.wish.plucky || p.wish.punchy || p.wish.lofi || p.wish.warm || p.wish.airy) p.any = true;
 
     p.any = p.genre != nullptr || p.bpm > 0 || p.key >= 0 || p.mood != 0 || ! p.instruments.empty();
     // what was understood, said back
@@ -166,6 +181,14 @@ inline Prompt parsePrompt (const juce::String& textIn)
     juce::StringArray kinds;
     for (auto k : p.instruments) kinds.add (loopKindName (k));
     if (! kinds.isEmpty()) bits.add (kinds.joinIntoString (", "));
+    juce::StringArray feel;
+    if (p.wish.dark > 0) feel.add ("dark"); else if (p.wish.dark < 0) feel.add ("bright");
+    if (p.wish.plucky > 0) feel.add ("plucky"); else if (p.wish.plucky < 0) feel.add ("smooth");
+    if (p.wish.punchy > 0) feel.add ("punchy"); else if (p.wish.punchy < 0) feel.add ("soft");
+    if (p.wish.lofi > 0) feel.add ("lofi"); else if (p.wish.lofi < 0) feel.add ("clean");
+    if (p.wish.warm > 0) feel.add ("warm");
+    if (p.wish.airy > 0) feel.add ("airy");
+    if (! feel.isEmpty()) bits.add (feel.joinIntoString (" "));
     p.summary = bits.joinIntoString ("  -  ");
     return p;
 }

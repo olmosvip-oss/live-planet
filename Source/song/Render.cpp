@@ -673,6 +673,64 @@ namespace
         }
     }
 
+    // ---------- grains: the track re-played as tiny slices that fire in time with the song.
+    // short and calm = clean and smooth; short and chaotic = glitchy (octave jumps, reversed slices,
+    // scattered positions); "position" reads from further back, so phrases stutter and repeat
+    void grainify (juce::AudioBuffer<float>& buf, double sr, double bpm, const Part& p, juce::uint32 seed)
+    {
+        const float amount = juce::jlimit (0.0f, 1.0f, p.grainAmount);
+        if (amount < 0.01f) return;
+        const int n = buf.getNumSamples();
+        const juce::AudioBuffer<float> src (buf);
+        juce::AudioBuffer<float> out (2, n);
+        out.clear();
+        const double beat = sr * 60.0 / bpm;
+        static const double divs[4] = { 1.0, 0.5, 0.25, 0.125 };
+        const double step = beat * divs[juce::jlimit (0, 3, p.grainRate)];
+        const int size = std::max (64, (int) (juce::jlimit (10.0f, 600.0f, p.grainSizeMs) * 0.001 * sr));
+        const float chaos = juce::jlimit (0.0f, 1.0f, p.grainChaos);
+        const int back = (int) (juce::jlimit (0.0f, 1.0f, p.grainPosition) * beat * 4.0); // up to a bar back
+        juce::Random rng ((juce::int64) seed * 7919 + 13);
+        const int fade = std::max (16, size / (chaos > 0.6f ? 16 : 4)); // glitchier grains have harder edges
+        for (double t = 0; t < n; t += step)
+        {
+            const int at = (int) t;
+            // nothing there: no grain
+            float e = 0;
+            for (int k = at; k < std::min (n, at + size); k += 32) e = std::max (e, std::abs (src.getSample (0, k)) + std::abs (src.getSample (1, k)));
+            if (e < 1e-4f) continue;
+            int from = at - back - (int) (chaos * rng.nextFloat() * (float) beat);
+            if (from < 0) from = at;
+            const float ratio = chaos > 0.05f && rng.nextFloat() < chaos * 0.35f ? (rng.nextBool() ? 2.0f : 0.5f) : 1.0f;
+            const bool backwards = rng.nextFloat() < chaos * 0.4f;
+            const int len = std::min (size, (int) (step * (chaos > 0.5f ? 0.9 : 1.6)));
+            const float pan = chaos * (rng.nextFloat() - 0.5f);
+            for (int i = 0; i < len && at + i < n; ++i)
+            {
+                const float w = std::min ({ 1.0f, (float) i / (float) fade, (float) (len - i) / (float) fade });
+                const double si = from + (backwards ? (double) (len - i) : (double) i) * ratio;
+                const int s0 = (int) si;
+                if (s0 < 0 || s0 + 1 >= n) continue;
+                const float fr = (float) (si - s0);
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const float v = src.getSample (ch, s0) + (src.getSample (ch, s0 + 1) - src.getSample (ch, s0)) * fr;
+                    out.getWritePointer (ch)[at + i] += v * w * (ch == 0 ? 1.0f - pan : 1.0f + pan);
+                }
+            }
+        }
+        // as loud as the original, then blended in
+        auto rms = [] (const juce::AudioBuffer<float>& b) { double q = 0; for (int ch = 0; ch < 2; ++ch) { auto* d = b.getReadPointer (ch); for (int i = 0; i < b.getNumSamples(); i += 4) q += (double) d[i] * d[i]; } return std::sqrt (q); };
+        const double a = rms (src), g2 = rms (out);
+        if (g2 > 1e-9) out.applyGain ((float) std::min (4.0, a / g2));
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto* d = buf.getWritePointer (ch);
+            const auto* o = out.getReadPointer (ch);
+            for (int i = 0; i < n; ++i) d[i] = d[i] * (1.0f - amount) + o[i] * amount;
+        }
+    }
+
     bool writeWav (const juce::File& file, const juce::AudioBuffer<float>& buf, double sr)
     {
         file.deleteFile();
@@ -818,6 +876,20 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
                          : (juce::String (part.name).containsIgnoreCase ("drum")
                                 ? beatStretch (probe, (int) std::round (part.loopBars * barSamples), part.loopBars) // crisp hits
                                 : timeStretch (probe, (int) std::round (part.loopBars * barSamples)));              // smooth notes
+            // just a part of the sample (whole bars): that part repeats wherever the loop played
+            if (part.regionBars > 0 && part.regionStart >= 0 && part.regionStart + part.regionBars <= part.loopBars && part.regionBars < part.loopBars)
+            {
+                const int a0 = (int) std::round (part.regionStart * barSamples), len = (int) std::round (part.regionBars * barSamples);
+                juce::AudioBuffer<float> cut (2, len);
+                for (int ch = 0; ch < 2; ++ch) cut.copyFrom (ch, 0, loop, ch, std::min (a0, loop.getNumSamples() - len), len);
+                loop = std::move (cut);
+                const int oldL = part.loopBars, R = part.regionBars;
+                for (auto& v : part.barSrc) if (v >= 0) v %= R;
+                std::vector<int> starts;
+                for (int st0 : part.loopStartBars) for (int b = st0; b < st0 + oldL; b += R) starts.push_back (b);
+                part.loopStartBars = starts;
+                part.loopBars = R;
+            }
             if (part.reversed) reverse (loop);
             const int ln = loop.getNumSamples();
             if (! part.barSrc.empty())
@@ -980,6 +1052,8 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     const int shift = part.pitchSemis + (part.kind == PartKind::Loop ? part.autoTune : 0); // your pitch + tuning into the song's key
     if (shift != 0 && (part.kind == PartKind::Loop || part.kind == PartKind::Drums))
         pitchShift (buf, shift, sr);
+    if (part.kind != PartKind::Fx)
+        grainify (buf, sr, song.bpm, part, (juce::uint32) std::hash<std::string>{} (part.name));
     // its place left / right (equal-power, so it doesn't jump in level)
     if (std::abs (part.pan) > 0.01f)
     {

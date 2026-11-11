@@ -17,6 +17,8 @@ public:
         // your samples go through the knobs' effects; group: 0 none, 1 chords, 2 melody, 3 bass, 4 drums
         std::atomic<bool> sample { false };
         std::atomic<int> group { 0 };
+        // this track's own effects: reverb and delay sends, warmth and nostalgia inserts (all 0..1)
+        std::atomic<float> space { 0.0f }, echo { 0.0f }, warmth { 0.0f }, nostalgia { 0.0f }, chorus { 0.0f };
     };
 
     // the mix knobs (chords / melody / bass) as gains for each group; [0] unused
@@ -57,14 +59,19 @@ public:
     juce::int64 length() const { return lengthSamples.load(); }
 
     // audio thread: adds the mixed tracks into L/R. pos and inc are in file samples.
-    // samples go to fxL/R (and their echo / room send to sendL/R) instead of L/R
+    // samples go to fxL/R (and their echo / room send to sendL/R) instead of L/R.
+    // Each track's own reverb and delay sends come back (through a shared room and a tempo delay) into L/R.
     void render (float* L, float* R, int n, double pos, double inc, double sampleRate,
-                 float* fxL = nullptr, float* fxR = nullptr, float* sendL = nullptr, float* sendR = nullptr)
+                 float* fxL = nullptr, float* fxR = nullptr, float* sendL = nullptr, float* sendR = nullptr, double bpm = 120.0)
     {
         const juce::SpinLock::ScopedTryLockType tl (lock);
         if (! tl.isLocked() || readers.empty() || pos < 0) return;
         const int need = (int) std::ceil (n * inc) + 3;
-        if (scratch.getNumSamples() < need) return; // prepare() makes it big enough
+        if (scratch.getNumSamples() < need || n > (int) verbL.size()) return; // prepare() makes them big enough
+        if (sampleRate != fxRate) setupTrackFx (sampleRate);
+        std::fill (verbL.begin(), verbL.begin() + n, 0.0f); std::fill (verbR.begin(), verbR.begin() + n, 0.0f);
+        std::fill (delL.begin(), delL.begin() + n, 0.0f);  std::fill (delR.begin(), delR.begin() + n, 0.0f);
+        bool anySends = false;
         bool anySolo = false;
         for (size_t t = 0; t < readers.size() && t < maxTracks; ++t) anySolo = anySolo || mix[t].solo.load();
         const auto start = (juce::int64) std::floor (pos);
@@ -97,6 +104,22 @@ public:
             const float* a = scratch.getReadPointer (0);
             const float* b = scratch.getReadPointer (1);
             double ph = pos - (double) start;
+            // this track's inserts and sends
+            auto& tf = trackFx[t];
+            const float warm = m.warmth.load(), nost = m.nostalgia.load();
+            const float sp = m.space.load(), ec = m.echo.load();
+            anySends = anySends || sp > 0.001f || ec > 0.001f;
+            if (std::abs (warm - tf.lastWarm) > 0.002f || std::abs (nost - tf.lastNost) > 0.002f)
+            {
+                tf.lastWarm = warm; tf.lastNost = nost;
+                const float lpHz = 20000.0f * std::pow (0.3f, warm) * std::pow (0.2f, nost);
+                tf.lpL.setup (lpHz, 0.6f, (float) sampleRate); tf.lpR.setup (lpHz, 0.6f, (float) sampleRate);
+                tf.hpL.setup (20.0f + 260.0f * nost, 0.6f, (float) sampleRate); tf.hpR.setup (20.0f + 260.0f * nost, 0.6f, (float) sampleRate);
+            }
+            const float drive = 1.0f + 2.2f * warm + 1.2f * nost;
+            const float wobDepth = nost * 0.0028f * (float) sampleRate;
+            const float cho = m.chorus.load();
+            const bool inserts = warm > 0.002f || nost > 0.002f || cho > 0.002f;
             for (int i = 0; i < n; ++i, ph += inc)
             {
                 const int i0 = (int) ph;
@@ -105,18 +128,100 @@ public:
                 float xr = b[i0] + (b[i0 + 1] - b[i0]) * fr;
                 if (tone < -0.01f) { f.l.tick (xl); f.r.tick (xr); xl = f.l.lp; xr = f.r.lp; }
                 else if (tone > 0.01f) { f.l.tick (xl); f.r.tick (xr); xl = f.l.hp; xr = f.r.hp; }
+                if (inserts)
+                {
+                    // nostalgia: a slow tape wobble, a worn band (thin lows, soft highs), a narrower picture
+                    if (nost > 0.002f)
+                    {
+                        tf.phase += 0.5f * 6.2831853f / (float) sampleRate;
+                        if (tf.phase > 6.2831853f) tf.phase -= 6.2831853f;
+                        const float d = 0.002f * (float) sampleRate + wobDepth * (0.5f + 0.5f * std::sin (tf.phase));
+                        tf.wobL.push (xl); tf.wobR.push (xr);
+                        xl = tf.wobL.read (d); xr = tf.wobR.read (d);
+                        tf.hpL.tick (xl); tf.hpR.tick (xr);
+                        xl = tf.hpL.hp; xr = tf.hpR.hp;
+                        const float mid = 0.5f * (xl + xr), side = 0.5f * (xl - xr) * (1.0f - 0.6f * nost);
+                        xl = mid + side; xr = mid - side;
+                    }
+                    // warmth: a softer top and gentle tape saturation
+                    if (warm > 0.002f || nost > 0.002f)
+                    {
+                        tf.lpL.tick (xl); tf.lpR.tick (xr);
+                        xl = std::tanh (tf.lpL.lp * drive) / drive;
+                        xr = std::tanh (tf.lpR.lp * drive) / drive;
+                    }
+                    // chorus: two slowly moving copies, one each side, for width and shimmer
+                    if (cho > 0.002f)
+                    {
+                        tf.chPhase += 0.7f * 6.2831853f / (float) sampleRate;
+                        if (tf.chPhase > 6.2831853f) tf.chPhase -= 6.2831853f;
+                        const float base = 0.012f * (float) sampleRate, depth = 0.004f * (float) sampleRate;
+                        tf.chL.push (xl); tf.chR.push (xr);
+                        const float wl = tf.chL.read (base + depth * std::sin (tf.chPhase));
+                        const float wr = tf.chR.read (base + depth * std::cos (tf.chPhase * 1.13f));
+                        xl = xl * (1.0f - 0.35f * cho) + wl * 0.75f * cho;
+                        xr = xr * (1.0f - 0.35f * cho) + wr * 0.75f * cho;
+                    }
+                }
                 oL[i] += xl * gl;
                 oR[i] += xr * gr;
                 if (toFx) { sendL[i] += xl * gl * send; sendR[i] += xr * gr * send; }
+                verbL[(size_t) i] += xl * gl * sp; verbR[(size_t) i] += xr * gr * sp;
+                delL[(size_t) i] += xl * gl * ec;  delR[(size_t) i] += xr * gr * ec;
             }
         }
+        if (! anySends && ! tailLeft) return;
+        tailLeft = anySends ? (int) (sampleRate * 6.0) : std::max (0, tailLeft - n);
+        // the shared delay (a dotted 8th at the song's tempo, bouncing left / right), then the room
+        const float dTime = juce::jlimit (100.0f, (float) (2.5 * sampleRate), (float) (0.75 * 60.0 / std::max (40.0, bpm) * sampleRate));
+        for (int i = 0; i < n; ++i)
+        {
+            const float eL = dLineL.read (dTime), eR = dLineR.read (dTime);
+            dFiltL.tick (eL); dFiltR.tick (eR);
+            dLineL.push (delL[(size_t) i] + dFiltR.lp * 0.42f);
+            dLineR.push (delR[(size_t) i] * 0.3f + dFiltL.lp * 0.42f);
+            L[i] += eL * 0.8f; R[i] += eR * 0.8f;
+            verbL[(size_t) i] += eL * 0.25f; verbR[(size_t) i] += eR * 0.25f; // the echoes sit in the room too
+        }
+        trackVerb.processStereo (verbL.data(), verbR.data(), n);
+        for (int i = 0; i < n; ++i) { L[i] += verbL[(size_t) i] * 0.55f; R[i] += verbR[(size_t) i] * 0.55f; }
     }
 
-    void prepare (int maxBlock) { scratch.setSize (2, maxBlock * 4 + 64); }
+    void prepare (int maxBlock)
+    {
+        scratch.setSize (2, maxBlock * 4 + 64);
+        for (auto* v : { &verbL, &verbR, &delL, &delR }) v->assign ((size_t) maxBlock + 16, 0.0f);
+        fxRate = 0; // set up on the first block, at the real rate
+    }
 
 private:
     struct Filter { lp::dsp::SVF l, r; float lastTone = 99.0f; };
-    juce::TimeSliceThread thread { "Live Planet studio" };
+    struct TrackFx { lp::dsp::SVF lpL, lpR, hpL, hpR; lp::dsp::Delay wobL, wobR, chL, chR; float phase = 0, chPhase = 0, lastWarm = -1, lastNost = -1; };
+
+    void setupTrackFx (double sr)
+    {
+        fxRate = sr;
+        for (auto& tf : trackFx)
+        {
+            tf.wobL.prepare ((int) (0.02 * sr)); tf.wobR.prepare ((int) (0.02 * sr));
+            tf.chL.prepare ((int) (0.03 * sr)); tf.chR.prepare ((int) (0.03 * sr));
+            tf.lastWarm = tf.lastNost = -1;
+        }
+        dLineL.prepare ((int) (2.6 * sr)); dLineR.prepare ((int) (2.6 * sr));
+        dFiltL.setup (3500.0f, 0.6f, (float) sr); dFiltR.setup (3500.0f, 0.6f, (float) sr);
+        trackVerb.setSampleRate (sr);
+        juce::Reverb::Parameters rp;
+        rp.roomSize = 0.82f; rp.damping = 0.45f; rp.wetLevel = 1.0f; rp.dryLevel = 0.0f; rp.width = 1.0f;
+        trackVerb.setParameters (rp);
+    }
+    std::array<TrackFx, maxTracks> trackFx;
+    std::vector<float> verbL, verbR, delL, delR;
+    lp::dsp::Delay dLineL, dLineR;
+    lp::dsp::SVF dFiltL, dFiltR;
+    juce::Reverb trackVerb;
+    double fxRate = 0;
+    int tailLeft = 0;
+    juce::TimeSliceThread thread { "Loopwright studio" };
     std::vector<std::unique_ptr<juce::BufferingAudioReader>> readers;
     std::array<Filter, maxTracks> filters;
     juce::AudioBuffer<float> scratch;
