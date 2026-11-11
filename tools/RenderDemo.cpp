@@ -613,7 +613,7 @@ int keyTest()
                             // named 2: the label is wrong (says 2 semitones up): want the ear to catch it, else a wrong tuning
                             const int nameKey = named == 0 ? -1 : (named == 1 ? key : (key + 2) % 12);
                             const int t = lp::song::loopTune (rd, clear, nameKey, mi == 1, sk, mi == 1);
-                            auto& c = named == 0 ? decEar : (named == 1 ? decName : decBadName);
+                            int* c = named == 0 ? decEar : (named == 1 ? decName : decBadName);
                             if (t == 99 || std::abs (t) > 3) ++c[1];      // skipped (harmless)
                             else if (t == want) ++c[0];                    // right
                             else { ++c[2]; ++badBy[type]; }               // wrong tuning applied
