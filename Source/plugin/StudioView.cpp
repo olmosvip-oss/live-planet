@@ -139,12 +139,12 @@ void StudioView::paint (Graphics& g)
         g.drawText (name, nameArea.removeFromTop (13.0f), Justification::bottomLeft, true);
         g.setColour (! t.source.startsWith ("loopwright") ? accent.brighter (0.3f) : dim);
         g.setFont (font (10.0f));
-        g.drawText (t.source, nameArea, Justification::topLeft, true);
+        g.drawText (SongJob::niceSource (t.source), nameArea, Justification::topLeft, true);
         if (t.keyText.isNotEmpty())
         {
             // what happened to its key, right after the name
             g.setFont (lp::ui::mono (9.5f, false, 0.06f));
-            g.setColour (t.keyText.contains ("already") ? dim : accent.brighter (0.4f));
+            g.setColour (t.keyText.endsWith ("already") ? dim : accent.brighter (0.4f));
             const float nw = GlyphArrangement::getStringWidth (font (12.0f, lp::ui::Medium), t.name) + 12.0f;
             g.drawText (t.keyText.toUpperCase(), Rectangle<float> (row.getX() + 58.0f + nw, row.getY() + 1.0f, colBounds (i, Volume).getX() - row.getX() - 70.0f - nw, 13.0f),
                         Justification::bottomLeft, true);

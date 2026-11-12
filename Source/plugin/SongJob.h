@@ -33,7 +33,7 @@ public:
         int loopBars = 0, regionStart = 0, regionBars = 0;
         bool isLoop = false;
         GrainSettings grains;
-        juce::String keyText; // e.g. "Abmaj > C minor -5 st"
+        juce::String keyText; // e.g. "G# major to C minor, down 5 st"
     };
 
     struct Status
@@ -1277,12 +1277,46 @@ private:
             {
                 const juce::String songKey = juce::String (lp::noteName (song.key)) + (song.minor ? " minor" : " major");
                 const int tune = p.autoTune;
-                juce::String from = e->key >= 0 ? juce::String (lp::noteName (e->key)) + (e->minor ? "m" : "") : juce::String ("its key");
-                t.keyText = tune == 0 ? from + " = " + songKey + " (already fits)"
-                                      : from + "  >  " + songKey + "  " + (tune > 0 ? "+" : "") + juce::String (tune) + " st";
+                // spelled out ("A# minor", not "A#m", which reads as major once it's in capitals)
+                juce::String from = e->key >= 0 ? juce::String (lp::noteName (e->key)) + (e->minor ? " minor" : " major") : juce::String ("its own key");
+                t.keyText = tune == 0 ? "in " + songKey + " already"
+                                      : from + " to " + songKey + ", " + (tune > 0 ? "up " : "down ") + juce::String (std::abs (tune)) + " st";
             }
         return t;
     }
+
+public:
+    // a sample's name as people read it: "CK_118_pluck_arp_01_Asmin" -> "CK 118 pluck arp 01 · A# minor"
+    // (sample makers write a sharp as "s": Asmin = A# minor, Fsmaj = F# major)
+    static juce::String niceName (const juce::String& raw)
+    {
+        auto words = juce::StringArray::fromTokens (raw.replaceCharacters ("_-", "  "), " ", "");
+        words.removeEmptyStrings();
+        for (int i = 0; i < words.size(); ++i)
+        {
+            const auto w = words[i];
+            const auto lw = w.toLowerCase();
+            if (w.isEmpty() || juce::String ("ABCDEFG").indexOfChar (juce::CharacterFunctions::toUpperCase (w[0])) < 0) continue;
+            juce::String rest = lw.substring (1), acc;
+            if (rest.startsWith ("#")) { acc = "#"; rest = rest.substring (1); }
+            else if (rest.startsWith ("s") && ! rest.startsWith ("sus")) { acc = "#"; rest = rest.substring (1); }
+            else if (rest.startsWith ("b") && rest != "b") { acc = "b"; rest = rest.substring (1); }
+            juce::String quality;
+            if (rest == "maj" || rest == "major") quality = " major";
+            else if (rest == "min" || rest == "minor" || rest == "m") quality = " minor";
+            else if (! (rest.isEmpty() && i == words.size() - 1 && w.length() <= 2)) continue; // not a key ("bass", "arp"...)
+            words.set (i, juce::String::fromUTF8 ("\xc2\xb7 ") + w.substring (0, 1).toUpperCase() + acc + quality);
+        }
+        return words.joinIntoString (" ");
+    }
+    // the source line with the sample's name made readable
+    static juce::String niceSource (const juce::String& source)
+    {
+        const int colon = source.indexOf (": ");
+        if (colon < 0) return source;
+        return source.substring (0, colon + 2) + niceName (source.substring (colon + 2));
+    }
+private:
 
     // where a sound came from, as shown in the studio ("splice: ...", "wavs: ...", "folder: ...")
     static juce::String sourceLabel (const juce::String& path)

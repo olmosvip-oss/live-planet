@@ -299,7 +299,7 @@ void TrackEditor::paint (Graphics& g)
     g.drawText (String (tr.name).substring (0, 1).toUpperCase() + String (tr.name).substring (1), head.removeFromTop (30.0f), Justification::centredLeft, true);
     g.setFont (lp::ui::mono (10.0f, false, 0.1f));
     g.setColour (t.inkDim);
-    g.drawText (String (track + 1) + " / " + String ((int) st.tracks.size()) + "   " + tr.source.toUpperCase(), head, Justification::centredLeft, true);
+    g.drawText (String (track + 1) + " / " + String ((int) st.tracks.size()) + "   " + SongJob::niceSource (tr.source).toUpperCase(), head, Justification::centredLeft, true);
     // pitch, between its buttons
     g.setFont (lp::ui::mono (12.0f));
     g.setColour (t.ink);
