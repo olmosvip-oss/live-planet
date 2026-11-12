@@ -68,6 +68,7 @@ jobs:
       # the installer: double-click to put every plugin in place (signed + notarized once the Apple secrets exist)
       - name: Installer (macOS)
         if: runner.os == 'macOS'
+        continue-on-error: true   # never let the installer hold back the plain zip
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -79,7 +80,7 @@ jobs:
         run: bash packaging/mac/build-pkg.sh "0.1.${{ github.run_number }}"
 
       - name: Upload installer (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && hashFiles('package/Loopwright.pkg') != ''
         uses: actions/upload-artifact@v4
         with:
           name: Loopwright-macOS-Installer
