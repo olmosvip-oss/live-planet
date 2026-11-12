@@ -676,6 +676,61 @@ Profile analyse (const float* input, int numSamples, double sampleRate, double k
         p.hasGroove = true;
     }
 
+    // the feel: where the hits really land against the straight grid (swing, a laid-back snare)
+    {
+        const double sixteenth = barLen / 16.0;
+        auto envMean = [&] (const std::vector<float>& e) { double m = 0; for (auto v : e) m += v; return m / std::max (1, frames); };
+        const double hiMean = envMean (highOnset), midMean = envMean (midOnset), lowMean = envMean (lowOnset);
+        // the exact peak near a grid point (parabolic, so finer than a frame), or nothing if no clear hit
+        auto hitNear = [&] (const std::vector<float>& e, double mean, double f, double& offset)
+        {
+            const int a0 = (int) std::floor (f - sixteenth * 0.45), a1 = (int) std::ceil (f + sixteenth * 0.45);
+            int bi = -1; float bv = 0;
+            for (int i = std::max (1, a0); i <= std::min (frames - 2, a1); ++i)
+                if (e[(size_t) i] > bv) { bv = e[(size_t) i]; bi = i; }
+            if (bi < 0 || bv < mean * 2.5) return false;
+            const float y0 = e[(size_t) bi - 1], y1 = e[(size_t) bi], y2 = e[(size_t) bi + 1];
+            const float den = y0 - 2.0f * y1 + y2;
+            const double frac = std::abs (den) > 1e-9f ? 0.5 * (y0 - y2) / den : 0.0;
+            offset = (bi + juce::jlimit (-0.5, 0.5, frac)) - f;
+            return true;
+        };
+        std::vector<double> onBeat, e16, and8, snare, kick;
+        std::array<double, 16> acc {};
+        std::array<int, 16> accN {};
+        for (int b = 0; b < bars; ++b)
+            for (int st = 0; st < 16; ++st)
+            {
+                const double f = firstBar + b * barLen + st * sixteenth;
+                double off;
+                if (hitNear (highOnset, hiMean, f, off))
+                {
+                    (st % 4 == 0 ? onBeat : st % 2 == 1 ? e16 : and8).push_back (off);
+                    acc[(size_t) st] += highOnset[(size_t) juce::jlimit (0, frames - 1, (int) std::round (f + off))];
+                    ++accN[(size_t) st];
+                }
+                if (st % 8 == 4 && hitNear (midOnset, midMean, f, off)) snare.push_back (off);
+                if (st % 8 == 0 && hitNear (lowOnset, lowMean, f, off)) kick.push_back (off);
+            }
+        auto median = [] (std::vector<double> v) { if (v.empty()) return 0.0; std::nth_element (v.begin(), v.begin() + (long) v.size() / 2, v.end()); return v[v.size() / 2]; };
+        // the beat grid itself can sit a little early or late: measure against the on-beat hits
+        const double zero = onBeat.size() >= 8 ? median (onBeat) : median (kick);
+        auto frac = [&] (const std::vector<double>& v, size_t need) { return v.size() >= need ? (float) juce::jlimit (-0.2, 0.6, (median (v) - zero) / sixteenth) : 0.0f; };
+        auto& g = p.groove;
+        g.swing16 = frac (e16, (size_t) bars);
+        g.swing8 = frac (and8, (size_t) bars / 2);
+        g.snareLate = juce::jlimit (-0.15f, 0.3f, frac (snare, (size_t) bars / 2));
+        g.kickLate = juce::jlimit (-0.1f, 0.2f, frac (kick, (size_t) bars / 2));
+        if (std::abs (g.kickLate) < 0.1f) g.kickLate = 0.0f; // kicks set the grid: only a clear push or drag counts
+        // small differences are just measuring noise: a straight groove stays straight
+        for (auto* v : { &g.swing16, &g.swing8, &g.snareLate, &g.kickLate }) if (std::abs (*v) < 0.04f) *v = 0.0f;
+        double accMax = 1e-9;
+        for (int st = 0; st < 16; ++st) if (accN[(size_t) st] > 0) accMax = std::max (accMax, acc[(size_t) st] / accN[(size_t) st]);
+        for (int st = 0; st < 16; ++st)
+            g.accent[(size_t) st] = accN[(size_t) st] > 0 ? (float) (acc[(size_t) st] / accN[(size_t) st] / accMax) : 1.0f;
+        g.valid = e16.size() + and8.size() >= (size_t) bars;
+    }
+
     // 6. sections: where the music changes (novelty in a bar-by-bar similarity map)
     auto feature = [&] (int b, int i) { return i < 12 ? barInfo[(size_t) b].chroma[(size_t) i] : barInfo[(size_t) b].energy / maxEnergy * 1.5f; };
     auto sim = [&] (int a, int b)

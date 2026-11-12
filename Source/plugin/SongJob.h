@@ -15,7 +15,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -146,6 +146,20 @@ public:
         }
         startIfNeeded();
     }
+
+    // how much of the groove the drums use (0 = straight, 1 = as heard, 1.5 = more): re-records the drums
+    void setFeel (int track, float amount)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingFeel = amount;
+            edits.erase (std::remove_if (edits.begin(), edits.end(), [] (const std::pair<int, EditOp>& e) { return e.second == EditOp::Feel; }), edits.end());
+            edits.push_back ({ track, EditOp::Feel });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    lp::song::Groove groove() const { const juce::ScopedLock sl (lock); return current.groove; }
 
     // your own drum pattern (drawn in the editor): replaces the track's hits, re-recorded in the background
     void setNotes (int track, std::vector<lp::song::Note> notes)
@@ -654,6 +668,9 @@ private:
             return;
         }
         auto song = lp::song::generate (ref, sky, opts);
+        // the drums' feel: the reference's own swing and timing, or one that suits the style
+        song.groove = ref.valid && ref.groove.valid ? ref.groove : lp::song::styleGroove (song.style);
+        song.groove.valid = true;
         song.drumSamples = picks.drums;
         if (ref.valid && ref.hasStems)
         {
@@ -1585,6 +1602,12 @@ private:
                 part.source = sourceLabel (all[(size_t) nextIndex]->path) + "your own kit (mixed)";
             }
         }
+        if (op == EditOp::Feel)
+        {
+            const juce::ScopedLock sl (lock);
+            song.groove.amount = pendingFeel;
+            if (! song.groove.valid) { song.groove = lp::song::styleGroove (song.style); song.groove.amount = pendingFeel; }
+        }
         if (op == EditOp::Notes)
         {
             const juce::ScopedLock sl (lock);
@@ -2116,6 +2139,7 @@ private:
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
     std::map<int, std::pair<int, int>> pendingDrumSwap;
     int chordsVersion = -1;
+    float pendingFeel = 1.0f;
     juce::String chordsSummary;
     juce::String drumSwapName; // the drum sound just swapped in (for the editor to show)
     int drumSwapCount = 0;

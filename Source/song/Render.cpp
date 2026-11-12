@@ -886,6 +886,14 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     if (part.kind != PartKind::Loop && part.kind != PartKind::Drums && part.pitchSemis != 0)
         for (auto& n : part.notes) n.pitch += part.pitchSemis;
 
+    // drums get the song's feel (swing, a laid-back snare, accents), from the reference or its style
+    if (part.kind == PartKind::Drums && song.groove.valid && song.groove.amount > 0.0f)
+        for (auto& n : part.notes)
+        {
+            const double ms = grooveJitterMs (song.groove, n.beat, n.pitch);
+            applyGroove (song.groove, n.beat, n.velocity, n.pitch);
+            n.beat = std::max (0.0, n.beat + ms / 1000.0 * song.bpm / 60.0);
+        }
     const auto events = eventsFor (part, spb);
     size_t next = 0;
     auto* L = buf.getWritePointer (0);

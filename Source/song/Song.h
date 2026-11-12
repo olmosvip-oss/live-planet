@@ -93,6 +93,50 @@ inline float toneLikeness (const Tone& a, const Tone& b)
     return std::exp (-(roll * 1.2f + air));
 }
 
+// The feel of a drummer: how late the in-between notes land (swing), how laid back the snare is, which
+// hats are hit harder. Measured from a reference (or set by the style), then applied to drawn drums.
+// Shifts are in 16ths (0.33 = a 16th note's third late: a strong swing).
+struct Groove
+{
+    bool valid = false;
+    float swing16 = 0.0f;   // the "e" and "a" of each beat
+    float swing8 = 0.0f;    // the "and" of each beat
+    float snareLate = 0.0f; // snares / claps on the backbeat
+    float kickLate = 0.0f;
+    std::array<float, 16> accent { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 }; // hat loudness per 16th, 0..1
+    float humanizeMs = 4.0f; // a little looseness, like a person playing
+    float amount = 1.0f;     // how much of it to use (0 = straight, 1 = as heard, 1.5 = more)
+};
+
+// where (in beats) and how hard a drum note plays once the groove is applied
+inline void applyGroove (const Groove& g, double& beat, float& velocity, int pitch)
+{
+    if (! g.valid || g.amount <= 0.0f) return;
+    const double pos16 = beat * 4.0;
+    const double k = std::round (pos16);
+    if (std::abs (pos16 - k) > 0.2) return; // played off the grid on purpose (rolls, flams): leave it
+    const int st = ((int) k % 16 + 16) % 16;
+    double shift = 0.0;
+    if (st % 2 == 1) shift += g.swing16;
+    else if (st % 4 == 2) shift += g.swing8;
+    if ((pitch == 38 || pitch == 39) && st % 4 == 0) shift += g.snareLate;
+    if (pitch == 36 && st % 4 == 0) shift += g.kickLate;
+    // (the same note always gets the same small looseness, so it doesn't change on every render)
+    const auto h = (juce::uint32) (std::hash<long long>{} ((long long) (k * 131) + pitch * 7919));
+    beat = (k + shift * g.amount) / 4.0;
+    if (pitch == 42 || pitch == 46 || pitch == 70)
+        velocity *= 1.0f - g.amount * 0.35f * (1.0f - juce::jlimit (0.0f, 1.0f, g.accent[(size_t) st]));
+    const float velJitter = ((float) ((h >> 10) % 1000) / 999.0f * 2.0f - 1.0f) * 0.06f * std::min (1.0f, g.amount);
+    velocity = juce::jlimit (0.05f, 1.0f, velocity * (1.0f + velJitter));
+}
+inline double grooveJitterMs (const Groove& g, double beat, int pitch)
+{
+    if (! g.valid || g.amount <= 0.0f) return 0.0;
+    const double k = std::round (beat * 4.0);
+    const auto h = (juce::uint32) (std::hash<long long>{} ((long long) (k * 131) + pitch * 7919));
+    return ((double) (h % 1000) / 999.0 * 2.0 - 1.0) * g.humanizeMs * std::min (1.0f, g.amount);
+}
+
 struct Profile
 {
     bool valid = false;
@@ -103,6 +147,7 @@ struct Profile
     // the groove: how strongly each 16th of a bar is hit, low (kick) / mid (snare) / high (hats), 0..1
     std::array<float, 16> grooveLow {}, grooveMid {}, grooveHigh {};
     bool hasGroove = false;
+    Groove groove;              // the timing feel of its drums (swing, laid-back snare, accents)
     float brightness = 0.5f;    // how bright the sound is, 0..1
     double lengthSeconds = 0.0;
     Tone tone;                  // its overall sound
@@ -187,6 +232,26 @@ struct FxHit
 
 // The groove of a song: which drum kit, which patterns, which bass.
 enum class Style { Dusty, BoomBap, Trap, House, Brushes, Electronic };
+
+// a feel for each style, when there's no reference to take it from
+inline Groove styleGroove (Style st)
+{
+    Groove g;
+    g.valid = true;
+    switch (st)
+    {
+        case Style::Dusty:      g.swing16 = 0.25f; g.snareLate = 0.06f; g.humanizeMs = 6.0f; break;
+        case Style::BoomBap:    g.swing16 = 0.18f; g.snareLate = 0.05f; g.humanizeMs = 5.0f; break;
+        case Style::Brushes:    g.swing16 = 0.20f; g.swing8 = 0.15f; g.humanizeMs = 7.0f; break;
+        case Style::House:      g.swing16 = 0.10f; g.humanizeMs = 2.0f; break;
+        case Style::Trap:       g.humanizeMs = 2.0f; break;
+        case Style::Electronic: g.humanizeMs = 1.0f; break;
+    }
+    // hats: the beat and the "and" a little stronger than the 16ths in between
+    for (int i = 0; i < 16; ++i) g.accent[(size_t) i] = i % 4 == 0 ? 1.0f : i % 2 == 0 ? 0.85f : 0.65f;
+    return g;
+}
+
 constexpr int kNumStyles = 6;
 inline const char* styleName (Style s)
 {
@@ -261,6 +326,7 @@ struct Song
     float matchGainDb = 0.0f;                // ...and the level
     float playbackMakeupDb = 0.0f;           // the stems keep headroom; this (into a limiter) brings them up to the mix's loudness
     bool mixShaped = false;
+    Groove groove;                           // the drums' feel (from the reference, or the style)
     int totalBars() const { return sections.empty() ? 0 : sections.back().startBar + sections.back().bars; }
     double lengthSeconds() const { return totalBars() * 4.0 * 60.0 / bpm; }
 };

@@ -336,6 +336,42 @@ static int chordTest (const juce::File& outDir)
     return 0;
 }
 
+// swing written into a song, then measured back from its mix
+static int grooveTest (const juce::File& outDir)
+{
+    using namespace lp::song;
+    struct Case { float s16, s8, snare; };
+    for (auto c : { Case { 0, 0, 0 }, Case { 0.33f, 0, 0 }, Case { 0, 0.25f, 0 }, Case { 0.2f, 0, 0.12f }, Case { 0.45f, 0.1f, 0 } })
+    {
+        lp::Weather sky; sky.temperatureC = 18; sky.windKmh = 20;
+        Options o; o.seed = 5; o.full = false; o.style = (int) Style::BoomBap;
+        Song song = generate (Profile {}, sky, o);
+        song.bpm = 92;
+        song.groove = {};
+        song.groove.valid = true; song.groove.swing16 = c.s16; song.groove.swing8 = c.s8; song.groove.snareLate = c.snare; song.groove.humanizeMs = 0;
+        // a busy 16th hat so every swing position is played
+        for (auto& p : song.parts)
+            if (p.kind == PartKind::Drums)
+            {
+                p.notes.erase (std::remove_if (p.notes.begin(), p.notes.end(), [] (const Note& n) { return n.pitch == 42 || n.pitch == 46; }), p.notes.end());
+                for (int b = 0; b < song.totalBars() * 16; ++b) p.notes.push_back ({ b * 0.25, 0.1, 42, b % 2 ? 0.6f : 0.85f });
+            }
+        Rendered out;
+        if (! render (song, {}, outDir.getChildFile ("groove"), out)) return 1;
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (out.mixFile));
+        juce::AudioBuffer<float> b (2, (int) rd->lengthInSamples);
+        rd->read (&b, 0, b.getNumSamples(), 0, true, true);
+        std::vector<float> mono ((size_t) b.getNumSamples());
+        for (int i = 0; i < b.getNumSamples(); ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+        const auto prof = analyse (mono.data(), (int) mono.size(), rd->sampleRate, song.bpm);
+        const auto& g = prof.groove;
+        std::printf ("wrote swing16 %.2f swing8 %.2f snare %.2f  ->  heard swing16 %.2f swing8 %.2f snare %.2f kick %.2f %s\n",
+                     c.s16, c.s8, c.snare, g.swing16, g.swing8, g.snareLate, g.kickLate, g.valid ? "" : "(not sure)");
+    }
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1046,6 +1082,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 2 && juce::String (argv[1]) == "--groove")
+        return grooveTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--chordread")
         return chordTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--livedrums")

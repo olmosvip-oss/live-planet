@@ -328,7 +328,9 @@ private:
     std::vector<int> rows; // drum notes, top to bottom
     juce::TextButton playBtn { "play" }, zoomOut { "-" }, zoomIn { "+" }, fitBtn { "whole song" }, resBtn { "1/16" },
                      fillSection { "copy to section" }, fillAll { "every chorus" }, clearBtn { "clear" }, undoBtn { "undo" },
-                     bigBtn { "bigger" };
+                     bigBtn { "bigger" }, feelBtn { "feel 100%" };
+    lp::song::Groove groove; // the song's drum feel (heard in the live loop too)
+    void updateFeelText();
 };
 
 class TrackEditor : public juce::Component

@@ -101,6 +101,12 @@ inline juce::var songToVar (const Song& s)
     o->setProperty ("refTone", toneToVar (s.refTone));
     o->setProperty ("matchEqDb", floats (s.matchEqDb.data(), 10)); o->setProperty ("matchGainDb", s.matchGainDb);
     o->setProperty ("playbackMakeupDb", s.playbackMakeupDb); o->setProperty ("mixShaped", s.mixShaped);
+    auto* g = new juce::DynamicObject();
+    g->setProperty ("valid", s.groove.valid); g->setProperty ("swing16", s.groove.swing16); g->setProperty ("swing8", s.groove.swing8);
+    g->setProperty ("snareLate", s.groove.snareLate); g->setProperty ("kickLate", s.groove.kickLate);
+    g->setProperty ("accent", floats (s.groove.accent.data(), 16)); g->setProperty ("humanizeMs", s.groove.humanizeMs);
+    g->setProperty ("amount", s.groove.amount);
+    o->setProperty ("groove", g);
     return o;
 }
 
@@ -115,6 +121,13 @@ inline bool songFromVar (const juce::var& v, Song& s)
     s.refTone = toneFromVar (v["refTone"]);
     readFloats (v["matchEqDb"], s.matchEqDb.data(), 10);
     s.matchGainDb = v["matchGainDb"]; s.playbackMakeupDb = v["playbackMakeupDb"]; s.mixShaped = v["mixShaped"];
+    if (const auto g = v["groove"]; g.isObject())
+    {
+        s.groove.valid = g["valid"]; s.groove.swing16 = g["swing16"]; s.groove.swing8 = g["swing8"];
+        s.groove.snareLate = g["snareLate"]; s.groove.kickLate = g["kickLate"];
+        readFloats (g["accent"], s.groove.accent.data(), 16);
+        s.groove.humanizeMs = g.getProperty ("humanizeMs", 4.0f); s.groove.amount = g.getProperty ("amount", 1.0f);
+    }
     return s.bpm > 0 && ! s.sections.empty();
 }
 

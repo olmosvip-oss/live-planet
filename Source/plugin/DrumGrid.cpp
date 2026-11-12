@@ -59,6 +59,18 @@ DrumGrid::DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
     setup (clearBtn, "erase the hits in the bars you picked (or the ones you see)");
     setup (undoBtn, "undo your last change");
     setup (bigBtn, "make the drum editor bigger");
+    setup (feelBtn, "the drums' feel: swing and timing taken from your reference (or the style). Click: straight, half, as heard, more");
+    feelBtn.onClick = [this]
+    {
+        const float steps[] = { 0.0f, 0.5f, 1.0f, 1.5f };
+        int i = 0;
+        while (i < 4 && std::abs (steps[i] - groove.amount) > 0.01f) ++i;
+        groove.amount = steps[(i + 1) % 4];
+        if (! groove.valid) groove.valid = true;
+        proc.songJob.setFeel (track, groove.amount);
+        updateFeelText();
+        sendLoop();
+    };
     zoomOut.onClick = [this] { zoomAround (1.6, gridArea().getCentreX()); };
     zoomIn.onClick = [this] { zoomAround (1.0 / 1.6, gridArea().getCentreX()); };
     fitBtn.onClick = [this] { setView (0.0, totalBeats()); };
@@ -97,6 +109,8 @@ void DrumGrid::load (int trackIndex)
     totalBars = std::max (1, pv.totalBars);
     sections = pv.sections;
     if (! pv.valid) return;
+    groove = proc.songJob.groove();
+    updateFeelText();
     if (pv.kitKey + songTitle + String (track) != kitKey) { kitKey = pv.kitKey + songTitle + String (track); loadKit(); }
     // keep what you're drawing (and your place) while the track is being re-recorded
     if (! sameTrack || (! dirty && ! waitingForRender))
@@ -300,12 +314,34 @@ void DrumGrid::loadKit()
     });
 }
 
+void DrumGrid::updateFeelText()
+{
+    const String t = groove.amount <= 0.01f ? String ("feel: straight") : "feel " + String (roundToInt (groove.amount * 100.0f)) + "%";
+    if (feelBtn.getButtonText() != t) feelBtn.setButtonText (t);
+    String tip = "the drums' feel, from your reference (or the style): ";
+    tip << "swing " << roundToInt (groove.swing16 * 100.0f) << "% on 16ths, " << roundToInt (groove.swing8 * 100.0f) << "% on 8ths";
+    if (groove.snareLate > 0.0f) tip << ", the snare a little late";
+    tip << ". click: straight, half, as heard, more";
+    feelBtn.setTooltip (tip);
+}
+
 void DrumGrid::sendLoop()
 {
     double a, b;
     loopRange (a, b);
     std::vector<LiveDrums::Hit> h;
-    for (auto& n : notes) if (n.beat >= a - 1e-6 && n.beat < b - 1e-6) h.push_back ({ n.beat, n.pitch, n.velocity });
+    const double bpm = std::max (40.0, proc.songBpm.load());
+    for (auto& n : notes)
+        if (n.beat >= a - 1e-6 && n.beat < b - 1e-6)
+        {
+            // the same feel as the recorded drums
+            double beat = n.beat;
+            float vel = n.velocity;
+            const double ms = lp::song::grooveJitterMs (groove, beat, n.pitch);
+            lp::song::applyGroove (groove, beat, vel, n.pitch);
+            beat = std::max (a, std::min (b - 1e-4, beat + ms / 1000.0 * bpm / 60.0));
+            h.push_back ({ beat, n.pitch, vel });
+        }
     proc.liveDrums.setPattern (std::move (h), a, b - a);
     proc.setDrumLoop (a, b - a);
 }
@@ -496,7 +532,8 @@ void DrumGrid::resized()
     zoomOut.setBounds (top.removeFromLeft (30)); top.removeFromLeft (4);
     zoomIn.setBounds (top.removeFromLeft (30)); top.removeFromLeft (4);
     fitBtn.setBounds (top.removeFromLeft (96)); top.removeFromLeft (4);
-    resBtn.setBounds (top.removeFromLeft (52));
+    resBtn.setBounds (top.removeFromLeft (52)); top.removeFromLeft (4);
+    feelBtn.setBounds (top.removeFromLeft (104));
     bigBtn.setBounds (top.removeFromRight (70)); top.removeFromRight (6);
     undoBtn.setBounds (top.removeFromRight (56)); top.removeFromRight (6);
     clearBtn.setBounds (top.removeFromRight (56)); top.removeFromRight (6);
