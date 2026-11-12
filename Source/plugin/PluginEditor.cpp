@@ -862,7 +862,23 @@ void SongPanel::paint (Graphics& g)
         auto r = c.reduced (22.0f, 18.0f);
         g.setFont (font (19.0f, lp::ui::Medium, -0.01f));
         g.setColour (t.ink);
-        g.drawText ("Settings", r.removeFromTop (26.0f), Justification::centredLeft, false);
+        {
+            auto title = r.removeFromTop (26.0f);
+            g.drawText ("Settings", title, Justification::centredLeft, false);
+            // the license (only in builds that need one): trial days left, or activate
+            licenseLink = {};
+            if (lp::license::required())
+            {
+                const auto owner = lp::license::activatedTo();
+                const int left = lp::license::trialDaysLeft();
+                const String txt = owner.isNotEmpty() ? String ("LICENSED") : (left > 0 ? "TRIAL: " + String (left) + " DAYS LEFT" : String ("ACTIVATE"));
+                g.setFont (lp::ui::mono (10.0f, false, 0.12f));
+                licenseLink = title.removeFromRight (GlyphArrangement::getStringWidth (g.getCurrentFont(), txt) + 6.0f);
+                g.setColour (owner.isNotEmpty() ? t.inkDim : Colour (0xfff2a33a));
+                g.drawText (txt, licenseLink, Justification::centredRight, false);
+                g.setFont (font (19.0f, lp::ui::Medium, -0.01f));
+            }
+        }
         g.setFont (font (13.5f, lp::ui::Medium));
         g.setColour (t.ink.withAlpha (0.88f));
         g.drawText ("Key", Rectangle<float> (r.getX(), (float) keyBox.getY(), 60.0f, (float) keyBox.getHeight()), Justification::centredLeft, false);
@@ -883,16 +899,7 @@ void SongPanel::paint (Graphics& g)
         sourcesLink = lib.removeFromLeft (70.0f);
         g.setColour (t.grassLight);
         g.drawText ("SOURCES", sourcesLink, Justification::centredLeft, false);
-        licenseLink = {};
-        if (lp::license::required())
-        {
-            const auto owner = lp::license::activatedTo();
-            const int left = lp::license::trialDaysLeft();
-            const String txt = owner.isNotEmpty() ? String ("LICENSED") : (left > 0 ? "TRIAL: " + String (left) + " DAYS" : String ("ACTIVATE"));
-            licenseLink = lib.removeFromRight (GlyphArrangement::getStringWidth (g.getCurrentFont(), txt) + 4.0f);
-            g.setColour (owner.isNotEmpty() ? t.inkDim : Colour (0xfff2a33a));
-            g.drawText (txt, licenseLink, Justification::centredRight, false);
-        }
+
     }
 }
 
