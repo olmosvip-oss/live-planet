@@ -241,6 +241,24 @@ private:
 };
 
 // EDIT: one track at a time, like a sampler: its sample (choose which bars play), its own effects and remix tools
+class FilePill : public juce::Component
+{
+public:
+    FilePill (juce::String text, std::function<juce::StringArray()> files) : label (std::move (text)), getFiles (std::move (files)) {}
+    // optional: the files actually handed over when dragged (e.g. recorded with effects), if not getFiles
+    std::function<juce::StringArray()> filesToDrag;
+    void paint (juce::Graphics&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+
+private:
+    juce::String label;
+    std::function<juce::StringArray()> getFiles;
+    bool dragged = false;
+};
+
 class TrackEditor : public juce::Component
 {
 public:
@@ -274,6 +292,8 @@ private:
                      mute { "M" }, solo { "S" };
     std::map<juce::String, std::vector<float>> peakCache;
     int dragFrom = -1, dragTo = -1;
+    juce::TextButton printFx { "Print FX" };
+    FilePill dragTrack;
 };
 
 // SOUND: a little screen of the sound being played, with its grains appearing as they would
@@ -316,21 +336,6 @@ private:
 };
 
 // A pill you drag into your DAW (or click to show in Finder)
-class FilePill : public juce::Component
-{
-public:
-    FilePill (juce::String text, std::function<juce::StringArray()> files) : label (std::move (text)), getFiles (std::move (files)) {}
-    void paint (juce::Graphics&) override;
-    void mouseDrag (const juce::MouseEvent&) override;
-    void mouseUp (const juce::MouseEvent&) override;
-    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
-    void mouseExit (const juce::MouseEvent&) override { repaint(); }
-
-private:
-    juce::String label;
-    std::function<juce::StringArray()> getFiles;
-    bool dragged = false;
-};
 
 class ThemeDots : public juce::Component
 {

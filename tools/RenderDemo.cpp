@@ -442,6 +442,29 @@ static int libraryTest (const juce::File& outDir)
 }
 
 // a 2-bar loop at 155 bpm (tone + a click each beat), fitted into a 120 bpm song: beats must land on 120's grid
+#include "../Source/plugin/StudioPlayer.h"
+// prints one stem with its own effects, like the Print FX button
+int printTest (const juce::File& stem, const juce::File& out)
+{
+    StudioPlayer::Mix m;
+    m.space = 0.6f; m.echo = 0.5f; m.warmth = 0.5f; m.chorus = 0.4f; m.pan = -0.3f;
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    const bool ok = StudioPlayer::printTrack (stem, m, 120.0, out);
+    std::printf ("printed %s in %.1f s\n", ok ? "ok" : "FAILED", (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0);
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    for (auto f : { stem, out })
+        if (std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f)); r != nullptr)
+        {
+            juce::AudioBuffer<float> b (2, (int) r->lengthInSamples);
+            r->read (&b, 0, (int) r->lengthInSamples, 0, true, true);
+            const int n = b.getNumSamples(), half = n / 2;
+            std::printf ("  %-12s %.2f s  rms L %.1f dB  R %.1f dB  peak %.2f  L/R differ %.3f\n", f == stem ? "dry" : "printed", n / r->sampleRate,
+                         juce::Decibels::gainToDecibels (b.getRMSLevel (0, 0, n)), juce::Decibels::gainToDecibels (b.getRMSLevel (1, 0, n)),
+                         b.getMagnitude (0, n), [&] { double d = 0; for (int i = half; i < half + 48000; ++i) d += std::abs (b.getSample (0, i) - b.getSample (1, i)); return d / 48000; }());
+        }
+    return ok ? 0 : 1;
+}
+
 int stretchTest (const juce::File& dir, int tune = 0)
 {
     const double sr = 48000.0, srcBpm = 155.0, songBpm = 120.0;
@@ -871,6 +894,8 @@ int main (int argc, char** argv)
         return sampleTest (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--stretch")
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
+    if (argc > 3 && juce::String (argv[1]) == "--print")
+        return printTest (juce::File (argv[2]), juce::File (argv[3]));
     if (argc > 1 && juce::String (argv[1]) == "--chords")
         return chordTest();
     if (argc > 2 && juce::String (argv[1]) == "--keyof")

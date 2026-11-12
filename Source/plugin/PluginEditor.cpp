@@ -1027,9 +1027,10 @@ void FilePill::paint (Graphics& g)
 void FilePill::mouseDrag (const MouseEvent& e)
 {
     if (dragged || e.getDistanceFromDragStart() < 6) return;
-    const auto files = getFiles();
-    if (files.isEmpty()) return;
+    if (getFiles().isEmpty()) return;
     dragged = true;
+    const auto files = filesToDrag ? filesToDrag() : getFiles();
+    if (files.isEmpty()) return;
     DragAndDropContainer::performExternalDragDropOfFiles (files, false, this);
 }
 
@@ -1132,6 +1133,10 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     songPanel.onShowSources = [this] { sourcesPanel.open(); };
     studioView.onOpenTrack = [this] (int t) { trackEditor.select (t); setPage (Edit); };
     playButton.songMode = [this] { return page == Write || page == Studio || page == Edit; };
+    // each track's own Print FX choice decides whether its stem comes with its effects recorded in
+    pillStems.filesToDrag = [&p] { auto st = p.songJob.getStatus(); StringArray a;
+                                   for (int t = 0; t < (int) st.tracks.size(); ++t) if (auto f = p.fileToDrag (t); f.existsAsFile()) a.add (f.getFullPathName());
+                                   return a; };
     for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         addChildComponent (pill);
     addAndMakeVisible (themeDots);

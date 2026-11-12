@@ -19,6 +19,8 @@ public:
         std::atomic<int> group { 0 };
         // this track's own effects: reverb and delay sends, warmth and nostalgia inserts (all 0..1)
         std::atomic<float> space { 0.0f }, echo { 0.0f }, warmth { 0.0f }, nostalgia { 0.0f }, chorus { 0.0f };
+        // drag this track with its effects recorded into it ("print"), instead of the dry file
+        std::atomic<bool> printFx { false };
     };
 
     // the mix knobs (chords / melody / bass) as gains for each group; [0] unused
@@ -30,7 +32,8 @@ public:
     std::array<Mix, maxTracks> mix;
 
     // message thread: (re)open the tracks' files
-    void load (const juce::Array<juce::File>& stems)
+    // waitMs: how long a read may wait for the disk (0 while playing live; offline prints wait)
+    void load (const juce::Array<juce::File>& stems, int waitMs = 0)
     {
         std::vector<std::unique_ptr<juce::BufferingAudioReader>> fresh;
         juce::int64 length = 0;
@@ -42,7 +45,7 @@ public:
             if (auto* raw = fm.createReaderFor (f))
             {
                 r = std::make_unique<juce::BufferingAudioReader> (raw, thread, (int) (fileRate * 4));
-                r->setReadTimeout (0); // never make the audio wait
+                r->setReadTimeout (waitMs); // live: never make the audio wait
                 length = std::max (length, raw->lengthInSamples);
             }
             fresh.push_back (std::move (r));
@@ -56,6 +59,44 @@ public:
     }
 
     void clear() { load ({}); }
+
+    // records one track as you hear it: its volume, pan, tone, warmth / nostalgia / chorus, and its
+    // own reverb and delay (with their tails), into a new file. The master knobs aren't included.
+    // message thread (takes a second or two for a whole song)
+    static bool printTrack (const juce::File& stem, const Mix& m, double bpm, const juce::File& out)
+    {
+        StudioPlayer p;
+        p.load ({ stem }, 5000);
+        const auto len = p.length();
+        if (len <= 0) return false;
+        auto& d = p.mix[0];
+        d.gainDb = m.gainDb.load(); d.pan = m.pan.load(); d.tone = m.tone.load();
+        d.space = m.space.load(); d.echo = m.echo.load(); d.warmth = m.warmth.load();
+        d.nostalgia = m.nostalgia.load(); d.chorus = m.chorus.load();
+        constexpr int block = 1024;
+        p.prepare (block);
+        const auto total = len + (juce::int64) (fileRate * 6.0); // room for the echo and reverb tails
+        juce::AudioBuffer<float> buf (2, block);
+        out.getParentDirectory().createDirectory();
+        out.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (out), fileRate, 2, 24, {}, 0));
+        if (w == nullptr) return false;
+        juce::int64 lastSound = 0;
+        juce::AudioBuffer<float> all (2, (int) total);
+        all.clear();
+        for (juce::int64 pos = 0; pos < total; pos += block)
+        {
+            const int n = (int) std::min<juce::int64> (block, total - pos);
+            buf.clear();
+            p.render (buf.getWritePointer (0), buf.getWritePointer (1), n, (double) pos, 1.0, fileRate, nullptr, nullptr, nullptr, nullptr, bpm);
+            for (int ch = 0; ch < 2; ++ch) all.copyFrom (ch, (int) pos, buf, ch, 0, n);
+            if (buf.getMagnitude (0, n) > 1.0e-4f) lastSound = pos + n;
+        }
+        // keep the song's length (so it lines up), plus any tail that rings past the end
+        const int keep = (int) std::max (len, std::min (total, lastSound));
+        return w->writeFromAudioSampleBuffer (all, 0, keep);
+    }
     juce::int64 length() const { return lengthSamples.load(); }
 
     // audio thread: adds the mixed tracks into L/R. pos and inc are in file samples.

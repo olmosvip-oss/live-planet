@@ -6,8 +6,28 @@ using lp::ui::font;
 // EDIT: one track at a time, like a sampler. Its sample on a dark screen (drag to choose which bars play),
 // a row of dials for its own mix and effects, and the remix tools.
 
-TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme)
+TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
+    : proc (p), th (theme),
+      dragTrack ("drag track", [this] { auto st = proc.songJob.getStatus();
+                                        return st.haveSong && track < (int) st.tracks.size() ? StringArray (st.tracks[(size_t) track].stem.getFullPathName()) : StringArray(); })
 {
+    // drags the dry track, or with Print FX on, the track with its own effects recorded into it
+    dragTrack.filesToDrag = [this] { const auto f = proc.fileToDrag (track); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
+    printFx.setClickingTogglesState (false);
+    printFx.setTooltip ("On: dragging this track gives you it with its reverb, echo, warmth, nostalgia, chorus, volume and pan recorded in. Off: the dry track.");
+    printFx.onClick = [this]
+    {
+        auto& m = proc.studio.mix[(size_t) track];
+        m.printFx = ! m.printFx.load();
+        // start recording it now, so it's ready by the time you drag
+        if (m.printFx.load())
+        {
+            ++proc.printsRunning;
+            juce::Thread::launch ([&pr = proc, t = track] { pr.fileToDrag (t); --pr.printsRunning; });
+        }
+        repaint();
+    };
+    addAndMakeVisible (dragTrack);
     auto mixOf = [this] (int t) -> StudioPlayer::Mix& { return proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, t)]; };
     addDial ("volume", -30.0, 6.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).gainDb; }, 72);
     addDial ("pan", -1.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).pan; }, 64);
@@ -34,7 +54,7 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme) :
     mute.onClick = [this] { auto& m = proc.studio.mix[(size_t) track]; m.mute = ! m.mute.load(); repaint(); };
     solo.onClick = [this] { auto& m = proc.studio.mix[(size_t) track]; m.solo = ! m.solo.load(); repaint(); };
     swap.getProperties().set ("primary", true);
-    for (auto* b : { &prev, &next, &swap, &rev, &pitchDown, &pitchUp, &mute, &solo })
+    for (auto* b : { &prev, &next, &swap, &rev, &pitchDown, &pitchUp, &mute, &solo, &printFx })
     {
         b->setWantsKeyboardFocus (false);
         b->setMouseClickGrabsKeyboardFocus (false);
@@ -203,11 +223,14 @@ void TrackEditor::resized()
     // two rows of dials: the track's sound and space, then its grains
     auto rows = getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
     const int h = rows.getHeight() / 2;
+    // left of the effects: print them into the dragged track, and the track to drag
+    printFx.setBounds (0, rows.getY() + 6, 100, 30);
+    dragTrack.setBounds (0, rows.getY() + 42, 100, 30);
     for (int r = 0; r < 2; ++r)
     {
         std::vector<Dial*> inRow;
         for (auto& d : dials) if (d->row == r) inRow.push_back (d.get());
-        auto area = Rectangle<int> (rows.getX() + (r == 1 ? 110 : 0), rows.getY() + r * h, rows.getWidth() - (r == 1 ? 110 : 0), h);
+        auto area = Rectangle<int> (rows.getX() + 110, rows.getY() + r * h, rows.getWidth() - 110, h);
         const int w = area.getWidth() / std::max (1, (int) inRow.size());
         for (size_t i = 0; i < inRow.size(); ++i) inRow[i]->s.setBounds (area.getX() + (int) i * w, area.getY(), w, h);
     }
@@ -247,6 +270,7 @@ void TrackEditor::paint (Graphics& g)
     auto& m = proc.studio.mix[(size_t) track];
     if (m.mute.load()) { g.setColour (Colour (0xfff2a33a).withAlpha (0.35f)); g.fillRoundedRectangle (mute.getBounds().toFloat().reduced (1.0f), 20.0f); }
     if (m.solo.load()) { g.setColour (t.grass.withAlpha (0.45f)); g.fillRoundedRectangle (solo.getBounds().toFloat().reduced (1.0f), 20.0f); }
+    if (m.printFx.load()) { g.setColour (t.grass.withAlpha (0.45f)); g.fillRoundedRectangle (printFx.getBounds().toFloat().reduced (1.0f), 8.0f); }
 
     // ---- the screen: the sample, its bars, the part that plays
     auto sc = screen();

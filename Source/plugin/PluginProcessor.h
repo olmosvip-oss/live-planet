@@ -1,4 +1,5 @@
 #pragma once
+#include <mutex>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <deque>
@@ -50,6 +51,10 @@ public:
     // The notes Live Planet played since you pressed play, written to a MIDI file
     // you can drag into your song. Returns an empty File if nothing was played yet.
     juce::File exportRecentNotes (int bars = 8);
+    // the file to drag for a track: its dry stem, or (Print FX on) the stem with its own effects recorded in
+    juce::File fileToDrag (int track);
+    std::atomic<int> printsRunning { 0 };
+    std::mutex printLock; // one print at a time (a drag waits for one already started)
     int recordedNoteCount() const { return recordedOnCount.load(); }
 
     // song mode

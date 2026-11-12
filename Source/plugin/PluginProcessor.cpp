@@ -120,6 +120,7 @@ LivePlanetProcessor::LivePlanetProcessor()
 LivePlanetProcessor::~LivePlanetProcessor()
 {
     stopTimer();
+    while (printsRunning.load() > 0) juce::Thread::sleep (20); // a background print finishing
 }
 
 bool LivePlanetProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -365,7 +366,7 @@ void LivePlanetProcessor::timerCallback()
                 if (newSong)
                 {
                     m.space = tr.space; m.echo = tr.echo; m.warmth = tr.warmth; m.nostalgia = tr.nostalgia;
-                    m.gainDb = 0.0f; m.pan = 0.0f; m.tone = 0.0f; m.mute = false; m.solo = false;
+                    m.gainDb = 0.0f; m.pan = 0.0f; m.tone = 0.0f; m.mute = false; m.solo = false; m.printFx = false;
                 }
             }
             if (newSong && anySamples)
@@ -514,6 +515,30 @@ bool LivePlanetProcessor::loadSample (const juce::File& file)
 }
 
 //==============================================================================
+
+juce::File LivePlanetProcessor::fileToDrag (int t)
+{
+    const auto st = songJob.getStatus();
+    if (! st.haveSong || t < 0 || t >= (int) st.tracks.size()) return {};
+    const auto stem = st.tracks[(size_t) t].stem;
+    if (t >= StudioPlayer::maxTracks || ! studio.mix[(size_t) t].printFx.load()) return stem;
+    const std::lock_guard<std::mutex> lk (printLock);
+    const auto& m = studio.mix[(size_t) t];
+    // one file per sound of the track: the same settings drag the same file without recording again
+    juce::String key;
+    for (float v : { m.gainDb.load(), m.pan.load(), m.tone.load(), m.space.load(), m.echo.load(),
+                     m.warmth.load(), m.nostalgia.load(), m.chorus.load() })
+        key << juce::String (v, 3) << ",";
+    key << stem.getLastModificationTime().toMilliseconds() << "," << songBpm;
+    // (a folder per sound, so the file keeps the track's plain name when it lands in Ableton)
+    const auto printed = st.files.folder.getChildFile ("printed");
+    const auto out = printed.getChildFile (juce::String::toHexString (key.hashCode64()).substring (0, 8))
+                            .getChildFile (stem.getFileNameWithoutExtension() + " fx.wav");
+    if (out.existsAsFile()) return out;
+    for (auto& old : printed.findChildFiles (juce::File::findFiles, true, out.getFileName()))
+        old.getParentDirectory().deleteRecursively(); // an older print of this track
+    return StudioPlayer::printTrack (stem, m, songBpm, out) ? out : stem;
+}
 
 void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
