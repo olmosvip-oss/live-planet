@@ -1234,6 +1234,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     thunderAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "thunder", thunderToggle);
 
     setSize (kW, kH);
+    if (auto* scale = std::getenv ("LP_UI_SCALE")) // for sharp screenshots (website, docs)
+        Desktop::getInstance().setGlobalScaleFactor ((float) std::atof (scale));
     applyTheme();
     setPage (Write);
 
