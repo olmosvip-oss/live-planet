@@ -7,7 +7,7 @@ using lp::ui::font;
 // a row of dials for its own mix and effects, and the remix tools.
 
 TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
-    : proc (p), th (theme),
+    : proc (p), th (theme), drumGrid (p, theme),
       dragTrack ("drag track", [this] { auto st = proc.songJob.getStatus();
                                         return st.haveSong && track < (int) st.tracks.size() ? StringArray (st.tracks[(size_t) track].stem.getFullPathName()) : StringArray(); })
 {
@@ -28,6 +28,7 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
         repaint();
     };
     addAndMakeVisible (dragTrack);
+    addChildComponent (drumGrid);
     auto mixOf = [this] (int t) -> StudioPlayer::Mix& { return proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, t)]; };
     addDial ("volume", -30.0, 6.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).gainDb; }, 72);
     addDial ("pan", -1.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).pan; }, 64);
@@ -127,13 +128,21 @@ void TrackEditor::select (int t)
     for (auto& d : dials)
         d->s.setValue (d->local != nullptr ? (double) *d->local : (double) d->value (track).load(), dontSendNotification);
     dragFrom = dragTo = -1;
+    drumGrid.load (track);
     repaint();
+}
+
+// a drum track made from hits (not an audio loop): its pattern can be drawn
+bool TrackEditor::showingDrums() const
+{
+    return proc.songJob.kindOf (track) == lp::song::PartKind::Drums;
 }
 
 void TrackEditor::refresh()
 {
     const auto st = proc.songJob.getStatus();
     if (st.version != version) { version = st.version; select (track); }
+    drumGrid.refresh();
     {
         const auto& m = proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, track)];
         const int rated = proc.songJob.ratingOf (track);
@@ -238,6 +247,7 @@ void TrackEditor::resized()
     notThis.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40)); top.removeFromRight (6);
     love.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40));
 
+    drumGrid.setBounds (screen().toNearestInt());
     // two rows of dials: the track's sound and space, then its grains
     auto rows = getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
     const int h = rows.getHeight() / 2;
@@ -266,7 +276,8 @@ void TrackEditor::paint (Graphics& g)
         for (auto* c : getChildren()) c->setVisible (false);
         return;
     }
-    for (auto* c : getChildren()) if (! c->isVisible()) c->setVisible (true);
+    for (auto* c : getChildren()) if (! c->isVisible() && c != &drumGrid) c->setVisible (true);
+    drumGrid.setVisible (showingDrums());
     if (track >= (int) st.tracks.size()) track = 0;
     const auto& tr = st.tracks[(size_t) track];
 
@@ -339,7 +350,7 @@ void TrackEditor::paint (Graphics& g)
                             : "PLAYING BARS " + String (rs + 1) + "-" + String (rs + rb) + " OF " + String (L) + "  \xc2\xb7  DOUBLE-CLICK FOR ALL OF IT",
                     foot, Justification::centredLeft, false);
     else
-        g.drawText ("THE WHOLE TRACK  \xc2\xb7  PICKING A PART WORKS ON SAMPLE LOOPS", foot, Justification::centredLeft, false);
+        g.drawText (String::fromUTF8 ("THE WHOLE TRACK  \xc2\xb7  PICKING A PART WORKS ON SAMPLE LOOPS"), foot, Justification::centredLeft, false);
     if (st.editing)
     {
         g.setColour (t.grassLight);

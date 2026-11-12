@@ -13,7 +13,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -145,6 +145,21 @@ public:
         startIfNeeded();
     }
 
+    // your own drum pattern (drawn in the editor): replaces the track's hits, re-recorded in the background
+    void setNotes (int track, std::vector<lp::song::Note> notes)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingNotes[track] = std::move (notes);
+            // only the newest drawing matters: drop an older one still waiting
+            edits.erase (std::remove_if (edits.begin(), edits.end(), [track] (const std::pair<int, EditOp>& e)
+                                         { return e.first == track && e.second == EditOp::Notes; }), edits.end());
+            edits.push_back ({ track, EditOp::Notes });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
     // re-play a track as grains (re-recorded in the background)
     void setGrains (int track, GrainSettings g)
     {
@@ -231,6 +246,34 @@ public:
         const juce::ScopedLock tl (tasteLock);
         auto it = trackRatings.find (key);
         return it != trackRatings.end() ? it->second : 0;
+    }
+
+    // one track in full (its notes), plus the song's sections and drum sounds: for the drum editor
+    struct PartView
+    {
+        bool valid = false;
+        lp::song::PartKind kind = lp::song::PartKind::Loop;
+        std::vector<lp::song::Note> notes;
+        std::vector<lp::song::Section> sections;
+        std::map<int, juce::String> drumSamples;
+        juce::String title;
+        int totalBars = 0;
+    };
+    PartView partView (int track) const
+    {
+        const juce::ScopedLock sl (lock);
+        PartView v;
+        if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return v;
+        const auto& p = current.parts[(size_t) track];
+        v.valid = true; v.kind = p.kind; v.notes = p.notes;
+        v.sections = current.sections; v.drumSamples = current.drumSamples;
+        v.title = current.title; v.totalBars = current.totalBars();
+        return v;
+    }
+    lp::song::PartKind kindOf (int track) const
+    {
+        const juce::ScopedLock sl (lock);
+        return status.haveSong && track >= 0 && track < (int) current.parts.size() ? current.parts[(size_t) track].kind : lp::song::PartKind::Loop;
     }
 
     Status getStatus() const
@@ -1346,6 +1389,14 @@ private:
             part.grainAmount = gs.amount; part.grainSizeMs = gs.sizeMs; part.grainChaos = gs.chaos;
             part.grainPosition = gs.position; part.grainRate = gs.rate;
         }
+        if (op == EditOp::Notes)
+        {
+            const juce::ScopedLock sl (lock);
+            auto notes = pendingNotes[tr];
+            std::sort (notes.begin(), notes.end(), [] (const lp::song::Note& a, const lp::song::Note& b) { return a.beat < b.beat; });
+            part.notes = std::move (notes);
+            part.remix = "your own pattern";
+        }
         if (op == EditOp::Region)
         {
             const juce::ScopedLock sl (lock);
@@ -1429,6 +1480,8 @@ private:
         current = song;
         status.song = song;
         status.tracks[(size_t) tr] = info (part, stem, song);
+        if (op == EditOp::Notes && status.files.midiFile != juce::File())
+            lp::song::writeMidi (song, status.files.midiFile); // "drag midi" gets your pattern too
         ++status.version;
         saveSession();
     }
@@ -1864,6 +1917,7 @@ private:
     std::vector<std::pair<int, EditOp>> edits;
     std::map<int, std::pair<int, int>> pendingRegion;
     std::map<int, GrainSettings> pendingGrains;
+    std::map<int, std::vector<lp::song::Note>> pendingNotes;
     Task task = Task::None;
     juce::File pendingReference;
     lp::song::Options options;

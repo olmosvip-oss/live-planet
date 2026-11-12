@@ -261,6 +261,44 @@ private:
     bool dragged = false;
 };
 
+// EDIT > Drums: draw your own drum pattern on a grid (add, erase, paint, how hard each hit is)
+class DrumGrid : public juce::Component
+{
+public:
+    DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme);
+    void load (int track);   // the track's pattern (keeps what you're drawing while it re-records)
+    void refresh();          // every frame: sends your drawing once you pause
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+
+private:
+    juce::Rectangle<float> gridArea() const;
+    int numSteps() const;
+    bool cellAt (juce::Point<float> p, int& row, int& step) const;
+    std::vector<size_t> hitsIn (int row, int step) const;
+    void setCell (int row, int step, bool on);
+    void copyAcross (bool everySectionOfKind);
+    void pushUndo();
+    void changed();
+
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    int track = -1, totalBars = 1, startBar = 0, bars = 1, stepsPerBeat = 4, paintRow = -1;
+    bool painting = true, dirty = false, waitingForRender = false;
+    juce::uint32 lastChange = 0;
+    juce::String songTitle;
+    std::vector<lp::song::Section> sections;
+    std::vector<lp::song::Note> notes;
+    std::vector<std::vector<lp::song::Note>> undo;
+    std::vector<int> rows; // drum notes, top to bottom
+    juce::TextButton prevBar { "<" }, nextBar { ">" }, lenBtn { "1 bar" }, resBtn { "1/16" },
+                     fillSection { "fill section" }, fillAll { "every chorus" }, clearBtn { "clear" }, undoBtn { "undo" };
+};
+
 class TrackEditor : public juce::Component
 {
 public:
@@ -297,6 +335,8 @@ private:
     juce::TextButton printFx { "Print FX" };
     FilePill dragTrack;
     juce::TextButton love { "Love it" }, notThis { "Not this" }; // your taste: remembered for every later song
+    DrumGrid drumGrid;
+    bool showingDrums() const;
 };
 
 // SOUND: a little screen of the sound being played, with its grains appearing as they would
