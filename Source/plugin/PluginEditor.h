@@ -287,6 +287,8 @@ private:
     double totalBeats() const { return totalBars * 4.0; }
     juce::Rectangle<float> overviewArea() const;
     juce::Rectangle<float> rulerArea() const;
+    juce::Rectangle<float> sectionLane() const;
+    juce::uint32 lastViewChange = 0;
     juce::Rectangle<float> gridArea() const;
     float xOf (double beat) const;
     double beatAt (float x) const;

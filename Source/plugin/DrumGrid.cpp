@@ -27,7 +27,7 @@ namespace
     {
         return juce::String (s).trimCharactersAtEnd ("0123456789 ");
     }
-    constexpr float nameW = 132.0f, toolbarH = 40.0f, overviewH = 22.0f, rulerH = 18.0f, hintH = 22.0f;
+    constexpr float nameW = 132.0f, toolbarH = 40.0f, overviewH = 22.0f, lanesGap = 4.0f, sectionH = 18.0f, rulerH = 18.0f, hintH = 22.0f;
 }
 
 DrumGrid::DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme)
@@ -131,14 +131,20 @@ Rectangle<float> DrumGrid::overviewArea() const
     return { nameW, toolbarH, (float) getWidth() - nameW - 12.0f, overviewH };
 }
 
+// the song's sections, lined up with the grid: click one to pick all of its bars
+Rectangle<float> DrumGrid::sectionLane() const
+{
+    return { nameW, toolbarH + overviewH + lanesGap, (float) getWidth() - nameW - 12.0f, sectionH };
+}
+
 Rectangle<float> DrumGrid::rulerArea() const
 {
-    return { nameW, toolbarH + overviewH + 4.0f, (float) getWidth() - nameW - 12.0f, rulerH };
+    return { nameW, toolbarH + overviewH + lanesGap + sectionH, (float) getWidth() - nameW - 12.0f, rulerH };
 }
 
 Rectangle<float> DrumGrid::gridArea() const
 {
-    const float top = toolbarH + overviewH + 4.0f + rulerH;
+    const float top = toolbarH + overviewH + lanesGap + sectionH + rulerH;
     return { nameW, top, (float) getWidth() - nameW - 12.0f, (float) getHeight() - top - hintH };
 }
 
@@ -156,6 +162,7 @@ double DrumGrid::beatAt (float x) const
 
 void DrumGrid::setView (double start, double len)
 {
+    lastViewChange = Time::getMillisecondCounter();
     const double total = totalBeats();
     viewLen = jlimit (2.0, std::max (2.0, total), len);
     viewStart = jlimit (0.0, std::max (0.0, total - viewLen), start);
@@ -174,8 +181,8 @@ void DrumGrid::loopRange (double& a, double& b) const
 {
     if (selA >= 0.0 && selB > selA) { a = selA; b = selB; return; }
     // the whole bars you can see (at most 8)
-    a = std::floor (viewStart / 4.0 + 1e-6) * 4.0;
-    b = std::ceil ((viewStart + viewLen) / 4.0 - 1e-6) * 4.0;
+    a = std::ceil (viewStart / 4.0 - 0.25) * 4.0;   // the first bar (mostly) on screen
+    b = std::ceil ((viewStart + viewLen) / 4.0 - 0.25) * 4.0;
     b = std::min ({ b, a + 32.0, totalBeats() });
     if (b <= a) b = a + 4.0;
 }
@@ -229,7 +236,7 @@ Rectangle<float> DrumGrid::swapArrow (size_t row, int which) const
     return { 84.0f + (float) which * 22.0f, y, 19.0f, 16.0f };
 }
 
-void DrumGrid::mouseMove (const MouseEvent&) { if (canSwapRows) repaint (0, 0, (int) nameW, getHeight()); }
+void DrumGrid::mouseMove (const MouseEvent&) { repaint(); } // hover highlights (swap arrows, sections)
 
 void DrumGrid::refresh()
 {
@@ -249,7 +256,15 @@ void DrumGrid::refresh()
     }
     const bool playing = proc.drumLoopPlaying();
     if (playBtn.getButtonText() != (playing ? "stop" : "play")) playBtn.setButtonText (playing ? "stop" : "play");
-    if (playing) repaint (gridArea().getUnion (rulerArea()).toNearestInt().expanded (2));
+    if (proc.songIsPlaying())
+    {
+        // follow the song like a DAW: when the playhead runs off the edge, turn the page
+        // (not while you're drawing, and not for the drum loop, which stays where you put it)
+        const double beat = proc.playheadPos.load() / StudioPlayer::fileRate * proc.songBpm.load() / 60.0;
+        if (! playing && drag == Drag::None && (beat > viewStart + viewLen || beat < viewStart - 0.01) && Time::getMillisecondCounter() - lastViewChange > 1500)
+            setView (beat - viewLen * 0.05, viewLen);
+        repaint();
+    }
     // send your drawing a moment after you stop, so a quick paint isn't recorded twenty times
     if (dirty && Time::getMillisecondCounter() - lastChange > 350)
     {
@@ -316,6 +331,22 @@ void DrumGrid::mouseDown (const MouseEvent& e)
         overviewGrab = onWindow ? at - viewStart : viewLen * 0.5;
         setView (at - overviewGrab, viewLen);
         drag = Drag::Overview;
+        return;
+    }
+    // a section: pick all of its bars (click it again to let go)
+    if (sectionLane().contains (e.position))
+    {
+        const double beat = beatAt (e.position.x);
+        for (auto& s : sections)
+            if (beat >= s.startBar * 4.0 && beat < (s.startBar + s.bars) * 4.0)
+            {
+                const bool same = selA == s.startBar * 4.0 && selB == (s.startBar + s.bars) * 4.0;
+                selA = same ? -1.0 : s.startBar * 4.0;
+                selB = same ? -1.0 : (s.startBar + s.bars) * 4.0;
+                sendLoop();
+                repaint();
+                return;
+            }
         return;
     }
     // the ruler: drag to pick bars (a click picks one bar; click your pick again to let go of it)
@@ -444,13 +475,15 @@ void DrumGrid::copyAcross (bool everySectionOfKind)
     {
         if (! (&s == sec || (everySectionOfKind && baseName (s.name) == kind))) continue;
         // line up with where the picked bars sit in their section
+        // (a shorter section gets as much of the pattern as fits; it never spills into the next section)
         const int offset = (fromBar - sec->startBar) % bars;
-        for (int bar = s.startBar + offset; bar + bars <= s.startBar + s.bars; bar += bars)
+        const double secEnd = (s.startBar + s.bars) * 4.0;
+        for (int bar = s.startBar + offset; bar < s.startBar + s.bars; bar += bars)
         {
             if (bar == fromBar) continue;
-            const double t0 = bar * 4.0;
-            notes.erase (std::remove_if (notes.begin(), notes.end(), [&] (const lp::song::Note& n) { return n.beat >= t0 - 1e-6 && n.beat < t0 + len - 1e-6; }), notes.end());
-            for (auto n : pattern) { n.beat = n.beat - a + t0; notes.push_back (n); }
+            const double t0 = bar * 4.0, t1 = std::min (t0 + len, secEnd);
+            notes.erase (std::remove_if (notes.begin(), notes.end(), [&] (const lp::song::Note& n) { return n.beat >= t0 - 1e-6 && n.beat < t1 - 1e-6; }), notes.end());
+            for (auto n : pattern) { n.beat = n.beat - a + t0; if (n.beat < t1 - 1e-6) notes.push_back (n); }
         }
     }
     changed();
@@ -511,6 +544,12 @@ void DrumGrid::paint (Graphics& g)
         for (int b = 0; b < totalBars; ++b)
             if (busy[(size_t) b] > 0) g.fillRect (ovX (b * 4.0) + 0.5f, ov.getBottom() - 3.0f, std::max (1.0f, ovX (4.0) - ovX (0.0) - 1.0f), 2.0f);
     }
+    if (proc.songIsPlaying())
+    {
+        const double beat = proc.playheadPos.load() / StudioPlayer::fileRate * proc.songBpm.load() / 60.0;
+        g.setColour (Colours::white.withAlpha (0.9f));
+        g.fillRect (ovX (beat) - 0.75f, ov.getY() - 1.0f, 1.5f, ov.getHeight() + 2.0f);
+    }
     {
         auto win = Rectangle<float> (ovX (viewStart), ov.getY() - 1.0f, ovX (viewStart + viewLen) - ovX (viewStart), ov.getHeight() + 2.0f);
         g.setColour (Colours::white.withAlpha (0.10f));
@@ -518,6 +557,27 @@ void DrumGrid::paint (Graphics& g)
         g.setColour (Colours::white.withAlpha (0.7f));
         g.drawRoundedRectangle (win, 3.0f, 1.2f);
     }
+
+    // ---- the section lane: the song's parts where they are on the grid (click one to pick it)
+    const auto sl = sectionLane();
+    g.saveState();
+    g.reduceClipRegion (sl.toNearestInt());
+    g.setFont (lp::ui::mono (8.5f, true, 0.1f));
+    for (auto& s : sections)
+    {
+        const float x0 = xOf (s.startBar * 4.0), x1 = xOf ((s.startBar + s.bars) * 4.0);
+        if (x1 < sl.getX() || x0 > sl.getRight()) continue;
+        auto box = Rectangle<float> (x0, sl.getY() + 1.0f, x1 - x0, sl.getHeight() - 2.0f).reduced (1.0f, 0.0f);
+        const bool picked = selA == s.startBar * 4.0 && selB == (s.startBar + s.bars) * 4.0;
+        const bool over = isMouseOver() && box.contains (getMouseXYRelative().toFloat());
+        g.setColour (picked ? t.grass.withAlpha (0.75f) : t.grass.withAlpha (over ? 0.32f : 0.16f));
+        g.fillRoundedRectangle (box, 3.0f);
+        g.setColour (picked ? Colours::white : t.ink.withAlpha (0.8f));
+        // keep the name in view while the section scrolls past
+        auto label = box.withLeft (std::max (box.getX(), sl.getX())).reduced (5.0f, 0.0f);
+        g.drawText (String (s.name).toUpperCase(), label, Justification::centredLeft, true);
+    }
+    g.restoreState();
 
     // ---- the ruler: bar numbers, and the bars you picked
     const auto ru = rulerArea();
@@ -584,12 +644,16 @@ void DrumGrid::paint (Graphics& g)
             g.setColour (t.grass.withAlpha (0.35f + 0.65f * n.velocity));
             g.fillRoundedRectangle (cell, std::min (3.0f, w * 0.4f));
         }
-        // where the loop is playing
-        if (proc.drumLoopPlaying())
+        // where the song is playing (your DAW, the play button, or the drum loop)
+        if (proc.songIsPlaying())
         {
             const double beat = proc.playheadPos.load() / StudioPlayer::fileRate * proc.songBpm.load() / 60.0;
-            g.setColour (Colours::white.withAlpha (0.85f));
-            g.fillRect (xOf (beat) - 1.0f, ru.getY(), 2.0f, ga.getBottom() - ru.getY());
+            const float x = xOf (beat);
+            g.setColour (Colours::white.withAlpha (0.9f));
+            g.fillRect (x - 1.0f, ru.getY(), 2.0f, ga.getBottom() - ru.getY());
+            Path head;
+            head.addTriangle (x - 5.0f, ru.getY(), x + 5.0f, ru.getY(), x, ru.getY() + 7.0f);
+            g.fillPath (head);
         }
     }
     g.restoreState();
@@ -630,6 +694,6 @@ void DrumGrid::paint (Graphics& g)
     const bool showSwap = swapMessage.isNotEmpty() && Time::getMillisecondCounter() < swapMessageUntil;
     g.drawText (showSwap ? "NOW: " + swapMessage.toUpperCase()
                 : waitingForRender || dirty ? String ("RECORDING YOUR CHANGES...")
-                : String ("SCROLL: MOVE   |   CMD + SCROLL OR PINCH: ZOOM   |   DRAG THE RULER: PICK BARS TO LOOP   |   CLICK: ADD OR ERASE   |   DRAG: PAINT   |   OPTION + SCROLL ON A HIT: HOW HARD"),
+                : String ("SCROLL: MOVE   |   CMD + SCROLL OR PINCH: ZOOM   |   CLICK A SECTION OR DRAG THE RULER: PICK BARS   |   CLICK: ADD OR ERASE   |   DRAG: PAINT   |   OPTION + SCROLL ON A HIT: HOW HARD"),
                 Rectangle<float> (12.0f, ga.getBottom() + 4.0f, ga.getRight() - 12.0f, 16.0f), Justification::centredLeft, true);
 }
