@@ -243,6 +243,14 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     hostPlaying = t.hostPlaying;
     // only make sound when the song is playing, the play button is on, or you hold keys
     t.shouldPlay = t.hostPlaying || params.getRawParameterValue ("play")->load() > 0.5f || (chordMode && held.any());
+    // Play mode: while you're playing the keys, only your notes sound. The weather's own music
+    // steps aside, and comes back a few seconds after you stop.
+    if (! chordMode)
+    {
+        if (held.any() || ! keyEvents.empty()) keysQuietSamples = 0;
+        else keysQuietSamples += n;
+        if (keysQuietSamples < (juce::int64) (getSampleRate() * 4.0)) t.shouldPlay = false;
+    }
     const bool haveSong = studio.length() > 0;
     const bool preview = haveSong && previewPlaying.load();
     const bool playSong = haveSong && ! preview && t.hostPlaying && params.getRawParameterValue ("songplay")->load() > 0.5f;

@@ -54,6 +54,7 @@ public:
     // the file to drag for a track: its dry stem, or (Print FX on) the stem with its own effects recorded in
     juce::File fileToDrag (int track);
     std::atomic<int> printsRunning { 0 };
+    juce::int64 keysQuietSamples = 1LL << 40; // how long since you last played a key (Play mode)
     // a reopened project's track mixer, applied once its song is open again
     juce::SpinLock restoreLock;
     juce::ValueTree restoredMix;

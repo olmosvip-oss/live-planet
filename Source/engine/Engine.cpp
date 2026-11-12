@@ -797,11 +797,14 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         while (v.countdown <= 0)
         {
             v.countdown += interval * (0.7 + 0.6 * rng.nextDouble());
+            // a note you play is exactly that note: no sparkle octaves, no grains from other parts of the
+            // sound (which can hold other pitches), barely any drift. The weather's own notes keep their shimmer.
+            const float sprayHere = v.direct ? 0.0f : spray;
             double ratio = pitchRatio (src, (float) v.note) * rateFix * tune
-                         * cents ((rng.nextFloat() * 2.0f - 1.0f) * (4.0f + spray * 14.0f));
+                         * cents ((rng.nextFloat() * 2.0f - 1.0f) * (v.direct ? 2.0f : 4.0f + spray * 14.0f));
             float gain = v.env * v.vel * p.padLevel * padNorm * pr.padGain;
-            if (rng.nextFloat() < p.sparkle * 0.3f) { ratio *= src.foldSemis > 0.0f ? 1.4983 : 2.0; gain *= 0.5f; }
-            const double pos = posIn (posBase + (rng.nextFloat() - 0.5f) * spray * 0.6f);
+            if (! v.direct && rng.nextFloat() < p.sparkle * 0.3f) { ratio *= src.foldSemis > 0.0f ? 1.4983 : 2.0; gain *= 0.5f; }
+            const double pos = posIn (posBase + (rng.nextFloat() - 0.5f) * sprayHere * 0.6f);
             const float pan = v.pan + (rng.nextFloat() * 2.0f - 1.0f) * (0.25f + 0.6f * spray);
             spawnGrain (padGrains, src, pos, ratio, padGrainLen, gain, pan);
         }

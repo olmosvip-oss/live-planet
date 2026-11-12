@@ -465,6 +465,60 @@ int printTest (const juce::File& stem, const juce::File& out)
     return ok ? 0 : 1;
 }
 
+// one key held on each instrument (Play mode, sparkle and scatter up): how much of the sound is NOT that note
+int oneNoteTest()
+{
+    const double sr = 48000.0;
+    const int block = 512, total = (int) (4.0 * sr);
+    double worst = 0;
+    for (auto sound : { lp::SoundId::Glass, lp::SoundId::Choir, lp::SoundId::FeltPiano, lp::SoundId::Strings, lp::SoundId::Vapor, lp::SoundId::Rhodes, lp::SoundId::Celesta, lp::SoundId::Cello })
+    {
+        lp::Engine engine;
+        engine.prepare (sr);
+        engine.setCitySeed (7);
+        lp::Weather sky; sky.windKmh = 30; sky.rainMm = 2;
+        engine.jumpToWeather (sky);
+        lp::EngineParams p;
+        p.sound = sound; p.sparkle = 1.0f; p.texture = 1.0f; p.space = 0.0f; p.echo = 0.0f; p.shimmer = 0.0f; p.atmos = 0.0f; p.nostalgia = 0.0f;
+        std::vector<float> mono ((size_t) total);
+        lp::MidiOut midi; std::bitset<128> held; lp::TransportInfo t; t.shouldPlay = false;
+        int generated = 0;
+        for (int pos = 0; pos < total; pos += block)
+        {
+            const int n = std::min (block, total - pos);
+            std::vector<lp::KeyEvent> keys;
+            if (pos == 0) keys.push_back ({ 0, 57, 0.8f, true });                      // A3 down
+            if (pos <= (int) (2.5 * sr) && pos + n > (int) (2.5 * sr)) keys.push_back ({ 0, 57, 0.0f, false });
+            t.keys = keys.data(); t.numKeys = (int) keys.size();
+            float L[512], R[512];
+            midi.clear();
+            engine.process (L, R, n, p, t, held, midi);
+            for (int i = 0; i < midi.count; ++i) if (midi.events[(size_t) i].on && midi.events[(size_t) i].note != 57) ++generated;
+            for (int i = 0; i < n; ++i) mono[(size_t) (pos + i)] = 0.5f * (L[i] + R[i]);
+            lp::VisualEvent ve; while (engine.popVisual (ve)) {}
+        }
+        // energy at every semitone 60 Hz - 5 kHz (Goertzel over the held part):
+        // the note's own pitch classes (A and its overtones E, C#) vs everything else
+        const int start = (int) (0.3 * sr), N = (int) (1.6 * sr);
+        double inNote = 0, other = 0;
+        for (int semi = -38; semi <= 39; ++semi)
+        {
+            const double hz = 440.0 * std::pow (2.0, semi / 12.0);
+            const double w = 2.0 * 3.14159265358979 * hz / sr, c = 2.0 * std::cos (w);
+            double s1 = 0, s2 = 0;
+            for (int k = 0; k < N; ++k) { const double s0 = mono[(size_t) (start + k)] + c * s1 - s2; s2 = s1; s1 = s0; }
+            const double e = s1 * s1 + s2 * s2 - c * s1 * s2;
+            const int pc = ((semi % 12) + 12) % 12;
+            if (pc == 0 || pc == 7 || pc == 4) inNote += e; else other += e;
+        }
+        const double pct = 100.0 * other / std::max (1e-12, inNote + other);
+        worst = std::max (worst, pct);
+        std::printf ("  sound %2d    other pitches %5.1f %%   its own notes added %d\n", (int) sound, pct, generated);
+    }
+    std::printf ("worst: %.1f %% of the sound away from the note you played\n", worst);
+    return 0;
+}
+
 int stretchTest (const juce::File& dir, int tune = 0)
 {
     const double sr = 48000.0, srcBpm = 155.0, songBpm = 120.0;
@@ -896,6 +950,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 1 && juce::String (argv[1]) == "--onenote")
+        return oneNoteTest();
     if (argc > 1 && juce::String (argv[1]) == "--chords")
         return chordTest();
     if (argc > 2 && juce::String (argv[1]) == "--keyof")
