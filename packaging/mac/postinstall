@@ -1,0 +1,10 @@
+#!/bin/bash
+# after installing: remove the old "Live Planet" plugins (Loopwright replaces them)
+# (runs as root: the person installing is whoever is logged in at the screen)
+U=$(stat -f%Su /dev/console 2>/dev/null)
+UH=$(dscl . -read "/Users/$U" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+for d in "/Library/Audio/Plug-Ins" "$UH/Library/Audio/Plug-Ins"; do
+  [ -d "$d" ] || continue
+  rm -rf "$d/VST3/Live Planet.vst3" "$d/Components/Live Planet.component" "$d/CLAP/Live Planet.clap" 2>/dev/null
+done
+exit 0

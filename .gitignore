@@ -9,3 +9,7 @@ renders/*.png
 
 # songs rendered for listening (not source)
 renders/**/*.mp3
+
+# license private keys: never commit
+*.key
+private.key

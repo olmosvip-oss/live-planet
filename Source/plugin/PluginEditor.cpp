@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "License.h"
 #include "BinaryData.h"
 #include "../song/Prompt.h"
 
@@ -671,6 +672,7 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     dawTempoAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "dawtempo", dawTempo);
     write.onClick = [this]
     {
+        if (! lp::license::canWrite()) { showActivate ("Your trial has ended. Paste your license code to keep writing songs."); return; }
         proc.songPrompt = promptBox.getText();
         proc.songPromptIsAuto = autoDescription.isNotEmpty() && promptBox.getText().trim() == autoDescription;
         proc.makeSong (full, newKey.getToggleState());
@@ -881,7 +883,38 @@ void SongPanel::paint (Graphics& g)
         sourcesLink = lib.removeFromLeft (70.0f);
         g.setColour (t.grassLight);
         g.drawText ("SOURCES", sourcesLink, Justification::centredLeft, false);
+        licenseLink = {};
+        if (lp::license::required())
+        {
+            const auto owner = lp::license::activatedTo();
+            const int left = lp::license::trialDaysLeft();
+            const String txt = owner.isNotEmpty() ? String ("LICENSED") : (left > 0 ? "TRIAL: " + String (left) + " DAYS" : String ("ACTIVATE"));
+            licenseLink = lib.removeFromRight (GlyphArrangement::getStringWidth (g.getCurrentFont(), txt) + 4.0f);
+            g.setColour (owner.isNotEmpty() ? t.inkDim : Colour (0xfff2a33a));
+            g.drawText (txt, licenseLink, Justification::centredRight, false);
+        }
     }
+}
+
+void SongPanel::showActivate (const String& message)
+{
+    auto* w = new AlertWindow ("Loopwright license", message, MessageBoxIconType::NoIcon, this);
+    w->addTextEditor ("code", {}, "License code");
+    w->addButton ("Activate", 1, KeyPress (KeyPress::returnKey));
+    w->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+    SafePointer<SongPanel> self (this);
+    w->enterModalState (true, ModalCallbackFunction::create ([self, w] (int r)
+    {
+        if (r == 1)
+        {
+            const auto code = w->getTextEditorContents ("code");
+            if (lp::license::activate (code))
+                AlertWindow::showMessageBoxAsync (MessageBoxIconType::NoIcon, "Loopwright", "Activated for " + lp::license::activatedTo() + ". Enjoy!");
+            else
+                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Loopwright", "That code didn't work. Copy the whole code, starting with LW1-");
+        }
+        if (self != nullptr) self->repaint();
+    }), true);
 }
 
 void SongPanel::refresh()
@@ -910,6 +943,12 @@ void SongPanel::mouseUp (const MouseEvent& e)
 {
     if (scanLink.contains (e.position)) { proc.rescanLibrary(); repaint(); return; }
     if (sourcesLink.contains (e.position)) { if (onShowSources) onShowSources(); return; }
+    if (licenseLink.contains (e.position))
+    {
+        const auto owner = lp::license::activatedTo();
+        showActivate (owner.isNotEmpty() ? "Licensed to " + owner + ". Thank you!" : "Paste your license code.");
+        return;
+    }
     if (folderLink.contains (e.position))
     {
         chooser = std::make_unique<FileChooser> ("Add a sample folder (Splice, packs, your own sounds)", File());

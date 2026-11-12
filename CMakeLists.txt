@@ -72,6 +72,7 @@ target_compile_definitions(LivePlanet PUBLIC
 
 target_link_libraries(LivePlanet
     PRIVATE
+        juce::juce_cryptography
         juce::juce_audio_utils
         juce::juce_audio_formats
         juce::juce_opengl
@@ -94,6 +95,19 @@ clap_juce_extensions_plugin(TARGET LivePlanet
 endif()
 
 # Command-line tool that renders example skies to WAV files (for testing the sound)
+# selling: build with -DLOOPWRIGHT_PUBLIC_KEY="$(cat public.key)" to require a license (14-day trial).
+# left empty (the default), every build is fully unlocked.
+set(LOOPWRIGHT_PUBLIC_KEY "" CACHE STRING "public key for license codes (empty = no licensing)")
+if(LOOPWRIGHT_PUBLIC_KEY)
+    target_compile_definitions(LivePlanet PRIVATE LOOPWRIGHT_PUBLIC_KEY="${LOOPWRIGHT_PUBLIC_KEY}")
+endif()
+
+# makes license codes (for you, the seller; not shipped)
+juce_add_console_app(Keygen PRODUCT_NAME "Keygen")
+target_sources(Keygen PRIVATE tools/Keygen.cpp)
+target_compile_definitions(Keygen PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(Keygen PRIVATE juce::juce_core juce::juce_cryptography PUBLIC juce::juce_recommended_config_flags)
+
 juce_add_console_app(RenderDemo PRODUCT_NAME "RenderDemo")
 target_sources(RenderDemo PRIVATE tools/RenderDemo.cpp ${LP_ENGINE_SOURCES})
 target_compile_definitions(RenderDemo PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)

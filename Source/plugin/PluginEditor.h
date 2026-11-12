@@ -191,6 +191,8 @@ private:
     bool full = true;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Rectangle<float> scanLink, folderLink, sourcesLink;
+    juce::Rectangle<float> licenseLink;
+    void showActivate (const juce::String& message);
 public:
     std::function<void()> onShowSources;
 private:

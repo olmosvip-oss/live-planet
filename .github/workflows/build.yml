@@ -65,6 +65,26 @@ jobs:
           mkdir -p package
           ditto -c -k --keepParent dist "package/Loopwright-macOS.zip"
 
+      # the installer: double-click to put every plugin in place (signed + notarized once the Apple secrets exist)
+      - name: Installer (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_DEV_ID_APP: ${{ secrets.MACOS_DEV_ID_APP }}
+          MACOS_DEV_ID_INSTALLER: ${{ secrets.MACOS_DEV_ID_INSTALLER }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: bash packaging/mac/build-pkg.sh "0.1.${{ github.run_number }}"
+
+      - name: Upload installer (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Loopwright-macOS-Installer
+          path: package/Loopwright.pkg
+
       - name: Upload (macOS)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
