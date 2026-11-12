@@ -294,6 +294,7 @@ private:
     int dragFrom = -1, dragTo = -1;
     juce::TextButton printFx { "Print FX" };
     FilePill dragTrack;
+    juce::TextButton love { "Love it" }, notThis { "Not this" }; // your taste: remembered for every later song
 };
 
 // SOUND: a little screen of the sound being played, with its grains appearing as they would

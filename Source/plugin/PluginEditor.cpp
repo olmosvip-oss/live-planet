@@ -167,6 +167,12 @@ void LivePlanetLookAndFeel::drawButtonBackground (Graphics& g, Button& b, const 
     }
     g.setColour (th->bodyLight.brighter (over ? 0.08f : 0.0f).darker (down ? 0.1f : 0.0f));
     g.fillRoundedRectangle (r, rad);
+    if (b.getToggleState()) // switched on (mute, solo, print fx, your rating): tinted
+    {
+        const bool warn = (bool) b.getProperties().getWithDefault ("warn", false);
+        g.setColour ((warn ? Colour (0xfff2a33a) : th->grass).withAlpha (0.4f));
+        g.fillRoundedRectangle (r, rad);
+    }
     g.setColour (th->line);
     g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
 }

@@ -13,7 +13,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -169,6 +169,70 @@ public:
         startIfNeeded();
     }
 
+    // ---- your taste: "love it" (+1) or "not this" (-1) on a track. Remembered on disk, and every
+    // later pick leans toward what you like: that sample, its pack, and the overall sound you go for.
+    void rateTrack (int track, int rating) { editTrack (track, rating > 0 ? EditOp::Like : EditOp::Dislike); }
+
+    // job thread (it reads what was heard in each sample)
+    void applyRating (int track, int rating)
+    {
+        juce::StringArray paths;
+        juce::String key;
+        {
+            const juce::ScopedLock sl (lock);
+            if (track < 0 || track >= (int) current.parts.size()) return;
+            const auto& p = current.parts[(size_t) track];
+            if (p.samplePath.isNotEmpty()) paths.add (p.samplePath);
+            if (p.kind == lp::song::PartKind::Drums) for (auto& [n, f] : current.drumSamples) paths.add (f);
+            for (auto& h : p.fxHits) paths.addIfNotAlreadyThere (h.path);
+            key = trackKey (p, current);
+        }
+        {
+            const juce::ScopedLock tl (tasteLock);
+            const int before = trackRatings.count (key) ? trackRatings[key] : 0;
+            const int now = before == rating ? 0 : rating; // pressing it again takes it back
+            trackRatings[key] = now;
+            for (auto& path : paths)
+            {
+                if (now == 0) sampleTaste.erase (path); else sampleTaste[path] = now;
+                if (const auto* e = library.find (path))
+                {
+                    auto& pk = packTaste[e->pack];
+                    pk = juce::jlimit (-6.0f, 6.0f, pk + (float) (now - before) / (float) std::max (1, paths.size()));
+                }
+                // the sound you like: an average of the tones of loved samples
+                auto it = keyCache.find (path);
+                if (it != keyCache.end() && it->second.feel.valid && now != before)
+                {
+                    const auto& bands = it->second.feel.tone.bandsDb;
+                    auto change = [&] (int r, float sign)
+                    {
+                        auto& sum = r > 0 ? likedBands : dislikedBands;
+                        (r > 0 ? likedCount : dislikedCount) += sign;
+                        for (int b = 0; b < 10; ++b) sum[(size_t) b] += sign * bands[(size_t) b];
+                    };
+                    if (before != 0) change (before, -1.0f); // taken back
+                    if (now != 0) change (now, 1.0f);
+                }
+            }
+            saveTaste();
+        }
+        if (rating < 0 && ratingOf (track) < 0) applyEdit (track, EditOp::Swap); // not this: try another right away
+    }
+
+    int ratingOf (int track) const
+    {
+        juce::String key;
+        {
+            const juce::ScopedLock sl (lock);
+            if (track < 0 || track >= (int) current.parts.size()) return 0;
+            key = trackKey (current.parts[(size_t) track], current);
+        }
+        const juce::ScopedLock tl (tasteLock);
+        auto it = trackRatings.find (key);
+        return it != trackRatings.end() ? it->second : 0;
+    }
+
     Status getStatus() const
     {
         const juce::ScopedLock sl (lock);
@@ -264,6 +328,7 @@ private:
     void run() override
     {
         juce::ScopedNoDenormals noDenormals; // fading filter tails are very slow on CPUs otherwise
+        loadTaste();
         // start with the library found last time, so songs can use it straight away
         loadFeatures();
         if (library.load (libraryCache()))
@@ -747,7 +812,12 @@ private:
     {
         tuneFor (path, 0, false); // listens once (key and sound), remembered on disk
         auto it = keyCache.find (path);
-        if (it == keyCache.end() || ! it->second.feel.valid) return 0.5f;
+        if (it == keyCache.end() || ! it->second.feel.valid)
+        {
+            double sum = 0.5, weight = 1;
+            addTaste (path, nullptr, [&] (double v, double w) { sum += juce::jlimit (0.0, 1.0, v) * w; weight += w; });
+            return (float) (sum / weight);
+        }
         const auto& f = it->second.feel;
         const auto* e = library.find (path);
         using LK = lp::song::LoopKind;
@@ -787,7 +857,92 @@ private:
         if (wish.punchy) add (0.5 + wish.punchy * (f.tone.crestDb - 12.0f) / 10.0, 1.5);
         if (wish.plucky && melodic) add (0.5 + wish.plucky * (0.5f - f.sustain) * 1.5, 2.0);
         if (wish.warm)   add (0.5 + wish.warm * ((f.tone.bandsDb[3] + f.tone.bandsDb[4]) * 0.5f - f.tone.bandsDb[7]) / 20.0, 1.5);
+        addTaste (path, &f, add);
         return weight > 0 ? (float) (sum / weight) : 0.5f;
+    }
+
+    // ---- taste, remembered in taste.json
+    juce::CriticalSection tasteLock;
+    std::map<juce::String, int> sampleTaste;   // sample file -> +1 / -1
+    std::map<juce::String, float> packTaste;   // pack -> running score
+    std::map<juce::String, int> trackRatings;  // what a track's buttons show (by what it plays)
+    std::array<float, 10> likedBands {}, dislikedBands {}; // summed tone of loved / not-this samples
+    float likedCount = 0.0f, dislikedCount = 0.0f;
+
+    // a rating belongs to the sounds a track plays (so it follows them, not the track's name)
+    static juce::String trackKey (const lp::song::Part& p, const lp::song::Song& song)
+    {
+        if (p.samplePath.isNotEmpty()) return p.samplePath;
+        juce::String k (p.name);
+        if (p.kind == lp::song::PartKind::Drums) for (auto& [n, f] : song.drumSamples) k << "|" << f;
+        for (auto& h : p.fxHits) k << "|" << h.path;
+        return k;
+    }
+    static juce::File tasteFile() { return lp::appFolder().getChildFile ("taste.json"); }
+
+    void saveTaste() // tasteLock held
+    {
+        auto* o = new juce::DynamicObject();
+        auto* sm = new juce::DynamicObject();
+        for (auto& [k, v] : sampleTaste) sm->setProperty (k, v);
+        auto* pm = new juce::DynamicObject();
+        for (auto& [k, v] : packTaste) pm->setProperty (k, v);
+        auto* tm = new juce::DynamicObject();
+        for (auto& [k, v] : trackRatings) if (v != 0) tm->setProperty (k, v);
+        o->setProperty ("samples", sm); o->setProperty ("packs", pm); o->setProperty ("tracks", tm);
+        o->setProperty ("likedBands", lp::song::file::floats (likedBands.data(), 10));
+        o->setProperty ("likedCount", likedCount);
+        o->setProperty ("dislikedBands", lp::song::file::floats (dislikedBands.data(), 10));
+        o->setProperty ("dislikedCount", dislikedCount);
+        tasteFile().replaceWithText (juce::JSON::toString (juce::var (o)));
+    }
+
+    void loadTaste()
+    {
+        const auto v = juce::JSON::parse (tasteFile());
+        const juce::ScopedLock tl (tasteLock);
+        if (auto* o = v["samples"].getDynamicObject()) for (auto& p : o->getProperties()) sampleTaste[p.name.toString()] = (int) p.value;
+        if (auto* o = v["packs"].getDynamicObject()) for (auto& p : o->getProperties()) packTaste[p.name.toString()] = (float) p.value;
+        if (auto* o = v["tracks"].getDynamicObject()) for (auto& p : o->getProperties()) trackRatings[p.name.toString()] = (int) p.value;
+        lp::song::file::readFloats (v["likedBands"], likedBands.data(), 10);
+        lp::song::file::readFloats (v["dislikedBands"], dislikedBands.data(), 10);
+        likedCount = v["likedCount"]; dislikedCount = v["dislikedCount"];
+    }
+
+    // how much a sample suits what you've told it you like (adds to soundsLike's score)
+    void addTaste (const juce::String& path, const lp::song::Feel* feel, const std::function<void (double, double)>& add)
+    {
+        const juce::ScopedLock tl (tasteLock);
+        auto s = sampleTaste.find (path);
+        if (s != sampleTaste.end()) add (s->second > 0 ? 1.0 : 0.0, s->second > 0 ? 3.0 : 8.0); // "not this" nearly rules it out
+        if (const auto* e = library.find (path))
+        {
+            auto pk = packTaste.find (e->pack);
+            if (pk != packTaste.end() && std::abs (pk->second) > 0.01f) add (0.5 + 0.12 * pk->second, 1.5);
+        }
+        const float rated = likedCount + dislikedCount;
+        if (feel != nullptr && feel->valid && rated >= 2.0f)
+        {
+            // the sound you like: toward what you loved, away from what you didn't
+            // (correlation of the sample's tone with that direction)
+            std::array<float, 10> want {};
+            double ma = 0, mb = 0;
+            for (int b = 1; b < 10; ++b)
+            {
+                const float liked = likedCount > 0.5f ? likedBands[(size_t) b] / likedCount : 0.0f;
+                const float notLiked = dislikedCount > 0.5f ? dislikedBands[(size_t) b] / dislikedCount : 0.0f;
+                want[(size_t) b] = likedCount > 0.5f && dislikedCount > 0.5f ? liked - notLiked : (likedCount > 0.5f ? liked : -notLiked);
+                ma += feel->tone.bandsDb[(size_t) b]; mb += want[(size_t) b];
+            }
+            ma /= 9; mb /= 9;
+            double num = 0, da = 0, db = 0;
+            for (int b = 1; b < 10; ++b)
+            {
+                const double x = feel->tone.bandsDb[(size_t) b] - ma, y = want[(size_t) b] - mb;
+                num += x * y; da += x * x; db += y * y;
+            }
+            add ((num / std::sqrt (std::max (1e-9, da * db)) + 1.0) * 0.5, std::min (2.0, 0.5 + (double) rated * 0.15));
+        }
     }
 
     // what was heard in each sample, kept on disk so your library is only listened to once
@@ -1173,6 +1328,7 @@ private:
     void applyEdit (int tr, EditOp op)
     {
         if (op == EditOp::Add) { addInstrument ((lp::song::LoopKind) tr); return; }
+        if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
         lp::song::Song song;
         {
@@ -1203,7 +1359,14 @@ private:
         {
             if (part.kind == PK::Loop && part.candidates.size() > 1)
             {
-                part.candidate = (part.candidate + 1) % part.candidates.size();
+                // the next one, skipping any you said "not this" to
+                for (int tries = 0; tries < part.candidates.size(); ++tries)
+                {
+                    part.candidate = (part.candidate + 1) % part.candidates.size();
+                    const juce::ScopedLock tl (tasteLock);
+                    auto t = sampleTaste.find (part.candidates[part.candidate]);
+                    if (t == sampleTaste.end() || t->second > 0) break;
+                }
                 part.samplePath = part.candidates[part.candidate];
                 part.regionStart = 0; part.regionBars = 0;
                 part.autoTune = part.candidate < part.candidateTunes.size() ? part.candidateTunes[part.candidate] : 0;

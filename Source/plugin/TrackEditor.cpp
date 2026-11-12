@@ -54,7 +54,13 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     mute.onClick = [this] { auto& m = proc.studio.mix[(size_t) track]; m.mute = ! m.mute.load(); repaint(); };
     solo.onClick = [this] { auto& m = proc.studio.mix[(size_t) track]; m.solo = ! m.solo.load(); repaint(); };
     swap.getProperties().set ("primary", true);
-    for (auto* b : { &prev, &next, &swap, &rev, &pitchDown, &pitchUp, &mute, &solo, &printFx })
+    love.setTooltip ("Love this sound: later songs lean toward it, its pack, and sounds like it");
+    mute.getProperties().set ("warn", true);
+    notThis.getProperties().set ("warn", true);
+    notThis.setTooltip ("Not this: swaps it now, and it won't be picked again");
+    love.onClick = [this] { proc.songJob.rateTrack (track, 1); };
+    notThis.onClick = [this] { proc.songJob.rateTrack (track, -1); };
+    for (auto* b : { &prev, &next, &swap, &rev, &pitchDown, &pitchUp, &mute, &solo, &printFx, &love, &notThis })
     {
         b->setWantsKeyboardFocus (false);
         b->setMouseClickGrabsKeyboardFocus (false);
@@ -128,6 +134,15 @@ void TrackEditor::refresh()
 {
     const auto st = proc.songJob.getStatus();
     if (st.version != version) { version = st.version; select (track); }
+    {
+        const auto& m = proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, track)];
+        const int rated = proc.songJob.ratingOf (track);
+        mute.setToggleState (m.mute.load(), dontSendNotification);
+        solo.setToggleState (m.solo.load(), dontSendNotification);
+        printFx.setToggleState (m.printFx.load(), dontSendNotification);
+        love.setToggleState (rated > 0, dontSendNotification);
+        notThis.setToggleState (rated < 0, dontSendNotification);
+    }
     for (auto& d : dials)
         if (d->value && ! d->s.isMouseButtonDown() && std::abs (d->s.getValue() - d->value (track).load()) > 1e-4)
             d->s.setValue (d->value (track).load(), dontSendNotification);
@@ -219,6 +234,9 @@ void TrackEditor::resized()
     pitchUp.setBounds (top.removeFromRight (40).withSizeKeepingCentre (40, 40));
     top.removeFromRight (70);
     pitchDown.setBounds (top.removeFromRight (40).withSizeKeepingCentre (40, 40));
+    top.removeFromRight (16);
+    notThis.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40)); top.removeFromRight (6);
+    love.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40));
 
     // two rows of dials: the track's sound and space, then its grains
     auto rows = getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
@@ -267,10 +285,6 @@ void TrackEditor::paint (Graphics& g)
     g.setFont (lp::ui::mono (9.5f, false, 0.14f));
     g.setColour (t.inkDim);
     g.drawText ("PITCH", Rectangle<float> ((float) pitchDown.getX(), 50.0f, (float) (pitchUp.getRight() - pitchDown.getX()), 12.0f), Justification::centred, false);
-    auto& m = proc.studio.mix[(size_t) track];
-    if (m.mute.load()) { g.setColour (Colour (0xfff2a33a).withAlpha (0.35f)); g.fillRoundedRectangle (mute.getBounds().toFloat().reduced (1.0f), 20.0f); }
-    if (m.solo.load()) { g.setColour (t.grass.withAlpha (0.45f)); g.fillRoundedRectangle (solo.getBounds().toFloat().reduced (1.0f), 20.0f); }
-    if (m.printFx.load()) { g.setColour (t.grass.withAlpha (0.45f)); g.fillRoundedRectangle (printFx.getBounds().toFloat().reduced (1.0f), 8.0f); }
 
     // ---- the screen: the sample, its bars, the part that plays
     auto sc = screen();
