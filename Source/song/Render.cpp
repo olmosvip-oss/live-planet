@@ -2,6 +2,7 @@
 #include "../engine/Limiter.h"
 #include "../engine/Engine.h"
 #include <juce_audio_formats/juce_audio_formats.h>
+#include <signalsmith-stretch/signalsmith-stretch.h>
 
 namespace lp::song
 {
@@ -198,8 +199,9 @@ namespace
     };
 
     // stretch audio to a new length without changing its pitch (WSOLA: overlapping slices,
-    // each nudged to where it lines up best with the last one, so it stays smooth)
-    juce::AudioBuffer<float> timeStretch (const juce::AudioBuffer<float>& in, int outLen)
+    // each nudged to where it lines up best with the last one, so it stays smooth).
+    // used for short drum slices; longer sounds go through Signalsmith Stretch below
+    juce::AudioBuffer<float> wsolaStretch (const juce::AudioBuffer<float>& in, int outLen)
     {
         const int inLen = in.getNumSamples();
         constexpr int N = 2048, H = N / 2, search = 384;
@@ -250,6 +252,53 @@ namespace
         return res;
     }
 
+    // Signalsmith Stretch (MIT, Signalsmith Audio): a phase-vocoder stretcher made for music.
+    // changes length and pitch together in one pass, so a loop is touched only once.
+    // `wrap`: the sound is a loop, so its end leads back into its start (no fade at the edges).
+    // `voice`: keep the formants, so a sung line moved in key doesn't sound chipmunked.
+    juce::AudioBuffer<float> stretchAndPitch (const juce::AudioBuffer<float>& in, int outLen, double semis,
+                                              double sr, bool wrap, bool voice = false)
+    {
+        const int inLen = in.getNumSamples();
+        if (inLen <= 0 || outLen <= 0) return in;
+        const double rate = (double) inLen / outLen;
+        // a loop: give it a bit of itself on each side, stretch, then keep the middle
+        const int pad = wrap ? std::min (inLen, (int) (0.35 * sr)) : 0;
+        const int total = inLen + 2 * pad;
+        juce::AudioBuffer<float> src (2, total);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float* x = in.getReadPointer (std::min (ch, in.getNumChannels() - 1));
+            float* y = src.getWritePointer (ch);
+            for (int i = 0; i < total; ++i)
+            {
+                int k = i - pad;
+                if (wrap) k = ((k % inLen) + inLen) % inLen;
+                y[i] = (k >= 0 && k < inLen) ? x[k] : 0.0f;
+            }
+        }
+        const int padOut = (int) std::round (pad / rate);
+        const int totalOut = outLen + 2 * padOut;
+        signalsmith::stretch::SignalsmithStretch<float> st;
+        st.presetDefault (2, (float) sr);
+        if (semis != 0.0) st.setTransposeSemitones ((float) semis, (float) (8000.0 / sr));
+        if (voice) st.setFormantFactor (1.0f, true);
+        juce::AudioBuffer<float> outAll (2, totalOut);
+        outAll.clear();
+        float* ins[2] = { src.getWritePointer (0), src.getWritePointer (1) };
+        float* outs[2] = { outAll.getWritePointer (0), outAll.getWritePointer (1) };
+        if (! st.exact (ins, total, outs, totalOut))
+            return wsolaStretch (in, outLen); // too short for the spectral stretcher
+        juce::AudioBuffer<float> res (2, outLen);
+        for (int ch = 0; ch < 2; ++ch) res.copyFrom (ch, 0, outAll, ch, padOut, outLen);
+        return res;
+    }
+
+    juce::AudioBuffer<float> timeStretch (const juce::AudioBuffer<float>& in, int outLen, double sr = 48000.0)
+    {
+        return stretchAndPitch (in, outLen, 0.0, sr, true);
+    }
+
     // like a "beats" warp: cut the loop at each 16th (or 8th), pin every slice to its spot on the
     // song's grid, and stretch each slice on its own, so hits land exactly in time
     juce::AudioBuffer<float> beatStretch (const juce::AudioBuffer<float>& in, int outLen, int bars)
@@ -257,7 +306,7 @@ namespace
         const int inLen = in.getNumSamples();
         int slices = bars * 16;
         while (slices > bars && inLen / slices < 4096 + 64) slices /= 2;
-        if (inLen / slices < 4096 + 64) return timeStretch (in, outLen);
+        if (inLen / slices < 4096 + 64) return wsolaStretch (in, outLen);
         juce::AudioBuffer<float> out (2, outLen);
         out.clear();
         constexpr int fade = 96;
@@ -267,7 +316,7 @@ namespace
             const int o0 = (int) ((juce::int64) outLen * k / slices), o1 = (int) ((juce::int64) outLen * (k + 1) / slices);
             juce::AudioBuffer<float> piece (2, s1 - s0);
             for (int ch = 0; ch < 2; ++ch) piece.copyFrom (ch, 0, in, ch, s0, s1 - s0);
-            auto fitted = timeStretch (piece, o1 - o0);
+            auto fitted = wsolaStretch (piece, o1 - o0);
             const int n = std::min (fitted.getNumSamples(), outLen - o0);
             for (int ch = 0; ch < 2; ++ch)
                 for (int i = 0; i < n; ++i)
@@ -356,6 +405,7 @@ namespace
     {
         const int n = buf.getNumSamples();
         if (semis == 0 || n < 16384) { pitchShiftSimple (buf, semis, sr); return; }
+        if (n > 0) { buf = stretchAndPitch (buf, n, semis, sr, false); return; }
         const double ratio = std::pow (2.0, semis / 12.0);
         const int m = (int) ((n - 4) / ratio);
         juce::AudioBuffer<float> rs (2, m);
@@ -794,6 +844,7 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     calm.rainMm = 0; calm.windKmh = 6; calm.cloudPct = 30; calm.temperatureC = 18; calm.humidityPct = 60;
     buf.setSize (2, total);
     buf.clear();
+    bool loopPitched = false; // a loop moved into key while it was being stretched
 
     // your edits: transposing a played part moves its notes, so it stays clean and in time
     Part part = partIn;
@@ -872,10 +923,22 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
             const double stretch = (double) probe.getNumSamples() / (part.loopBars * barSamples);
             // tiny differences: a resample is cleanest. bigger ones: stretch the time, keep the pitch,
             // so every loop lands exactly on the song's (your DAW's) tempo
-            auto loop = std::abs (stretch - 1.0) < 0.012 ? loadAudio (part.samplePath, sr, stretch)
-                         : (juce::String (part.name).containsIgnoreCase ("drum")
-                                ? beatStretch (probe, (int) std::round (part.loopBars * barSamples), part.loopBars) // crisp hits
-                                : timeStretch (probe, (int) std::round (part.loopBars * barSamples)));              // smooth notes
+            const bool drumLoop = juce::String (part.name).containsIgnoreCase ("drum");
+            const int loopLen = (int) std::round (part.loopBars * barSamples);
+            const int semis = part.pitchSemis + part.autoTune; // your pitch + tuning into the song's key
+            const bool voice = juce::String (part.name).containsIgnoreCase ("vocal") || juce::String (part.name).containsIgnoreCase ("vox");
+            juce::AudioBuffer<float> loop;
+            if (drumLoop)
+                loop = std::abs (stretch - 1.0) < 0.012 ? loadAudio (part.samplePath, sr, stretch)
+                                                        : beatStretch (probe, loopLen, part.loopBars); // crisp hits
+            else if (std::abs (stretch - 1.0) < 0.012 && semis == 0)
+                loop = loadAudio (part.samplePath, sr, stretch);                                       // already fits
+            else
+            {
+                // smooth notes: fitted to the bars and moved into key in one clean pass
+                loop = stretchAndPitch (probe, loopLen, semis, sr, true, voice);
+                loopPitched = true;
+            }
             // just a part of the sample (whole bars): that part repeats wherever the loop played
             if (part.regionBars > 0 && part.regionStart >= 0 && part.regionStart + part.regionBars <= part.loopBars && part.regionBars < part.loopBars)
             {
@@ -1049,7 +1112,7 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     }
 
     // loops and drums are re-pitched with a pitch shifter (keeps them in time)
-    const int shift = part.pitchSemis + (part.kind == PartKind::Loop ? part.autoTune : 0); // your pitch + tuning into the song's key
+    const int shift = loopPitched ? 0 : part.pitchSemis + (part.kind == PartKind::Loop ? part.autoTune : 0); // your pitch + tuning into the song's key
     if (shift != 0 && (part.kind == PartKind::Loop || part.kind == PartKind::Drums))
         pitchShift (buf, shift, sr);
     if (part.kind != PartKind::Fx)

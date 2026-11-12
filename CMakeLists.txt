@@ -9,6 +9,8 @@ project(LivePlanet VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Signalsmith Stretch (MIT): clean time-stretching and pitch-shifting
+include_directories(libs/signalsmith-stretch/include libs/signalsmith-linear/include)
 
 add_subdirectory(libs/JUCE)
 add_subdirectory(libs/clap-juce-extensions EXCLUDE_FROM_ALL)
