@@ -372,6 +372,44 @@ static int grooveTest (const juce::File& outDir)
     return 0;
 }
 
+#include "../Source/engine/Master.h"
+// loudness measured like the platforms do, and a master landing on each platform's target
+static int masterTest (const juce::File& outDir)
+{
+    const double sr = 48000.0;
+    // the EBU reference: a 1 kHz tone at -23 dBFS in both channels reads -23 LUFS
+    {
+        const int n = (int) (sr * 20);
+        std::vector<float> L ((size_t) n), R ((size_t) n);
+        const float a = juce::Decibels::decibelsToGain (-23.0f);
+        for (int i = 0; i < n; ++i) L[(size_t) i] = R[(size_t) i] = a * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 1000.0 * i / sr);
+        std::printf ("1 kHz tone at -23 dBFS: %.2f LUFS (want -23.0, +/-0.1)\n", lp::measureLufs (L.data(), R.data(), n, sr));
+    }
+    using namespace lp::song;
+    lp::Weather sky; sky.temperatureC = 20;
+    Options o; o.seed = 9; o.full = false;
+    Song song = generate (Profile {}, sky, o);
+    Rendered out;
+    if (! render (song, {}, outDir.getChildFile ("master"), out)) return 1;
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (out.mixFile));
+    juce::AudioBuffer<float> mix (2, (int) rd->lengthInSamples);
+    rd->read (&mix, 0, mix.getNumSamples(), 0, true, true);
+    mix.applyGain (0.3f); // as quiet as stems before mastering
+    std::printf ("the mix as it is: %.1f LUFS\n", lp::measureLufs (mix.getReadPointer (0), mix.getReadPointer (1), mix.getNumSamples(), sr));
+    int count = 0;
+    const auto* presets = lp::masterPresets (count);
+    for (int i = 0; i < count; ++i)
+    {
+        float lufs, peak;
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        const float gain = lp::Master::fit (mix, sr, presets[i], -20.0f, lufs, peak);
+        std::printf ("  %-12s target %5.1f LUFS ceiling %4.1f  ->  %5.1f LUFS, peak %5.2f dB  (gain %+5.1f dB, %.1f s)\n",
+                     presets[i].name, presets[i].lufs, presets[i].ceilingDb, lufs, peak, gain, (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0);
+    }
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1082,6 +1120,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 2 && juce::String (argv[1]) == "--master")
+        return masterTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--groove")
         return grooveTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--chordread")

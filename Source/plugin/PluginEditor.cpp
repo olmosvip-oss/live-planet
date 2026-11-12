@@ -1150,7 +1150,14 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
                                           const auto f = st.files.folder.getChildFile (st.song.title + " - chords and bass.mid");
                                           return StringArray (f.existsAsFile() ? f.getFullPathName() : st.files.folder.getFullPathName()); }),
       pillStems ("drag stems", [&p] { auto st = p.songJob.getStatus(); StringArray a; if (st.haveSong) for (auto& t : st.tracks) a.add (t.stem.getFullPathName()); return a; }),
-      pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray(); }),
+      pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); if (! st.haveSong) return StringArray();
+                                  // mastered (and listening to the master): the mastered file
+                                  if (p.masterPreset.load() >= 0 && p.masterAfter.load())
+                                  {
+                                      const SpinLock::ScopedLockType sl (p.masterLock);
+                                      if (p.masterFile.existsAsFile()) return StringArray (p.masterFile.getFullPathName());
+                                  }
+                                  return StringArray (st.files.mixFile.getFullPathName()); }),
       pillHelper ("locators", [&p] { auto st = p.songJob.getStatus(); return st.abletonSet.existsAsFile() ? StringArray (st.abletonSet.getFullPathName()) : StringArray(); }),
       pillFolder ("folder", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.folder.getFullPathName()) : StringArray(); }),
       themeDots (p, [this] { applyTheme(); })
@@ -1183,6 +1190,28 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     setUpKeyBoxes (p, studioKey, studioMode, studioKeyAtt, studioModeAtt);
     addChildComponent (studioKey);
     addChildComponent (studioMode);
+    // mastering
+    {
+        masterBox.addItem ("Master: off", 1);
+        int count = 0;
+        const auto* presets = lp::masterPresets (count);
+        for (int i = 0; i < count; ++i)
+            masterBox.addItem ("Master: " + String (presets[i].name) + " (" + String (roundToInt (presets[i].lufs)) + " LUFS)", i + 2);
+        masterBox.setSelectedId (p.masterPreset.load() + 2, dontSendNotification);
+        masterBox.setTooltip ("Master the song for where it's going: right loudness, a gentle glue and a safe peak. Made from your mix as you hear it.");
+        masterBox.onChange = [this] { proc.startMaster (masterBox.getSelectedId() - 2); };
+        masterBox.setWantsKeyboardFocus (false);
+        masterAB.setClickingTogglesState (false);
+        masterAB.setTooltip ("Switch between the master (after) and your mix before mastering");
+        masterAB.onClick = [this] { proc.masterAfter = ! proc.masterAfter.load(); };
+        masterAB.setWantsKeyboardFocus (false);
+        masterInfo.setFont (lp::ui::mono (10.0f, false, 0.08f));
+        masterInfo.setJustificationType (Justification::centredRight);
+        masterInfo.setInterceptsMouseClicks (false, false);
+        addChildComponent (masterBox);
+        addChildComponent (masterAB);
+        addChildComponent (masterInfo);
+    }
     addChildComponent (grainView);
     addChildComponent (sourcesPanel);
     songPanel.onShowSources = [this] { sourcesPanel.open(); };
@@ -1321,6 +1350,9 @@ void LivePlanetEditor::setPage (int p)
     trackEditor.setVisible (edit);
     studioKey.setVisible (studio);
     studioMode.setVisible (studio);
+    masterBox.setVisible (studio);
+    masterAB.setVisible (studio);
+    masterInfo.setVisible (studio);
     grainView.setVisible (p == Sound);
     const bool haveSong = proc.songJob.getStatus().haveSong;
     songPanel.setVisible (write);
@@ -1365,6 +1397,23 @@ void LivePlanetEditor::runSearch()
 
 void LivePlanetEditor::timerCallback()
 {
+    if (page == Studio)
+    {
+        String info;
+        if (proc.mastering.load()) info = "MASTERING YOUR MIX...";
+        else if (proc.masterPreset.load() >= 0)
+        {
+            const SpinLock::ScopedLockType sl (proc.masterLock);
+            info = proc.masterReport.toUpperCase();
+        }
+        if (masterInfo.getText() != info) masterInfo.setText (info, dontSendNotification);
+        if (proc.masterResets.load() != seenMasterResets) { seenMasterResets = proc.masterResets.load(); masterBox.setSelectedId (1, dontSendNotification); }
+        masterInfo.setColour (Label::textColourId, lnf.th->inkDim);
+        const bool after = proc.masterAfter.load();
+        masterAB.setButtonText (after ? "after" : "before");
+        masterAB.setToggleState (after && proc.masterPreset.load() >= 0, dontSendNotification);
+        masterAB.setEnabled (proc.masterPreset.load() >= 0);
+    }
     lp::VisualEvent e;
     while (proc.engine.popVisual (e)) {} // (the old planet drew these; nothing to show now)
 
@@ -1663,6 +1712,9 @@ void LivePlanetEditor::resized()
     studioView.setBounds (M, 84, W - 2 * M, 432);
     studioMode.setBounds (cardTimeline.getRight() - 18 - 92, cardTimeline.getY() + 12, 92, 26);
     studioKey.setBounds (cardTimeline.getRight() - 18 - 92 - 8 - 128, cardTimeline.getY() + 12, 128, 26);
+    masterAB.setBounds (studioKey.getX() - 24 - 72, cardTimeline.getY() + 12, 72, 26);
+    masterBox.setBounds (masterAB.getX() - 8 - 236, cardTimeline.getY() + 12, 236, 26);
+    masterInfo.setBounds (masterBox.getX() - 8 - 240, cardTimeline.getY() + 12, 240, 26);
     trackEditor.setBounds (M + 24, 84 + 18, W - 2 * M - 48, 644 - 36);
     if (page == Edit) playButton.setBounds (W - M - 24 - 44, 84 + 644 - 18 - 44, 44, 44);
 

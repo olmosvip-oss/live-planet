@@ -9,6 +9,7 @@
 #include "StudioPlayer.h"
 #include "LiveDrums.h"
 #include "../engine/SampleFx.h"
+#include "../engine/Master.h"
 #include "../engine/Limiter.h"
 
 class LivePlanetProcessor : public juce::AudioProcessor, private juce::Timer
@@ -89,6 +90,19 @@ public:
     StudioPlayer studio;
     lp::SampleFx sampleFx;                      // the knobs, for your Splice samples
     lp::Limiter masterLimiter;                  // the song's loudness, without squashing it
+
+    // mastering: a platform preset, worked out on your mix (in the background), then heard live
+    // (after) or not (before), and exported as a mastered file
+    void startMaster (int preset);              // -1 = off
+    std::atomic<int> masterPreset { -1 };       // the one that's ready and playing
+    std::atomic<bool> masterAfter { true };     // A/B: hear the master (true) or the plain mix
+    std::atomic<bool> mastering { false };      // working it out right now
+    std::atomic<float> masterGainDb { 0.0f }, masterGlueDb { -18.0f };
+    juce::SpinLock masterLock;
+    juce::String masterReport;                  // e.g. "Spotify: -14.0 LUFS, peak -1.0 dB"
+    juce::File masterFile;
+    std::array<lp::Master, 8> liveMasters;      // one per preset, ready on the audio thread
+    std::atomic<int> masterResets { 0 };
     std::atomic<float> songMakeupDb { 0.0f };
     juce::File loadedSongFolder;
     // the key boxes changed: move the current song to that key (Auto = the reference's key)

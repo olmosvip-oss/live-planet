@@ -477,6 +477,10 @@ private:
     StudioView studioView;
     TrackEditor trackEditor;
     juce::ComboBox studioKey, studioMode;   // the song's key, at the top of the studio
+    juce::ComboBox masterBox;               // mastering: off, or a platform's loudness
+    juce::TextButton masterAB { "after" };  // hear the master, or the mix before it
+    juce::Label masterInfo;                 // what the master came out at
+    int seenMasterResets = 0;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> studioKeyAtt, studioModeAtt;
     GrainView grainView;
     SourcesPanel sourcesPanel;

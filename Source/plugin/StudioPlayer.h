@@ -61,6 +61,35 @@ public:
 
     void clear() { load ({}); }
 
+    // the whole song as you hear it in the studio (every track with its mixer and its own effects), for mastering
+    static juce::AudioBuffer<float> bounce (const juce::Array<juce::File>& stems, const std::array<Mix, maxTracks>& mixes, double bpm)
+    {
+        juce::ScopedNoDenormals noDenormals;
+        StudioPlayer p;
+        p.load (stems, 5000);
+        const auto len = p.length();
+        if (len <= 0) return {};
+        for (size_t t = 0; t < maxTracks; ++t)
+        {
+            auto& d = p.mix[t]; const auto& m = mixes[t];
+            d.gainDb = m.gainDb.load(); d.pan = m.pan.load(); d.tone = m.tone.load(); d.mute = m.mute.load(); d.solo = m.solo.load();
+            d.space = m.space.load(); d.echo = m.echo.load(); d.warmth = m.warmth.load(); d.nostalgia = m.nostalgia.load(); d.chorus = m.chorus.load();
+        }
+        constexpr int block = 1024;
+        p.prepare (block);
+        const int total = (int) (len + (juce::int64) (fileRate * 3.0));
+        juce::AudioBuffer<float> all (2, total), buf (2, block);
+        all.clear();
+        for (int pos = 0; pos < total; pos += block)
+        {
+            const int n = std::min (block, total - pos);
+            buf.clear();
+            p.render (buf.getWritePointer (0), buf.getWritePointer (1), n, (double) pos, 1.0, fileRate, nullptr, nullptr, nullptr, nullptr, bpm);
+            for (int ch = 0; ch < 2; ++ch) all.copyFrom (ch, pos, buf, ch, 0, n);
+        }
+        return all;
+    }
+
     // records one track as you hear it: its volume, pan, tone, warmth / nostalgia / chorus, and its
     // own reverb and delay (with their tails), into a new file. The master knobs aren't included.
     // message thread (takes a second or two for a whole song)

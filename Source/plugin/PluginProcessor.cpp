@@ -136,6 +136,11 @@ void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     const int maxBlock = std::max (samplesPerBlock, 4096);
     sampleFx.prepare (sampleRate, maxBlock);
     masterLimiter.prepare (sampleRate, -1.0f);
+    {
+        int count = 0;
+        const auto* presets = lp::masterPresets (count);
+        for (int i = 0; i < count && i < (int) liveMasters.size(); ++i) liveMasters[(size_t) i].prepare (sampleRate, presets[i].ceilingDb);
+    }
     for (auto* v : { &fxL, &fxR, &sendL, &sendR }) v->assign ((size_t) maxBlock, 0.0f);
 }
 
@@ -332,7 +337,16 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             liveDrums.process (L, R, n, getSampleRate(), true, pos * toBeats, next * toBeats, g);
             auditioned = true;
         }
-        masterLimiter.process (L, R, n, songMakeupDb.load());
+        // the master (after), or the plain mix through the song's limiter (before)
+        const int mp = masterPreset.load();
+        if (mp >= 0 && masterAfter.load() && mp < (int) liveMasters.size())
+        {
+            auto& m = liveMasters[(size_t) mp];
+            m.glueThreshDb = masterGlueDb.load();
+            m.process (L, R, n, masterGainDb.load());
+        }
+        else
+            masterLimiter.process (L, R, n, songMakeupDb.load());
         playheadPos = next;
         if (looping)
         {
@@ -361,6 +375,62 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 }
 
 //==============================================================================
+
+void LivePlanetProcessor::startMaster (int preset)
+{
+    if (preset < 0) { masterPreset = -1; const juce::SpinLock::ScopedLockType sl (masterLock); masterReport = {}; return; }
+    int count = 0;
+    const auto* presets = lp::masterPresets (count);
+    if (preset >= count || mastering.load()) return;
+    const auto st = songJob.getStatus();
+    if (! st.haveSong) return;
+    juce::Array<juce::File> stems;
+    for (auto& t : st.tracks) stems.add (t.stem);
+    mastering = true;
+    ++printsRunning; // (the plugin waits for this before closing)
+    const auto p = presets[preset];
+    const auto folder = st.files.folder;
+    const auto title = st.song.title;
+    juce::Thread::launch ([this, stems, p, preset, folder, title, bpm = st.song.bpm]
+    {
+        juce::ScopedNoDenormals nd;
+        auto song = StudioPlayer::bounce (stems, studio.mix, bpm);
+        if (song.getNumSamples() > 0)
+        {
+            const double sr = StudioPlayer::fileRate;
+            // where the glue starts: a little under the song's loud parts (its 90th-percentile loudness)
+            std::vector<float> lv;
+            const int win = (int) (0.4 * sr);
+            for (int i = 0; i + win <= song.getNumSamples(); i += win)
+                lv.push_back (juce::Decibels::gainToDecibels (0.5f * (song.getRMSLevel (0, i, win) + song.getRMSLevel (1, i, win)), -100.0f));
+            std::sort (lv.begin(), lv.end());
+            const float glue = lv.empty() ? -18.0f : lv[(size_t) (lv.size() * 9 / 10)] - 3.0f;
+            float lufs = 0.0f, peak = 0.0f;
+            const float gain = lp::Master::fit (song, sr, p, glue, lufs, peak);
+            // the file: the master itself (latency removed)
+            lp::Master m;
+            m.glueThreshDb = glue;
+            m.prepare (sr, p.ceilingDb);
+            m.process (song.getWritePointer (0), song.getWritePointer (1), song.getNumSamples(), gain);
+            const int lat = m.latency();
+            juce::AudioBuffer<float> out (2, song.getNumSamples() - lat);
+            for (int ch = 0; ch < 2; ++ch) out.copyFrom (ch, 0, song, ch, lat, out.getNumSamples());
+            const auto file = folder.getChildFile (title + " - master (" + juce::String (p.name).replace (" / ", " ") + ").wav");
+            file.deleteFile();
+            juce::WavAudioFormat wav;
+            if (std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), sr, 2, 24, {}, 0)); w != nullptr)
+                w->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
+            masterGlueDb = glue;
+            masterGainDb = gain;
+            masterPreset = preset;
+            const juce::SpinLock::ScopedLockType sl (masterLock);
+            masterFile = file;
+            masterReport = juce::String (p.name) + ": " + juce::String (lufs, 1) + " LUFS, peak " + juce::String (peak, 1) + " dB";
+        }
+        mastering = false;
+        --printsRunning;
+    });
+}
 
 void LivePlanetProcessor::startDrumLoop (int track, double startBeat, double beats)
 {
@@ -436,6 +506,7 @@ void LivePlanetProcessor::timerCallback()
                     m.gainDb = 0.0f; m.pan = 0.0f; m.tone = 0.0f; m.mute = false; m.solo = false; m.printFx = false;
                 }
             }
+            if (newSong) { masterPreset = -1; ++masterResets; } // a new song needs its own master
             if (newSong && anySamples && ! restore.isValid()) // (a reopened project keeps its knobs)
                 for (auto id : { "warmth", "echo", "space", "shimmer", "nostalgia", "atmos" })
                     if (auto* prm = params.getParameter (id)) prm->setValueNotifyingHost (0.0f);
