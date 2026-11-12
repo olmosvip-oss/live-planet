@@ -237,8 +237,24 @@ private:
         notify();
     }
 
+    static void mark (const char* what)
+    {
+        if (! std::getenv ("LP_TIMING")) return;
+        static double last = juce::Time::getMillisecondCounterHiRes();
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        std::fprintf (stderr, "[timing] %-28s %.1f s\n", what, (now - last) / 1000.0);
+        last = now;
+    }
+
     void setStage (Stage s, float p, const juce::String& msg)
     {
+        if (std::getenv ("LP_TIMING")) // for tuning speed: how long each step took
+        {
+            static double last = juce::Time::getMillisecondCounterHiRes();
+            const double now = juce::Time::getMillisecondCounterHiRes();
+            std::fprintf (stderr, "[timing] +%.1f s  -> %s\n", (now - last) / 1000.0, msg.toRawUTF8());
+            last = now;
+        }
         const juce::ScopedLock sl (lock);
         status.stage = s;
         status.progress = p;
@@ -247,6 +263,7 @@ private:
 
     void run() override
     {
+        juce::ScopedNoDenormals noDenormals; // fading filter tails are very slow on CPUs otherwise
         // start with the library found last time, so songs can use it straight away
         loadFeatures();
         if (library.load (libraryCache()))
@@ -639,6 +656,7 @@ private:
         for (int n = 2; folder.exists(); ++n)
             folder = songsFolder().getChildFile (juce::File::createLegalFileName (song.title + " " + juce::String (n)));
 
+        mark ("ready to record");
         setStage (Stage::Rendering, 0.05f, "recording \"" + song.title + "\"...");
         saveFeatures(); // what was heard while choosing, remembered for next time
         lp::song::Rendered files;
@@ -650,6 +668,7 @@ private:
             setStage (Stage::Failed, 0.0f, "couldn't save the song. is your Music folder writable?");
             return;
         }
+        mark ("recorded");
         juce::File als;
         if (writeAbletonSet) als = writeAbletonSet (song, files);
         latestPointer().getParentDirectory().createDirectory();

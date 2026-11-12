@@ -65,6 +65,7 @@ public:
     // message thread (takes a second or two for a whole song)
     static bool printTrack (const juce::File& stem, const Mix& m, double bpm, const juce::File& out)
     {
+        juce::ScopedNoDenormals noDenormals;
         StudioPlayer p;
         p.load ({ stem }, 5000);
         const auto len = p.length();

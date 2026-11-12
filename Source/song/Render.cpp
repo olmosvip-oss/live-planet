@@ -1,4 +1,6 @@
 #include "Song.h"
+#include <thread>
+#include <atomic>
 #include "../engine/Limiter.h"
 #include "../engine/Engine.h"
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -836,6 +838,7 @@ void writeMidi (const Song& song, const juce::File& file)
 bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs, juce::AudioBuffer<float>& buf,
                  std::function<bool()> shouldStop)
 {
+    juce::ScopedNoDenormals noDenormals;
     const double sr = rs.sampleRate;
     const double spb = sr * 60.0 / song.bpm;
     const int total = (int) ((song.totalBars() * 4.0 + 8.0) * spb);
@@ -1132,6 +1135,8 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
 bool render (const Song& song, const RenderSettings& rs, const juce::File& folder, Rendered& out,
              std::function<void (float)> progress, std::function<bool()> shouldStop)
 {
+    // tiny fading numbers (after a track goes quiet) are very slow on CPUs: treat them as zero
+    juce::ScopedNoDenormals noDenormals;
     folder.createDirectory();
     const auto stemDir = folder.getChildFile ("stems");
     stemDir.createDirectory();
@@ -1148,18 +1153,25 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
     lp::Weather calm; // a gentle, neutral sky for the song's sounds
     calm.rainMm = 0; calm.windKmh = 6; calm.cloudPct = 30; calm.temperatureC = 18; calm.humidityPct = 60;
 
+    double tmark = juce::Time::getMillisecondCounterHiRes();
+    auto mark = [&tmark] (const char* what) { if (! std::getenv ("LP_TIMING")) return; const double n = juce::Time::getMillisecondCounterHiRes();
+                                              std::fprintf (stderr, "[timing]   render: %-22s %.1f s\n", what, (n - tmark) / 1000.0); tmark = n; };
     Song dry = song;          // first pass: every track, without the reference's tone yet
     dry.mixShaped = false;
     for (size_t pi = 0; pi < song.parts.size(); ++pi)
     {
         const auto& part = song.parts[pi];
         juce::AudioBuffer<float> buf;
+        const double t0 = juce::Time::getMillisecondCounterHiRes();
         if (! renderPart (dry, part, rs, buf, shouldStop)) return false;
+        if (std::getenv ("LP_TIMING")) std::fprintf (stderr, "[timing]   part %-14s %.1f s\n", part.name.c_str(), (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0);
         for (int ch = 0; ch < 2; ++ch)
             mix.addFrom (ch, 0, buf, ch, 0, total, 1.6f);
 
         const auto stem = stemDir.getChildFile (juce::String ((int) pi + 1).paddedLeft ('0', 2) + " " + part.name + ".wav");
+        mark ("part rendered+mixed");
         if (! writeWav (stem, buf, sr)) return false;
+        mark ("stem written");
         out.stems.add (stem);
         if (progress) progress ((float) (pi + 1) / (float) (song.parts.size() + 1));
         if (shouldStop && shouldStop()) return false;
@@ -1189,6 +1201,7 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
         }
     }
     out.matchEqDb = eq;
+    mark ("match eq");
 
     // loudness like the reference (without one, a calm level)
     double sq = 0;
@@ -1204,25 +1217,40 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
     const float headroomDb = peakAfter > 0.79f ? juce::Decibels::gainToDecibels (0.79f / peakAfter) : 0.0f;
     out.matchGainDb = loud + juce::Decibels::gainToDecibels (1.6f) + headroomDb;
     out.playbackMakeupDb = -headroomDb;
-    for (auto& stem : out.stems)
+    // every stem gets the same tone and level (a few at a time, on all the computer's cores)
+    std::atomic<bool> failed { false };
+    std::atomic<int> nextStem { 0 };
+    auto retone = [&]
     {
+        juce::ScopedNoDenormals nd;
         juce::AudioFormatManager fm;
         fm.registerBasicFormats();
-        juce::AudioBuffer<float> b;
+        for (int k; (k = nextStem++) < out.stems.size() && ! failed.load();)
         {
-            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (stem));
-            if (rd == nullptr) continue;
-            b.setSize (2, (int) rd->lengthInSamples);
-            rd->read (&b, 0, (int) rd->lengthInSamples, 0, true, true);
+            const auto& stem = out.stems.getReference (k);
+            juce::AudioBuffer<float> b;
+            {
+                std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (stem));
+                if (rd == nullptr) continue;
+                b.setSize (2, (int) rd->lengthInSamples);
+                rd->read (&b, 0, (int) rd->lengthInSamples, 0, true, true);
+            }
+            MatchEq se;
+            se.setup (eq, sr);
+            se.process (b, 0, b.getNumSamples());
+            b.applyGain (juce::Decibels::decibelsToGain (out.matchGainDb));
+            if (! writeWav (stem, b, sr)) failed = true;
         }
-        MatchEq se;
-        se.setup (eq, sr);
-        se.process (b, 0, b.getNumSamples());
-        b.applyGain (juce::Decibels::decibelsToGain (out.matchGainDb));
-        if (! writeWav (stem, b, sr)) return false;
-        if (shouldStop && shouldStop()) return false;
+    };
+    {
+        const int workers = juce::jlimit (1, 4, juce::SystemStats::getNumCpus() - 1);
+        std::vector<std::thread> pool;
+        for (int w = 1; w < workers; ++w) pool.emplace_back (retone);
+        retone();
+        for (auto& t : pool) t.join();
     }
-
+    if (failed.load() || (shouldStop && shouldStop())) return false;
+    mark ("stems re-toned");
     // the full mix: up to its loudness through a look-ahead limiter (peaks under -1 dB, nothing squashed or distorted)
     {
         lp::Limiter lim;
@@ -1239,6 +1267,7 @@ bool render (const Song& song, const RenderSettings& rs, const juce::File& folde
     out.mixFile = folder.getChildFile (song.title + " - full mix.wav");
     if (! writeWav (out.mixFile, mix, sr)) return false;
     out.mixAudio = std::make_shared<juce::AudioBuffer<float>> (std::move (mix));
+    mark ("mix written");
 
     out.midiFile = folder.getChildFile (song.title + ".mid");
     writeMidi (song, out.midiFile);
