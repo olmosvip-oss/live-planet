@@ -29,6 +29,7 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     };
     addAndMakeVisible (dragTrack);
     addChildComponent (drumGrid);
+    drumGrid.onToggleBig = [this] { drumBig = ! drumBig; drumGrid.setBig (drumBig); resized(); repaint(); };
     auto mixOf = [this] (int t) -> StudioPlayer::Mix& { return proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, t)]; };
     addDial ("volume", -30.0, 6.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).gainDb; }, 72);
     addDial ("pan", -1.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).pan; }, 64);
@@ -248,7 +249,8 @@ void TrackEditor::resized()
     notThis.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40)); top.removeFromRight (6);
     love.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40));
 
-    drumGrid.setBounds (screen().toNearestInt());
+    // the drum editor: in the screen, or (bigger) down to the bottom of the page
+    drumGrid.setBounds (drumBig ? screen().withBottom ((float) getHeight() - 70.0f).toNearestInt() : screen().toNearestInt());
     // two rows of dials: the track's sound and space, then its grains
     auto rows = getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
     const int h = rows.getHeight() / 2;
@@ -277,8 +279,16 @@ void TrackEditor::paint (Graphics& g)
         for (auto* c : getChildren()) c->setVisible (false);
         return;
     }
-    for (auto* c : getChildren()) if (! c->isVisible() && c != &drumGrid) c->setVisible (true);
-    drumGrid.setVisible (showingDrums());
+    // the drum editor made bigger covers the dials: they hide until it's made smaller again
+    const bool big = drumBig && showingDrums();
+    for (auto* c : getChildren())
+    {
+        bool want = true;
+        if (c == &drumGrid) want = showingDrums();
+        else if (big && (c == &printFx || c == &dragTrack || std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s; })))
+            want = false;
+        if (c->isVisible() != want) c->setVisible (want);
+    }
     if (track >= (int) st.tracks.size()) track = 0;
     const auto& tr = st.tracks[(size_t) track];
 
@@ -358,6 +368,7 @@ void TrackEditor::paint (Graphics& g)
         g.drawText ("UPDATING...", foot, Justification::centredRight, false);
     }
     // the row titles
+    if (! big)
     {
         const float y = sc.getBottom() + 30.0f + (float) ((getHeight() - (int) sc.getBottom() - 30) / 2);
         g.setFont (font (17.0f, lp::ui::Medium));

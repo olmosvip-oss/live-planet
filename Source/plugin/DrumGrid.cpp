@@ -3,10 +3,13 @@
 using namespace juce;
 using lp::ui::font;
 
-// EDIT > Drums: the drum pattern as a grid, like Ableton's drum rack clip.
-// Click an empty step to add a hit, click a hit to erase it, drag to paint (or erase) along a row,
-// scroll on a hit for how hard it plays. One or two bars at a time; copy a bar across its section,
-// or to every section of the same kind. Each change is re-recorded in the background.
+// EDIT > Drums: the drum pattern on a timeline, like a DAW's clip editor.
+//   - the overview strip (top) is the whole song: click or drag it to jump anywhere
+//   - scroll to move along the song, Cmd/Ctrl + scroll (or pinch) to zoom, +/- and "whole song" too
+//   - drag along the ruler to pick bars: they're what play loops, and what copy / clear work on
+//   - click a step to add a hit, click a hit to erase it, drag to paint a row,
+//     Option/Alt + scroll on a hit for how hard it plays
+// Each change is re-recorded in the background, and heard live while the loop plays.
 
 namespace
 {
@@ -24,6 +27,7 @@ namespace
     {
         return juce::String (s).trimCharactersAtEnd ("0123456789 ");
     }
+    constexpr float nameW = 132.0f, toolbarH = 40.0f, overviewH = 22.0f, rulerH = 18.0f, hintH = 22.0f;
 }
 
 DrumGrid::DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme)
@@ -35,33 +39,42 @@ DrumGrid::DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
         b.setTooltip (tip);
         addAndMakeVisible (b);
     };
-    setup (playBtn, "loop these bars with the rest of the song, and hear your changes as you make them");
+    setup (playBtn, "loop the bars you picked on the ruler (or the ones you see) with the rest of the song");
     playBtn.getProperties().set ("primary", true);
     playBtn.onClick = [this]
     {
         if (proc.drumLoopPlaying()) { stopLoop(); return; }
         sendLoop();
-        proc.startDrumLoop (track, startBar * 4.0, bars * 4.0);
+        double a, b;
+        loopRange (a, b);
+        proc.startDrumLoop (track, a, b - a);
         playBtn.setButtonText ("stop");
     };
-    setup (prevBar, "earlier bars");
-    setup (nextBar, "later bars");
-    setup (lenBtn, "show one or two bars");
-    setup (resBtn, "grid: 16th or 32nd notes (for hi-hat rolls)");
-    setup (fillSection, "copy what you see to every bar of this section");
-    setup (fillAll, "copy what you see to every section of the same kind (every chorus, every verse...)");
-    setup (clearBtn, "erase every hit you see");
+    setup (zoomOut, "zoom out (or Cmd / Ctrl + scroll, or pinch)");
+    setup (zoomIn, "zoom in");
+    setup (fitBtn, "see the whole song");
+    setup (resBtn, "grid: 1/8, 1/16 or 1/32 notes (1/32 for hi-hat rolls)");
+    setup (fillSection, "copy the bars you picked to the rest of their section");
+    setup (fillAll, "copy the bars you picked to every section of the same kind (every chorus, every verse...)");
+    setup (clearBtn, "erase the hits in the bars you picked (or the ones you see)");
     setup (undoBtn, "undo your last change");
-    prevBar.onClick = [this] { startBar = std::max (0, startBar - bars); sendLoop(); repaint(); };
-    nextBar.onClick = [this] { startBar = std::min (std::max (0, totalBars - bars), startBar + bars); sendLoop(); repaint(); };
-    lenBtn.onClick = [this] { bars = bars == 1 ? 2 : 1; lenBtn.setButtonText (bars == 1 ? "1 bar" : "2 bars"); sendLoop(); repaint(); };
-    resBtn.onClick = [this] { stepsPerBeat = stepsPerBeat == 4 ? 8 : 4; resBtn.setButtonText (stepsPerBeat == 4 ? "1/16" : "1/32"); repaint(); };
+    setup (bigBtn, "make the drum editor bigger");
+    zoomOut.onClick = [this] { zoomAround (1.6, gridArea().getCentreX()); };
+    zoomIn.onClick = [this] { zoomAround (1.0 / 1.6, gridArea().getCentreX()); };
+    fitBtn.onClick = [this] { setView (0.0, totalBeats()); };
+    resBtn.onClick = [this]
+    {
+        stepsPerBeat = stepsPerBeat == 4 ? 8 : (stepsPerBeat == 8 ? 2 : 4);
+        resBtn.setButtonText (stepsPerBeat == 2 ? "1/8" : stepsPerBeat == 4 ? "1/16" : "1/32");
+        repaint();
+    };
     fillSection.onClick = [this] { copyAcross (false); };
     fillAll.onClick = [this] { copyAcross (true); };
     clearBtn.onClick = [this]
     {
         pushUndo();
-        const double a = startBar * 4.0, b = (startBar + bars) * 4.0;
+        double a, b;
+        loopRange (a, b);
         notes.erase (std::remove_if (notes.begin(), notes.end(), [&] (const lp::song::Note& n) { return n.beat >= a - 1e-6 && n.beat < b - 1e-6; }), notes.end());
         changed();
     };
@@ -72,6 +85,7 @@ DrumGrid::DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
         undo.pop_back();
         changed();
     };
+    bigBtn.onClick = [this] { if (onToggleBig) onToggleBig(); };
 }
 
 void DrumGrid::load (int trackIndex)
@@ -91,9 +105,10 @@ void DrumGrid::load (int trackIndex)
         if (! sameTrack)
         {
             undo.clear();
-            // start where the drums first play (past a quiet intro)
-            startBar = 0;
-            if (! notes.empty()) startBar = std::min (totalBars - 1, (int) (notes.front().beat / 4.0));
+            selA = selB = -1.0;
+            // start with 4 bars where the drums first play (past a quiet intro)
+            const double first = notes.empty() ? 0.0 : std::floor (notes.front().beat / 4.0) * 4.0;
+            setView (first, 16.0);
         }
     }
     waitingForRender = false;
@@ -109,6 +124,103 @@ void DrumGrid::load (int trackIndex)
     repaint();
 }
 
+// ---- the timeline
+
+Rectangle<float> DrumGrid::overviewArea() const
+{
+    return { nameW, toolbarH, (float) getWidth() - nameW - 12.0f, overviewH };
+}
+
+Rectangle<float> DrumGrid::rulerArea() const
+{
+    return { nameW, toolbarH + overviewH + 4.0f, (float) getWidth() - nameW - 12.0f, rulerH };
+}
+
+Rectangle<float> DrumGrid::gridArea() const
+{
+    const float top = toolbarH + overviewH + 4.0f + rulerH;
+    return { nameW, top, (float) getWidth() - nameW - 12.0f, (float) getHeight() - top - hintH };
+}
+
+float DrumGrid::xOf (double beat) const
+{
+    const auto ga = gridArea();
+    return ga.getX() + (float) ((beat - viewStart) / viewLen) * ga.getWidth();
+}
+
+double DrumGrid::beatAt (float x) const
+{
+    const auto ga = gridArea();
+    return viewStart + (double) (x - ga.getX()) / ga.getWidth() * viewLen;
+}
+
+void DrumGrid::setView (double start, double len)
+{
+    const double total = totalBeats();
+    viewLen = jlimit (2.0, std::max (2.0, total), len);
+    viewStart = jlimit (0.0, std::max (0.0, total - viewLen), start);
+    if (selA < 0.0) sendLoop(); // with no bars picked, the loop follows what you see
+    repaint();
+}
+
+void DrumGrid::zoomAround (double factor, float x)
+{
+    const double at = beatAt (x);
+    const double len = jlimit (2.0, std::max (2.0, totalBeats()), viewLen * factor);
+    setView (at - (at - viewStart) * len / viewLen, len);
+}
+
+void DrumGrid::loopRange (double& a, double& b) const
+{
+    if (selA >= 0.0 && selB > selA) { a = selA; b = selB; return; }
+    // the whole bars you can see (at most 8)
+    a = std::floor (viewStart / 4.0 + 1e-6) * 4.0;
+    b = std::ceil ((viewStart + viewLen) / 4.0 - 1e-6) * 4.0;
+    b = std::min ({ b, a + 32.0, totalBeats() });
+    if (b <= a) b = a + 4.0;
+}
+
+// ---- drawing hits
+
+bool DrumGrid::cellAt (Point<float> p, int& row, long& step) const
+{
+    const auto g = gridArea();
+    if (! g.contains (p) || rows.empty()) return false;
+    row = jlimit (0, (int) rows.size() - 1, (int) ((p.y - g.getY()) / (g.getHeight() / (float) rows.size())));
+    const double beat = beatAt (p.x);
+    if (beat < 0.0 || beat >= totalBeats()) return false;
+    step = (long) std::floor (beat * stepsPerBeat + 1e-9);
+    return true;
+}
+
+// the hits inside one step of one row
+std::vector<size_t> DrumGrid::hitsIn (int row, long step) const
+{
+    std::vector<size_t> out;
+    const double len = 1.0 / stepsPerBeat, a = step * len;
+    for (size_t i = 0; i < notes.size(); ++i)
+        if (notes[i].pitch == rows[(size_t) row] && notes[i].beat >= a - 1e-6 && notes[i].beat < a + len - 1e-6)
+            out.push_back (i);
+    return out;
+}
+
+void DrumGrid::setCell (int row, long step, bool on)
+{
+    auto here = hitsIn (row, step);
+    if (on && here.empty())
+    {
+        const double len = 1.0 / stepsPerBeat;
+        notes.push_back ({ step * len, std::min (0.25, len), rows[(size_t) row], 0.8f });
+        changed();
+    }
+    else if (! on && ! here.empty())
+    {
+        std::sort (here.rbegin(), here.rend());
+        for (auto i : here) notes.erase (notes.begin() + (long) i);
+        changed();
+    }
+}
+
 Rectangle<float> DrumGrid::swapArrow (size_t row, int which) const
 {
     const auto ga = gridArea();
@@ -117,7 +229,7 @@ Rectangle<float> DrumGrid::swapArrow (size_t row, int which) const
     return { 84.0f + (float) which * 22.0f, y, 19.0f, 16.0f };
 }
 
-void DrumGrid::mouseMove (const MouseEvent&) { if (canSwapRows) repaint (0, 0, 132, getHeight()); }
+void DrumGrid::mouseMove (const MouseEvent&) { if (canSwapRows) repaint (0, 0, (int) nameW, getHeight()); }
 
 void DrumGrid::refresh()
 {
@@ -137,7 +249,7 @@ void DrumGrid::refresh()
     }
     const bool playing = proc.drumLoopPlaying();
     if (playBtn.getButtonText() != (playing ? "stop" : "play")) playBtn.setButtonText (playing ? "stop" : "play");
-    if (playing) repaint (gridArea().toNearestInt().expanded (2));
+    if (playing) repaint (gridArea().getUnion (rulerArea()).toNearestInt().expanded (2));
     // send your drawing a moment after you stop, so a quick paint isn't recorded twenty times
     if (dirty && Time::getMillisecondCounter() - lastChange > 350)
     {
@@ -175,8 +287,9 @@ void DrumGrid::loadKit()
 
 void DrumGrid::sendLoop()
 {
+    double a, b;
+    loopRange (a, b);
     std::vector<LiveDrums::Hit> h;
-    const double a = startBar * 4.0, b = (startBar + bars) * 4.0;
     for (auto& n : notes) if (n.beat >= a - 1e-6 && n.beat < b - 1e-6) h.push_back ({ n.beat, n.pitch, n.velocity });
     proc.liveDrums.setPattern (std::move (h), a, b - a);
     proc.setDrumLoop (a, b - a);
@@ -188,53 +301,35 @@ void DrumGrid::stopLoop()
     playBtn.setButtonText ("play");
 }
 
-Rectangle<float> DrumGrid::gridArea() const
-{
-    return getLocalBounds().toFloat().withTrimmedTop (40.0f).withTrimmedLeft (132.0f).withTrimmedRight (12.0f).withTrimmedBottom (22.0f);
-}
-
-int DrumGrid::numSteps() const { return bars * 4 * stepsPerBeat; }
-
-bool DrumGrid::cellAt (Point<float> p, int& row, int& step) const
-{
-    const auto g = gridArea();
-    if (! g.contains (p) || rows.empty()) return false;
-    row = jlimit (0, (int) rows.size() - 1, (int) ((p.y - g.getY()) / (g.getHeight() / (float) rows.size())));
-    step = jlimit (0, numSteps() - 1, (int) ((p.x - g.getX()) / (g.getWidth() / (float) numSteps())));
-    return true;
-}
-
-// the hits inside one step of one row
-std::vector<size_t> DrumGrid::hitsIn (int row, int step) const
-{
-    std::vector<size_t> out;
-    const double len = 1.0 / stepsPerBeat, a = startBar * 4.0 + step * len;
-    for (size_t i = 0; i < notes.size(); ++i)
-        if (notes[i].pitch == rows[(size_t) row] && notes[i].beat >= a - 1e-6 && notes[i].beat < a + len - 1e-6)
-            out.push_back (i);
-    return out;
-}
-
-void DrumGrid::setCell (int row, int step, bool on)
-{
-    auto here = hitsIn (row, step);
-    if (on && here.empty())
-    {
-        const double len = 1.0 / stepsPerBeat;
-        notes.push_back ({ startBar * 4.0 + step * len, std::min (0.25, len), rows[(size_t) row], 0.8f });
-        changed();
-    }
-    else if (! on && ! here.empty())
-    {
-        std::sort (here.rbegin(), here.rend());
-        for (auto i : here) notes.erase (notes.begin() + (long) i);
-        changed();
-    }
-}
+// ---- mouse
 
 void DrumGrid::mouseDown (const MouseEvent& e)
 {
     const auto ga = gridArea();
+    drag = Drag::None;
+    // the overview: jump there (and drag to slide along the song)
+    if (overviewArea().contains (e.position))
+    {
+        const auto ov = overviewArea();
+        const double at = (e.position.x - ov.getX()) / ov.getWidth() * totalBeats();
+        const bool onWindow = at >= viewStart && at <= viewStart + viewLen;
+        overviewGrab = onWindow ? at - viewStart : viewLen * 0.5;
+        setView (at - overviewGrab, viewLen);
+        drag = Drag::Overview;
+        return;
+    }
+    // the ruler: drag to pick bars (a click picks one bar; click your pick again to let go of it)
+    if (rulerArea().contains (e.position))
+    {
+        const double bar = std::floor (jlimit (0.0, totalBeats() - 0.001, beatAt (e.position.x)) / 4.0) * 4.0;
+        if (selA >= 0.0 && bar >= selA && bar < selB && e.getNumberOfClicks() > 1) { selA = selB = -1.0; sendLoop(); repaint(); return; }
+        rulerFrom = bar;
+        selA = bar; selB = bar + 4.0;
+        drag = Drag::Ruler;
+        sendLoop();
+        repaint();
+        return;
+    }
     // a row's < >: swap just that drum's sound (then hear it)
     if (canSwapRows)
         for (size_t i = 0; i < rows.size(); ++i)
@@ -253,10 +348,12 @@ void DrumGrid::mouseDown (const MouseEvent& e)
         proc.liveDrums.audition (rows[(size_t) row], 0.9f);
         return;
     }
-    int row, step;
+    int row;
+    long step;
     if (! cellAt (e.position, row, step)) return;
     pushUndo();
     paintRow = row;
+    drag = Drag::Paint;
     painting = hitsIn (row, step).empty(); // started on an empty step: paint hits; on a hit: erase
     setCell (row, step, painting);
     if (painting && ! proc.drumLoopPlaying()) proc.liveDrums.audition (rows[(size_t) row], 0.8f); // hear what you added
@@ -264,12 +361,29 @@ void DrumGrid::mouseDown (const MouseEvent& e)
 
 void DrumGrid::mouseDrag (const MouseEvent& e)
 {
-    if (paintRow < 0) return;
-    int row, step;
+    if (drag == Drag::Overview)
+    {
+        const auto ov = overviewArea();
+        const double at = (e.position.x - ov.getX()) / ov.getWidth() * totalBeats();
+        setView (at - overviewGrab, viewLen);
+        return;
+    }
+    if (drag == Drag::Ruler)
+    {
+        const double bar = std::floor (jlimit (0.0, totalBeats() - 0.001, beatAt (e.position.x)) / 4.0) * 4.0;
+        selA = std::min (rulerFrom, bar);
+        selB = std::max (rulerFrom, bar) + 4.0;
+        sendLoop();
+        repaint();
+        return;
+    }
+    if (drag != Drag::Paint || paintRow < 0) return;
     const auto g = gridArea();
     // stays on the row you started on, like drawing in a drum clip
     const auto p = Point<float> (jlimit (g.getX(), g.getRight() - 1.0f, e.position.x),
                                  g.getY() + (paintRow + 0.5f) * g.getHeight() / (float) rows.size());
+    int row;
+    long step;
     if (cellAt (p, row, step))
     {
         const bool was = ! hitsIn (row, step).empty();
@@ -278,38 +392,63 @@ void DrumGrid::mouseDrag (const MouseEvent& e)
     }
 }
 
-void DrumGrid::mouseUp (const MouseEvent&) { paintRow = -1; }
+void DrumGrid::mouseUp (const MouseEvent&) { paintRow = -1; drag = Drag::None; }
 
 void DrumGrid::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
 {
-    int row, step;
-    if (! cellAt (e.position, row, step)) return;
-    auto here = hitsIn (row, step);
-    if (here.empty()) return;
-    if (undo.empty() || Time::getMillisecondCounter() - lastChange > 1500) pushUndo();
-    for (auto i : here) notes[i].velocity = jlimit (0.1f, 1.0f, notes[i].velocity + (w.deltaY > 0 ? 0.05f : -0.05f));
-    changed();
+    // Option / Alt + scroll on a hit: how hard it plays
+    if (e.mods.isAltDown())
+    {
+        int row;
+        long step;
+        if (! cellAt (e.position, row, step)) return;
+        auto here = hitsIn (row, step);
+        if (here.empty()) return;
+        if (undo.empty() || Time::getMillisecondCounter() - lastChange > 1500) pushUndo();
+        const float d = w.deltaY != 0.0f ? w.deltaY : w.deltaX;
+        for (auto i : here) notes[i].velocity = jlimit (0.1f, 1.0f, notes[i].velocity + (d > 0 ? 0.05f : -0.05f));
+        changed();
+        return;
+    }
+    // Cmd / Ctrl + scroll: zoom where the mouse is
+    if (e.mods.isCommandDown() || e.mods.isCtrlDown())
+    {
+        zoomAround (std::exp (-(double) w.deltaY * 1.5), jlimit (gridArea().getX(), gridArea().getRight(), e.position.x));
+        return;
+    }
+    // scroll (either way, or sideways on a trackpad): move along the song
+    const double d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
+    setView (viewStart - d * viewLen * 0.5, viewLen);
 }
 
-// copy the bars on screen to every slot of their section (or of every section of that kind)
+void DrumGrid::mouseMagnify (const MouseEvent& e, float scale)
+{
+    if (scale > 0.0f) zoomAround (1.0 / scale, jlimit (gridArea().getX(), gridArea().getRight(), e.position.x));
+}
+
+// copy the bars you picked to the rest of their section (or of every section of that kind)
 void DrumGrid::copyAcross (bool everySectionOfKind)
 {
-    const int here = startBar;
+    double a, b;
+    loopRange (a, b);
+    const int fromBar = (int) (a / 4.0), bars = std::max (1, (int) std::lround ((b - a) / 4.0));
     const lp::song::Section* sec = nullptr;
-    for (auto& s : sections) if (here >= s.startBar && here < s.startBar + s.bars) sec = &s;
+    for (auto& s : sections) if (fromBar >= s.startBar && fromBar < s.startBar + s.bars) sec = &s;
     if (sec == nullptr) return;
     pushUndo();
-    const double a = startBar * 4.0, len = bars * 4.0;
+    const double len = bars * 4.0;
     std::vector<lp::song::Note> pattern;
     for (auto& n : notes) if (n.beat >= a - 1e-6 && n.beat < a + len - 1e-6) pattern.push_back (n);
     const auto kind = baseName (sec->name);
     for (auto& s : sections)
     {
         if (! (&s == sec || (everySectionOfKind && baseName (s.name) == kind))) continue;
-        for (int b = s.startBar; b + bars <= s.startBar + s.bars; b += bars)
+        // line up with where the picked bars sit in their section
+        const int offset = (fromBar - sec->startBar) % bars;
+        for (int bar = s.startBar + offset; bar + bars <= s.startBar + s.bars; bar += bars)
         {
-            if (b == startBar) continue;
-            const double t0 = b * 4.0;
+            if (bar == fromBar) continue;
+            const double t0 = bar * 4.0;
             notes.erase (std::remove_if (notes.begin(), notes.end(), [&] (const lp::song::Note& n) { return n.beat >= t0 - 1e-6 && n.beat < t0 + len - 1e-6; }), notes.end());
             for (auto n : pattern) { n.beat = n.beat - a + t0; notes.push_back (n); }
         }
@@ -319,16 +458,17 @@ void DrumGrid::copyAcross (bool everySectionOfKind)
 
 void DrumGrid::resized()
 {
-    auto top = getLocalBounds().removeFromTop (34).reduced (10, 4);
-    playBtn.setBounds (top.removeFromLeft (64)); top.removeFromLeft (8);
-    prevBar.setBounds (top.removeFromLeft (28)); top.removeFromLeft (4);
-    nextBar.setBounds (top.removeFromLeft (28)); top.removeFromLeft (180); // the bar / section name sits here
+    auto top = getLocalBounds().removeFromTop ((int) toolbarH - 6).reduced (10, 4);
+    playBtn.setBounds (top.removeFromLeft (64)); top.removeFromLeft (10);
+    zoomOut.setBounds (top.removeFromLeft (30)); top.removeFromLeft (4);
+    zoomIn.setBounds (top.removeFromLeft (30)); top.removeFromLeft (4);
+    fitBtn.setBounds (top.removeFromLeft (96)); top.removeFromLeft (4);
+    resBtn.setBounds (top.removeFromLeft (52));
+    bigBtn.setBounds (top.removeFromRight (70)); top.removeFromRight (6);
     undoBtn.setBounds (top.removeFromRight (56)); top.removeFromRight (6);
     clearBtn.setBounds (top.removeFromRight (56)); top.removeFromRight (6);
-    fillAll.setBounds (top.removeFromRight (150)); top.removeFromRight (6);
-    fillSection.setBounds (top.removeFromRight (120)); top.removeFromRight (6);
-    resBtn.setBounds (top.removeFromRight (56)); top.removeFromRight (6);
-    lenBtn.setBounds (top.removeFromRight (64));
+    fillAll.setBounds (top.removeFromRight (130)); top.removeFromRight (6);
+    fillSection.setBounds (top.removeFromRight (124));
 }
 
 void DrumGrid::paint (Graphics& g)
@@ -340,28 +480,131 @@ void DrumGrid::paint (Graphics& g)
     g.setColour (t.line);
     g.drawRoundedRectangle (r.reduced (0.5f), 14.0f, 1.0f);
 
-    // where you are: bars and section
-    String where = "BAR " + String (startBar + 1) + (bars > 1 ? "-" + String (startBar + bars) : String());
-    for (auto& s : sections) if (startBar >= s.startBar && startBar < s.startBar + s.bars) where << "  /  " << String (s.name).toUpperCase();
-    g.setFont (lp::ui::mono (10.5f, true, 0.12f));
-    g.setColour (t.ink);
-    g.drawText (where, Rectangle<float> ((float) nextBar.getRight() + 12.0f, 4.0f, 180.0f, 26.0f), Justification::centredLeft, false);
-    fillAll.setButtonText ("every " + [this] { for (auto& s : sections) if (startBar >= s.startBar && startBar < s.startBar + s.bars) return baseName (s.name); return String ("section"); }());
-
-    const auto ga = gridArea();
-    if (rows.empty()) return;
-    const float rowH = ga.getHeight() / (float) rows.size(), stepW = ga.getWidth() / (float) numSteps();
-    // rows and their names
-    g.setFont (lp::ui::mono (9.5f, false, 0.12f));
-    for (size_t i = 0; i < rows.size(); ++i)
+    double la, lb;
+    loopRange (la, lb);
     {
-        const float y = ga.getY() + (float) i * rowH;
-        if (i % 2 == 0) { g.setColour (Colours::white.withAlpha (0.025f)); g.fillRect (ga.getX(), y, ga.getWidth(), rowH); }
+        // "every chorus" follows the bars you picked
+        const int bar = (int) (la / 4.0);
+        String kind = "section";
+        for (auto& s : sections) if (bar >= s.startBar && bar < s.startBar + s.bars) kind = baseName (s.name);
+        if (fillAll.getButtonText() != "every " + kind) fillAll.setButtonText ("every " + kind);
+    }
+
+    // ---- the overview: the whole song, its sections, where the hits are, and what you see
+    const auto ov = overviewArea();
+    const double total = totalBeats();
+    auto ovX = [&] (double beat) { return ov.getX() + (float) (beat / total) * ov.getWidth(); };
+    g.setFont (lp::ui::mono (8.5f, false, 0.1f));
+    for (auto& s : sections)
+    {
+        auto box = Rectangle<float> (ovX (s.startBar * 4.0), ov.getY(), ovX ((s.startBar + s.bars) * 4.0) - ovX (s.startBar * 4.0), ov.getHeight()).reduced (0.5f, 0.0f);
+        g.setColour (t.grass.withAlpha (0.08f + 0.22f * s.energy));
+        g.fillRoundedRectangle (box, 3.0f);
         g.setColour (t.inkDim);
-        g.drawText (rowName (rows[i]), Rectangle<float> (12.0f, y, 70.0f, rowH), Justification::centredLeft, false);
-        if (canSwapRows)
+        if (box.getWidth() > 34.0f) g.drawText (String (s.name).toUpperCase(), box.reduced (4.0f, 0.0f), Justification::centredLeft, true);
+    }
+    {
+        // a little tick for every bar with hits in it
+        std::vector<int> busy ((size_t) totalBars, 0);
+        for (auto& n : notes) if (n.beat >= 0 && n.beat < total) ++busy[(size_t) (n.beat / 4.0)];
+        g.setColour (t.grassLight.withAlpha (0.55f));
+        for (int b = 0; b < totalBars; ++b)
+            if (busy[(size_t) b] > 0) g.fillRect (ovX (b * 4.0) + 0.5f, ov.getBottom() - 3.0f, std::max (1.0f, ovX (4.0) - ovX (0.0) - 1.0f), 2.0f);
+    }
+    {
+        auto win = Rectangle<float> (ovX (viewStart), ov.getY() - 1.0f, ovX (viewStart + viewLen) - ovX (viewStart), ov.getHeight() + 2.0f);
+        g.setColour (Colours::white.withAlpha (0.10f));
+        g.fillRoundedRectangle (win, 3.0f);
+        g.setColour (Colours::white.withAlpha (0.7f));
+        g.drawRoundedRectangle (win, 3.0f, 1.2f);
+    }
+
+    // ---- the ruler: bar numbers, and the bars you picked
+    const auto ru = rulerArea();
+    const auto ga = gridArea();
+    g.saveState();
+    g.reduceClipRegion (ru.getUnion (ga).toNearestInt());
+    if (selA >= 0.0)
+    {
+        g.setColour (t.grass.withAlpha (0.55f));
+        g.fillRoundedRectangle (Rectangle<float> (xOf (selA), ru.getY() + 2.0f, xOf (selB) - xOf (selA), ru.getHeight() - 4.0f), 3.0f);
+        g.setColour (t.grass.withAlpha (0.07f));
+        g.fillRect (Rectangle<float> (xOf (selA), ga.getY(), xOf (selB) - xOf (selA), ga.getHeight()));
+    }
+    const float barW = xOf (4.0) - xOf (0.0);
+    const int labelEvery = barW >= 28.0f ? 1 : barW >= 14.0f ? 2 : barW >= 7.0f ? 4 : 8;
+    g.setFont (lp::ui::mono (9.0f, false, 0.08f));
+    const int b0 = std::max (0, (int) (viewStart / 4.0)), b1 = std::min (totalBars, (int) std::ceil ((viewStart + viewLen) / 4.0));
+    for (int b = b0; b <= b1; ++b)
+    {
+        if (b % labelEvery != 0) continue;
+        const float x = xOf (b * 4.0);
+        g.setColour (Colours::white.withAlpha (0.35f));
+        g.drawVerticalLine ((int) x, ru.getY() + 3.0f, ru.getBottom());
+        if (b < totalBars)
         {
-            // < > : another sound for just this drum
+            g.setColour (t.inkDim);
+            g.drawText (String (b + 1), Rectangle<float> (x + 3.0f, ru.getY(), 40.0f, ru.getHeight()), Justification::centredLeft, false);
+        }
+    }
+
+    // ---- the grid
+    if (! rows.empty())
+    {
+        const float rowH = ga.getHeight() / (float) rows.size();
+        for (size_t i = 0; i < rows.size(); ++i)
+            if (i % 2 == 0) { g.setColour (Colours::white.withAlpha (0.025f)); g.fillRect (ga.getX(), ga.getY() + (float) i * rowH, ga.getWidth(), rowH); }
+        // section edges
+        for (auto& s : sections)
+        {
+            g.setColour (t.grassLight.withAlpha (0.35f));
+            g.fillRect (xOf (s.startBar * 4.0) - 1.0f, ga.getY(), 2.0f, ga.getHeight());
+        }
+        // grid lines: bars brightest, then beats, then steps (the finer ones only when there's room)
+        const double stepLen = 1.0 / stepsPerBeat;
+        const float stepW = xOf (stepLen) - xOf (0.0);
+        const double lineLen = stepW >= 5.0f ? stepLen : (xOf (1.0) - xOf (0.0) >= 5.0f ? 1.0 : 4.0);
+        for (long k = (long) std::floor (viewStart / lineLen); k * lineLen <= viewStart + viewLen; ++k)
+        {
+            const double beat = k * lineLen;
+            if (beat < 0 || beat > total) continue;
+            const bool bar = std::fmod (beat, 4.0) < 1e-6, onBeat = std::fmod (beat, 1.0) < 1e-6;
+            g.setColour (Colours::white.withAlpha (bar ? 0.26f : (onBeat ? 0.11f : 0.045f)));
+            g.drawVerticalLine ((int) xOf (beat), ga.getY(), ga.getBottom());
+        }
+        // the hits (brighter = harder)
+        const float w = std::max (3.0f, std::min (stepW, xOf (0.25) - xOf (0.0)) - 2.0f);
+        for (auto& n : notes)
+        {
+            if (n.beat < viewStart - 1.0 || n.beat > viewStart + viewLen) continue;
+            const auto it = std::find (rows.begin(), rows.end(), n.pitch);
+            if (it == rows.end()) continue;
+            const float y = ga.getY() + (float) (it - rows.begin()) * rowH;
+            auto cell = Rectangle<float> (xOf (n.beat) + 1.0f, y + 3.0f, w, rowH - 6.0f);
+            g.setColour (t.grass.withAlpha (0.35f + 0.65f * n.velocity));
+            g.fillRoundedRectangle (cell, std::min (3.0f, w * 0.4f));
+        }
+        // where the loop is playing
+        if (proc.drumLoopPlaying())
+        {
+            const double beat = proc.playheadPos.load() / StudioPlayer::fileRate * proc.songBpm.load() / 60.0;
+            g.setColour (Colours::white.withAlpha (0.85f));
+            g.fillRect (xOf (beat) - 1.0f, ru.getY(), 2.0f, ga.getBottom() - ru.getY());
+        }
+    }
+    g.restoreState();
+
+    // row names and their swap arrows
+    if (! rows.empty())
+    {
+        const float rowH = ga.getHeight() / (float) rows.size();
+        g.setFont (lp::ui::mono (9.5f, false, 0.12f));
+        for (size_t i = 0; i < rows.size(); ++i)
+        {
+            const float y = ga.getY() + (float) i * rowH;
+            g.setColour (t.inkDim);
+            g.drawText (rowName (rows[i]), Rectangle<float> (12.0f, y, 70.0f, rowH), Justification::centredLeft, false);
+            if (! canSwapRows) continue;
             for (int k = 0; k < 2; ++k)
             {
                 auto btn = swapArrow (i, k);
@@ -373,41 +616,20 @@ void DrumGrid::paint (Graphics& g)
             }
         }
     }
-    // steps: bars brightest, then beats, then steps
-    for (int s = 0; s <= numSteps(); ++s)
-    {
-        const float x = ga.getX() + (float) s * stepW;
-        const bool bar = s % (4 * stepsPerBeat) == 0, beat = s % stepsPerBeat == 0;
-        g.setColour (Colours::white.withAlpha (bar ? 0.28f : (beat ? 0.12f : 0.045f)));
-        g.drawVerticalLine ((int) x, ga.getY(), ga.getBottom());
-    }
-    // the hits (brighter = harder); off-grid hits show where they really are
-    const double a = startBar * 4.0, b = (startBar + bars) * 4.0;
-    for (auto& n : notes)
-    {
-        if (n.beat < a - 1e-6 || n.beat >= b - 1e-6) continue;
-        const auto it = std::find (rows.begin(), rows.end(), n.pitch);
-        if (it == rows.end()) continue;
-        const float y = ga.getY() + (float) (it - rows.begin()) * rowH;
-        const float x = ga.getX() + (float) ((n.beat - a) * stepsPerBeat) * stepW;
-        auto cell = Rectangle<float> (x + 1.5f, y + 3.0f, std::max (4.0f, stepW - 3.0f), rowH - 6.0f);
-        g.setColour (t.grass.withAlpha (0.35f + 0.65f * n.velocity));
-        g.fillRoundedRectangle (cell, 3.0f);
-    }
-    // where the loop is playing
-    if (proc.drumLoopPlaying())
-    {
-        const double beat = proc.playheadPos.load() / StudioPlayer::fileRate * proc.songBpm.load() / 60.0;
-        if (beat >= a && beat < b)
-        {
-            const float x = ga.getX() + (float) ((beat - a) * stepsPerBeat) * stepW;
-            g.setColour (Colours::white.withAlpha (0.85f));
-            g.fillRect (x - 1.0f, ga.getY(), 2.0f, ga.getHeight());
-        }
-    }
+    // what's picked, to the left of the ruler
+    g.setFont (lp::ui::mono (9.0f, true, 0.1f));
+    g.setColour (selA >= 0.0 ? t.grassLight : t.inkDim);
+    const int pa = (int) (la / 4.0) + 1, pb = (int) (lb / 4.0);
+    g.drawText (selA >= 0.0 ? "BARS " + String (pa) + (pb > pa ? "-" + String (pb) : String()) : String ("SONG"),
+                Rectangle<float> (12.0f, ru.getY(), nameW - 16.0f, ru.getHeight()), Justification::centredLeft, false);
+    g.setColour (t.inkDim);
+    g.drawText ("OVERVIEW", Rectangle<float> (12.0f, ov.getY(), nameW - 16.0f, ov.getHeight()), Justification::centredLeft, false);
+
     g.setFont (lp::ui::mono (9.0f, false, 0.1f));
     g.setColour (t.inkDim);
     const bool showSwap = swapMessage.isNotEmpty() && Time::getMillisecondCounter() < swapMessageUntil;
-    g.drawText (showSwap ? "NOW: " + swapMessage.toUpperCase() : waitingForRender || dirty ? "RECORDING YOUR CHANGES..." : String ("CLICK: ADD OR ERASE   |   DRAG: PAINT A ROW   |   SCROLL ON A HIT: HOW HARD   |   CLICK A NAME TO HEAR IT") + (canSwapRows ? "   |   < > SWAPS ONE SOUND" : ""),
-                Rectangle<float> (12.0f, ga.getBottom() + 4.0f, ga.getRight() - 12.0f, 16.0f), Justification::centredLeft, false);
+    g.drawText (showSwap ? "NOW: " + swapMessage.toUpperCase()
+                : waitingForRender || dirty ? String ("RECORDING YOUR CHANGES...")
+                : String ("SCROLL: MOVE   |   CMD + SCROLL OR PINCH: ZOOM   |   DRAG THE RULER: PICK BARS TO LOOP   |   CLICK: ADD OR ERASE   |   DRAG: PAINT   |   OPTION + SCROLL ON A HIT: HOW HARD"),
+                Rectangle<float> (12.0f, ga.getBottom() + 4.0f, ga.getRight() - 12.0f, 16.0f), Justification::centredLeft, true);
 }

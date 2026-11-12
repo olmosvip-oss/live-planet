@@ -262,6 +262,8 @@ private:
 };
 
 // EDIT > Drums: draw your own drum pattern on a grid (add, erase, paint, how hard each hit is)
+// EDIT > Drums: the drum pattern on a timeline you can scroll and zoom, like a DAW's clip editor.
+// Draw hits (click / drag), erase them, set how hard they play; the overview shows the whole song.
 class DrumGrid : public juce::Component
 {
 public:
@@ -273,11 +275,25 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
-    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
-    void stopLoop();          // leaving the drum editor
     void mouseMove (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseMagnify (const juce::MouseEvent&, float scale) override;
+    void stopLoop();          // leaving the drum editor
+    std::function<void()> onToggleBig; // the "bigger" button: the grid takes the whole editor
+    void setBig (bool b) { bigBtn.setToggleState (b, juce::dontSendNotification); }
 
 private:
+    // the timeline
+    double totalBeats() const { return totalBars * 4.0; }
+    juce::Rectangle<float> overviewArea() const;
+    juce::Rectangle<float> rulerArea() const;
+    juce::Rectangle<float> gridArea() const;
+    float xOf (double beat) const;
+    double beatAt (float x) const;
+    void setView (double start, double len);
+    void zoomAround (double factor, float x);
+    void loopRange (double& a, double& b) const; // the bars that play / get copied / cleared
+
     void loadKit();
     juce::Rectangle<float> swapArrow (size_t row, int which) const;
     bool canSwapRows = false;
@@ -287,18 +303,20 @@ private:
     juce::uint32 swapMessageUntil = 0;
     void sendLoop();          // what the loop plays right now (your drawing, live)
     juce::String kitKey;
-    juce::Rectangle<float> gridArea() const;
-    int numSteps() const;
-    bool cellAt (juce::Point<float> p, int& row, int& step) const;
-    std::vector<size_t> hitsIn (int row, int step) const;
-    void setCell (int row, int step, bool on);
+    bool cellAt (juce::Point<float> p, int& row, long& step) const;
+    std::vector<size_t> hitsIn (int row, long step) const;
+    void setCell (int row, long step, bool on);
     void copyAcross (bool everySectionOfKind);
     void pushUndo();
     void changed();
 
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
-    int track = -1, totalBars = 1, startBar = 0, bars = 1, stepsPerBeat = 4, paintRow = -1;
+    int track = -1, totalBars = 1, stepsPerBeat = 4, paintRow = -1;
+    double viewStart = 0.0, viewLen = 16.0;      // in beats
+    double selA = -1.0, selB = -1.0;             // bars you picked on the ruler (beats; -1 = none)
+    enum class Drag { None, Paint, Overview, Ruler } drag = Drag::None;
+    double rulerFrom = 0.0, overviewGrab = 0.0;
     bool painting = true, dirty = false, waitingForRender = false;
     juce::uint32 lastChange = 0;
     juce::String songTitle;
@@ -306,9 +324,9 @@ private:
     std::vector<lp::song::Note> notes;
     std::vector<std::vector<lp::song::Note>> undo;
     std::vector<int> rows; // drum notes, top to bottom
-    juce::TextButton playBtn { "play" };
-    juce::TextButton prevBar { "<" }, nextBar { ">" }, lenBtn { "1 bar" }, resBtn { "1/16" },
-                     fillSection { "fill section" }, fillAll { "every chorus" }, clearBtn { "clear" }, undoBtn { "undo" };
+    juce::TextButton playBtn { "play" }, zoomOut { "-" }, zoomIn { "+" }, fitBtn { "whole song" }, resBtn { "1/16" },
+                     fillSection { "copy to section" }, fillAll { "every chorus" }, clearBtn { "clear" }, undoBtn { "undo" },
+                     bigBtn { "bigger" };
 };
 
 class TrackEditor : public juce::Component
@@ -349,6 +367,7 @@ private:
     FilePill dragTrack;
     juce::TextButton love { "Love it" }, notThis { "Not this" }; // your taste: remembered for every later song
     DrumGrid drumGrid;
+    bool drumBig = false;
     bool showingDrums() const;
 };
 
