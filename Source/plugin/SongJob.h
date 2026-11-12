@@ -2,6 +2,7 @@
 #include "AppFolder.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../song/Song.h"
+#include "../song/SongFile.h"
 #include "../song/Library.h"
 #include "../engine/Limiter.h"
 
@@ -58,6 +59,18 @@ public:
 
     SongJob() : juce::Thread ("Live Planet song mode", 16 * 1024 * 1024) { startThread (juce::Thread::Priority::low); } // loads your sample library right away
     ~SongJob() override { signalThreadShouldExit(); notify(); stopThread (20000); }
+
+    // open a song written earlier (its folder), e.g. when your Ableton project is reopened
+    void openSong (const juce::File& folder)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            if (status.haveSong && currentFolder == folder) return; // already open
+            pendingReference = folder;
+            task = Task::Open;
+        }
+        notify();
+    }
 
     void setReference (const juce::File& file)
     {
@@ -216,7 +229,7 @@ public:
     std::function<juce::File (const lp::song::Song&, const lp::song::Rendered&)> writeAbletonSet; // set by the processor
 
 private:
-    enum class Task { None, Listen, Write };
+    enum class Task { None, Listen, Write, Open };
 
     void startIfNeeded()
     {
@@ -292,6 +305,7 @@ private:
             {
                 if (t == Task::Listen) listen (ref);
                 else if (t == Task::Write) write (o, rs, sky);
+                else if (t == Task::Open) openSaved (ref);
                 else wait (-1);
             }
             catch (const std::bad_alloc&)
@@ -675,6 +689,7 @@ private:
             status.message = "\"" + song.title + "\" is at " + juce::String (song.bpm, 0) + " bpm: set your project to " + juce::String (song.bpm, 0)
                            + " (the locators helper does it for you)";
         if (noteForYou.isNotEmpty()) status.message << ". " << noteForYou;
+        saveSession();
     }
 
     // semitones to put a sample in the song's key (99 = it has no clear key). Listens once per file.
@@ -944,6 +959,7 @@ private:
         status.tracks = tracks;
         status.message = "\"" + song.title + "\" is now in " + lp::noteName (key) + (minor ? " minor" : " major");
         ++status.version;
+        saveSession();
     }
 
     // the full mix again from the tracks (after a key change), through the same limiter
@@ -1132,6 +1148,7 @@ private:
         status.tracks.push_back (info (part, stem, song));
         status.message = "added " + juce::String (part.name) + ": " + juce::File (part.samplePath).getFileNameWithoutExtension();
         ++status.version;
+        saveSession();
     }
 
     void applyEdit (int tr, EditOp op)
@@ -1231,6 +1248,98 @@ private:
         status.song = song;
         status.tracks[(size_t) tr] = info (part, stem, song);
         ++status.version;
+        saveSession();
+    }
+
+    // everything needed to open this song again and keep editing it (called with `lock` held)
+    void saveSession()
+    {
+        if (! currentFolder.isDirectory()) return;
+        namespace F = lp::song::file;
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("version", 1);
+        o->setProperty ("song", F::songToVar (current));
+        auto* r = new juce::DynamicObject();
+        r->setProperty ("sampleRate", currentRs.sampleRate); r->setProperty ("nostalgia", currentRs.nostalgia);
+        r->setProperty ("space", currentRs.space); r->setProperty ("warmth", currentRs.warmth); r->setProperty ("echo", currentRs.echo);
+        o->setProperty ("render", r);
+        auto* tg = new juce::DynamicObject();
+        tg->setProperty ("bpm", currentTarget.bpm); tg->setProperty ("key", currentTarget.key); tg->setProperty ("minor", currentTarget.minor);
+        tg->setProperty ("style", (int) currentTarget.style); tg->setProperty ("genreWords", F::strings (currentTarget.genreWords));
+        const auto& w = currentTarget.wish;
+        tg->setProperty ("wish", F::ints (std::vector<int> { w.dark, w.plucky, w.punchy, w.lofi, w.warm, w.airy }));
+        o->setProperty ("target", tg);
+        o->setProperty ("seed", (juce::int64) currentSeed);
+        o->setProperty ("drumPacks", F::strings (currentPicksDrumPacks));
+        auto* rf = new juce::DynamicObject();
+        rf->setProperty ("valid", currentRef.valid); rf->setProperty ("hasStems", currentRef.hasStems);
+        juce::Array<juce::var> bands;
+        for (auto& b : currentRef.stemBands) bands.add (F::floats (b.data(), b.size()));
+        rf->setProperty ("stemBands", bands);
+        o->setProperty ("ref", rf);
+        juce::StringArray stems;
+        for (auto& t : status.tracks) stems.add (t.stem.getFullPathName());
+        o->setProperty ("stems", F::strings (stems));
+        o->setProperty ("midi", status.files.midiFile.getFullPathName());
+        o->setProperty ("mix", status.files.mixFile.getFullPathName());
+        o->setProperty ("plan", status.files.planFile.getFullPathName());
+        o->setProperty ("ableton", status.abletonSet.getFullPathName());
+        o->setProperty ("used", status.usedSamples);
+        currentFolder.getChildFile ("song.json").replaceWithText (juce::JSON::toString (juce::var (o)));
+    }
+
+    // job thread: bring a saved song back (no re-recording: its tracks are already on disk)
+    void openSaved (const juce::File& folder)
+    {
+        namespace F = lp::song::file;
+        const auto v = juce::JSON::parse (folder.getChildFile ("song.json"));
+        lp::song::Song song;
+        if (! F::songFromVar (v["song"], song)) return;
+        const auto stems = F::readStrings (v["stems"]);
+        if (stems.size() != (int) song.parts.size()) return;
+        for (auto& p : stems) if (! juce::File (p).existsAsFile()) return; // moved or deleted: leave it
+        lp::song::RenderSettings rs;
+        rs.sampleRate = v["render"].getProperty ("sampleRate", 48000.0); rs.nostalgia = v["render"]["nostalgia"];
+        rs.space = v["render"]["space"]; rs.warmth = v["render"]["warmth"]; rs.echo = v["render"]["echo"];
+        lp::song::Target tg {};
+        tg.bpm = v["target"]["bpm"]; tg.key = v["target"]["key"]; tg.minor = v["target"]["minor"];
+        tg.style = (lp::song::Style) (int) v["target"]["style"]; tg.genreWords = F::readStrings (v["target"]["genreWords"]);
+        const auto w = F::readInts (v["target"]["wish"]);
+        if (w.size() == 6) tg.wish = { w[0], w[1], w[2], w[3], w[4], w[5] };
+        lp::song::Profile ref;
+        ref.valid = v["ref"]["valid"]; ref.hasStems = v["ref"]["hasStems"];
+        if (auto* a = v["ref"]["stemBands"].getArray())
+            for (size_t i = 0; i < ref.stemBands.size() && i < (size_t) a->size(); ++i) F::readFloats ((*a)[(int) i], ref.stemBands[i].data(), 10);
+        lp::song::Rendered files;
+        files.folder = folder;
+        for (auto& p : stems) files.stems.add (juce::File (p));
+        files.midiFile = juce::File (v["midi"].toString()); files.mixFile = juce::File (v["mix"].toString());
+        files.planFile = juce::File (v["plan"].toString());
+        files.matchEqDb = song.matchEqDb; files.matchGainDb = song.matchGainDb; files.playbackMakeupDb = song.playbackMakeupDb;
+        refreshUsable();
+        const juce::ScopedLock sl (lock);
+        current = song;
+        currentRs = rs;
+        currentFolder = folder;
+        currentPicksDrumPacks = F::readStrings (v["drumPacks"]);
+        currentTarget = tg;
+        currentRef = ref;
+        currentSeed = (juce::uint32) (juce::int64) v["seed"];
+        status.tracks.clear();
+        for (int i = 0; i < (int) song.parts.size(); ++i)
+            status.tracks.push_back (info (song.parts[(size_t) i], files.stems[i], song));
+        ++status.version;
+        status.song = song;
+        status.usedSamples = v["used"].toString();
+        status.files = files;
+        status.abletonSet = juce::File (v["ableton"].toString());
+        status.kindCounts.assign (lp::song::kNumLoopKinds, 0);
+        for (int k = 1; k < lp::song::kNumLoopKinds; ++k)
+            status.kindCounts[(size_t) k] = (int) usableLib.loopsOfKind ((lp::song::LoopKind) k, song.bpm).size();
+        status.haveSong = true;
+        status.stage = Stage::Done;
+        status.progress = 1.0f;
+        status.message = "\"" + song.title + "\" is back, as you left it";
     }
 
     static bool writeStem (const juce::File& file, const juce::AudioBuffer<float>& buf, double sr)

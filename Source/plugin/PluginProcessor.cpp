@@ -353,8 +353,14 @@ void LivePlanetProcessor::timerCallback()
             for (auto& t : st.tracks) stems.add (t.stem);
             // a new song (not just an edited track): every track starts with its own effects, by role,
             // and for songs made of your samples the master knobs start at zero (turn them up if you like)
-            const bool newSong = st.files.folder != loadedSongFolder;
+            bool newSong = st.files.folder != loadedSongFolder;
             loadedSongFolder = st.files.folder;
+            juce::ValueTree restore;
+            if (newSong)
+            {
+                const juce::SpinLock::ScopedLockType sl (restoreLock);
+                if (restoredMixFolder == st.files.folder) { restore = restoredMix; restoredMixFolder = juce::File(); }
+            }
             bool anySamples = false;
             for (size_t i = 0; i < st.tracks.size() && i < (size_t) StudioPlayer::maxTracks; ++i)
             {
@@ -363,13 +369,21 @@ void LivePlanetProcessor::timerCallback()
                 m.sample = tr.sample;
                 m.group = tr.group;
                 anySamples = anySamples || tr.sample;
-                if (newSong)
+                if (newSong && restore.isValid() && restore.getChild ((int) i).isValid())
+                {
+                    const auto t = restore.getChild ((int) i);
+                    m.gainDb = (float) t["gain"]; m.pan = (float) t["pan"]; m.tone = (float) t["tone"];
+                    m.mute = (bool) t["mute"]; m.solo = (bool) t["solo"]; m.space = (float) t["space"];
+                    m.echo = (float) t["echo"]; m.warmth = (float) t["warmth"]; m.nostalgia = (float) t["nostalgia"];
+                    m.chorus = (float) t["chorus"]; m.printFx = (bool) t["printFx"];
+                }
+                else if (newSong)
                 {
                     m.space = tr.space; m.echo = tr.echo; m.warmth = tr.warmth; m.nostalgia = tr.nostalgia;
                     m.gainDb = 0.0f; m.pan = 0.0f; m.tone = 0.0f; m.mute = false; m.solo = false; m.printFx = false;
                 }
             }
-            if (newSong && anySamples)
+            if (newSong && anySamples && ! restore.isValid()) // (a reopened project keeps its knobs)
                 for (auto id : { "warmth", "echo", "space", "shimmer", "nostalgia", "atmos" })
                     if (auto* prm = params.getParameter (id)) prm->setValueNotifyingHost (0.0f);
             songBpm = st.song.bpm;
@@ -553,6 +567,29 @@ void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.setProperty ("samplePath", samplePath, nullptr);
     state.setProperty ("theme", themeIndex.load(), nullptr);
     state.setProperty ("preset", currentPreset.load(), nullptr);
+    // the song you made in this project, and each track's mixer, so reopening the project brings it back
+    {
+        const auto st = songJob.getStatus();
+        if (st.haveSong)
+        {
+            state.setProperty ("songFolder", st.files.folder.getFullPathName(), nullptr);
+            juce::ValueTree mixTree ("studioMix");
+            for (size_t i = 0; i < st.tracks.size() && i < (size_t) StudioPlayer::maxTracks; ++i)
+            {
+                const auto& m = studio.mix[i];
+                juce::ValueTree t ("track");
+                t.setProperty ("gain", m.gainDb.load(), nullptr); t.setProperty ("pan", m.pan.load(), nullptr);
+                t.setProperty ("tone", m.tone.load(), nullptr); t.setProperty ("mute", m.mute.load(), nullptr);
+                t.setProperty ("solo", m.solo.load(), nullptr); t.setProperty ("space", m.space.load(), nullptr);
+                t.setProperty ("echo", m.echo.load(), nullptr); t.setProperty ("warmth", m.warmth.load(), nullptr);
+                t.setProperty ("nostalgia", m.nostalgia.load(), nullptr); t.setProperty ("chorus", m.chorus.load(), nullptr);
+                t.setProperty ("printFx", m.printFx.load(), nullptr);
+                mixTree.appendChild (t, nullptr);
+            }
+            state.removeChild (state.getChildWithName ("studioMix"), nullptr);
+            state.appendChild (mixTree, nullptr);
+        }
+    }
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -576,6 +613,18 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
         citySeed = lp::hashString (city);
     }
     weatherService.requestCoordinates (city, lat, lon);
+
+    // the song this project was using: open it again, with its mixer as you left it
+    const juce::File songFolder (state.getProperty ("songFolder", "").toString());
+    if (songFolder.getChildFile ("song.json").existsAsFile())
+    {
+        {
+            const juce::SpinLock::ScopedLockType sl (restoreLock);
+            restoredMix = state.getChildWithName ("studioMix").createCopy();
+            restoredMixFolder = songFolder;
+        }
+        songJob.openSong (songFolder);
+    }
 
     const juce::File f (state.getProperty ("samplePath", "").toString());
     if (f.existsAsFile())

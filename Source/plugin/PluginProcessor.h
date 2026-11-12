@@ -54,6 +54,10 @@ public:
     // the file to drag for a track: its dry stem, or (Print FX on) the stem with its own effects recorded in
     juce::File fileToDrag (int track);
     std::atomic<int> printsRunning { 0 };
+    // a reopened project's track mixer, applied once its song is open again
+    juce::SpinLock restoreLock;
+    juce::ValueTree restoredMix;
+    juce::File restoredMixFolder;
     std::mutex printLock; // one print at a time (a drag waits for one already started)
     int recordedNoteCount() const { return recordedOnCount.load(); }
 
