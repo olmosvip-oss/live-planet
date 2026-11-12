@@ -190,7 +190,10 @@ private:
     juce::TextButton write { "write a song" };
     bool full = true;
     std::unique_ptr<juce::FileChooser> chooser;
-    juce::Rectangle<float> scanLink, folderLink;
+    juce::Rectangle<float> scanLink, folderLink, sourcesLink;
+public:
+    std::function<void()> onShowSources;
+private:
     juce::Rectangle<int> hero, settings;
 };
 
@@ -291,6 +294,27 @@ private:
     double last = 0;
 };
 
+// Which sample packs songs may use: Splice packs start on, WAVS packs start off (switch on the
+// royalty-free ones), your own folders start on
+class SourcesPanel : public juce::Component
+{
+public:
+    SourcesPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme) {}
+    void open();
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+
+private:
+    juce::Rectangle<float> panel() const;
+    juce::Rectangle<float> rowAt (int i) const;
+    std::vector<SongJob::PackRow> shown() const;
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    std::vector<SongJob::PackRow> rows;
+    int filter = 2, scroll = 0; // filter: 0 all, 1 splice, 2 wavs, 3 folders
+};
+
 // A pill you drag into your DAW (or click to show in Finder)
 class FilePill : public juce::Component
 {
@@ -371,6 +395,7 @@ private:
     juce::ComboBox studioKey, studioMode;   // the song's key, at the top of the studio
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> studioKeyAtt, studioModeAtt;
     GrainView grainView;
+    SourcesPanel sourcesPanel;
     FilePill pillMidi, pillStems, pillMix, pillHelper, pillFolder;
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;

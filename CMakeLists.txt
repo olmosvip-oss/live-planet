@@ -59,6 +59,7 @@ target_sources(LivePlanet PRIVATE
     Source/plugin/StudioView.cpp
     Source/plugin/TrackEditor.cpp
     Source/plugin/GrainView.cpp
+    Source/plugin/SourcesPanel.cpp
     Source/plugin/WeatherService.cpp)
 
 target_compile_definitions(LivePlanet PUBLIC

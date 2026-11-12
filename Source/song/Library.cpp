@@ -27,8 +27,9 @@ juce::Array<juce::File> Library::defaultFolders()
 {
     const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
     juce::Array<juce::File> f;
+    const auto docs = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
     for (auto c : { home.getChildFile ("Splice"), juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Splice"),
-                    juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Splice") })
+                    docs.getChildFile ("Splice"), docs.getChildFile ("WAVS").getChildFile ("Samples") })
         if (c.isDirectory()) f.add (c);
     return f;
 }
@@ -162,7 +163,10 @@ LibraryEntry Library::parse (const juce::File& file, const juce::File& root)
         parts.addTokens (file.getParentDirectory().getRelativePathFrom (root).replaceCharacter ('\\', '/'), "/", "");
         parts.removeEmptyStrings();
         const int packsAt = parts.indexOf ("packs", true);
-        if (packsAt >= 0 && packsAt + 1 < parts.size()) e.pack = parts[packsAt + 1];
+        // WAVS keeps Packs/<creator>/<pack>/...: the pack is "creator - pack"
+        if (sourceOf (e.path) == Source::Wavs && packsAt >= 0 && packsAt + 2 < parts.size())
+            e.pack = parts[packsAt + 1] + " - " + parts[packsAt + 2];
+        else if (packsAt >= 0 && packsAt + 1 < parts.size()) e.pack = parts[packsAt + 1];
         else if (parts.size() > 0 && parts[0].equalsIgnoreCase ("sounds") && parts.size() > 1) e.pack = parts[1];
         else if (parts.size() > 0) e.pack = parts[0];
         else e.pack = file.getParentDirectory().getFileName();

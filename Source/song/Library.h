@@ -31,6 +31,22 @@ struct LibraryEntry
 class Library
 {
 public:
+    // where a sample came from (WAVS packs are only used once you switch them on, as their licenses differ)
+    enum class Source { Splice, Wavs, Folder };
+    static Source sourceOf (const juce::String& path)
+    {
+        const auto p = path.replaceCharacter ('\\', '/');
+        if (p.containsIgnoreCase ("/WAVS/Samples/")) return Source::Wavs;
+        if (p.containsIgnoreCase ("/Splice/")) return Source::Splice;
+        return Source::Folder;
+    }
+    // a copy with only the samples `keep` allows (e.g. only the packs you switched on)
+    Library onlyWhere (std::function<bool (const LibraryEntry&)> keep) const
+    {
+        Library l;
+        for (auto& e : entries) if (keep (e)) l.entries.push_back (e);
+        return l;
+    }
     // Default places to look: ~/Splice and ~/Music/Splice, plus any folders you add.
     static juce::Array<juce::File> defaultFolders();
 

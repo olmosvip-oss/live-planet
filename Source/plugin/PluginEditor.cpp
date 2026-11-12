@@ -862,7 +862,7 @@ void SongPanel::paint (Graphics& g)
         auto lib = c.reduced (22.0f, 16.0f).removeFromBottom (16.0f);
         g.setFont (lp::ui::mono (10.0f, false, 0.1f));
         const String count = st.scanning ? String ("SCANNING...")
-                           : st.librarySounds > 0 ? String (st.librarySounds) + " SAMPLES  \xc2\xb7  " + String (st.libraryLoops) + " LOOPS"
+                           : st.librarySounds > 0 ? String (st.librarySounds) + " SAMPLES"
                                                   : String ("NO LIBRARY YET");
         g.setColour (t.inkDim);
         const float cw = GlyphArrangement::getStringWidth (g.getCurrentFont(), count);
@@ -872,6 +872,9 @@ void SongPanel::paint (Graphics& g)
         g.drawText ("SCAN", scanLink, Justification::centredLeft, false);
         folderLink = lib.removeFromLeft (90.0f);
         g.drawText ("ADD FOLDER", folderLink, Justification::centredLeft, false);
+        sourcesLink = lib.removeFromLeft (70.0f);
+        g.setColour (t.grassLight);
+        g.drawText ("SOURCES", sourcesLink, Justification::centredLeft, false);
     }
 }
 
@@ -900,6 +903,7 @@ void SongPanel::refresh()
 void SongPanel::mouseUp (const MouseEvent& e)
 {
     if (scanLink.contains (e.position)) { proc.rescanLibrary(); repaint(); return; }
+    if (sourcesLink.contains (e.position)) { if (onShowSources) onShowSources(); return; }
     if (folderLink.contains (e.position))
     {
         chooser = std::make_unique<FileChooser> ("Add a sample folder (Splice, packs, your own sounds)", File());
@@ -1087,6 +1091,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       studioView (p),
       trackEditor (p, lnf.th),
       grainView (p),
+      sourcesPanel (p, lnf.th),
       pillMidi ("drag midi", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.midiFile.getFullPathName()) : StringArray(); }),
       pillStems ("drag stems", [&p] { auto st = p.songJob.getStatus(); StringArray a; if (st.haveSong) for (auto& t : st.tracks) a.add (t.stem.getFullPathName()); return a; }),
       pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray(); }),
@@ -1123,6 +1128,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (studioKey);
     addChildComponent (studioMode);
     addChildComponent (grainView);
+    addChildComponent (sourcesPanel);
+    songPanel.onShowSources = [this] { sourcesPanel.open(); };
     studioView.onOpenTrack = [this] (int t) { trackEditor.select (t); setPage (Edit); };
     playButton.songMode = [this] { return page == Write || page == Studio || page == Edit; };
     for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
@@ -1571,6 +1578,7 @@ void LivePlanetEditor::resized()
     auto k = [this] (const char* id) { return &knobById[id]->slider; };
     const int W = getWidth(), M = 28;
     themeDots.setBounds (W - M - (lp::ui::numThemes * 22 + 4), kH - 34, lp::ui::numThemes * 22 + 4, 24);
+    sourcesPanel.setBounds (getLocalBounds());
 
     // ---- write: the hero + settings (song panel), the song, the drag buttons
     songPanel.setBounds (M, 84, W - 2 * M, 342);

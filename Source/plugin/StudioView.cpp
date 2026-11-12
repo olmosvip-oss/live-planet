@@ -137,7 +137,7 @@ void StudioView::paint (Graphics& g)
         if (t.reversed) name << "  -  reversed";
         if (t.pitch != 0) name << "  -  " << (t.pitch > 0 ? "+" : "") << t.pitch << " st";
         g.drawText (name, nameArea.removeFromTop (13.0f), Justification::bottomLeft, true);
-        g.setColour (t.source.startsWith ("splice") ? accent.brighter (0.3f) : dim);
+        g.setColour (! t.source.startsWith ("loopwright") ? accent.brighter (0.3f) : dim);
         g.setFont (font (10.0f));
         g.drawText (t.source, nameArea, Justification::topLeft, true);
         if (t.keyText.isNotEmpty())

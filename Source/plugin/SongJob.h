@@ -91,7 +91,7 @@ public:
 
     static juce::File libraryCache()
     {
-        return lp::appFolder().getChildFile ("library-v2.json");
+        return lp::appFolder().getChildFile ("library-v3.json");
     }
 
     void makeSong (const lp::song::Options& o, const lp::song::RenderSettings& rs, const lp::Weather& sky, bool useLibrary, bool onlySamples = false)
@@ -381,7 +381,8 @@ private:
         if (useLib || onlySamples)
         {
             setStage (Stage::Writing, 0.03f, "looking through your samples...");
-            picks = lp::song::pickFromLibrary (library, target, o.seed, [] (const juce::String& path, double bpm) { return loopBars (path, bpm); },
+            refreshUsable();
+            picks = lp::song::pickFromLibrary (usableLib, target, o.seed, [] (const juce::String& path, double bpm) { return loopBars (path, bpm); },
                                                {}, [this, &target] (const juce::String& path) { return tuneFor (path, target.key, target.minor); },
                                                [this, &ref, &target] (const juce::String& path) { return soundsLike (path, ref, target.wish); });
             if (picks.loop != nullptr)
@@ -433,7 +434,7 @@ private:
             if (part.kind == PK::Drums)
             {
                 part.source = song.drumSamples.empty() ? juce::String ("loopwright: ") + lp::song::styleName (song.style) + " kit"
-                                                       : "splice: " + picks.drumPack + " kit";
+                                                       : kitLabel (picks) + picks.drumPack + " kit";
                 part.remix = song.drumSamples.empty() ? "a new groove, played on coded drums"
                                                       : juce::String ("one-shots re-sequenced into a new ") + lp::song::styleName (song.style) + " groove";
                 part.candidates = picks.drumPacks;
@@ -471,7 +472,7 @@ private:
             double m = 1.0;
             for (double mm : { 0.5, 1.0, 2.0 }) if (std::abs (fileBpm * mm - song.bpm) < std::abs (fileBpm * m - song.bpm)) m = mm;
             const double fit = (song.bpm / (fileBpm * m) - 1.0) * 100.0;
-            loop.source = "splice: " + juce::File (loop.samplePath).getFileNameWithoutExtension();
+            loop.source = sourceLabel (loop.samplePath) + juce::File (loop.samplePath).getFileNameWithoutExtension();
             loop.remix = remixText (loop, fit, song);
             song.parts.push_back (loop);
         };
@@ -544,7 +545,7 @@ private:
                 const int stem = stemFor (role);
                 if (stem >= 0) loop.mixDb += adj[(size_t) stem];
                 if (std::none_of (loop.barSrc.begin(), loop.barSrc.end(), [] (int v) { return v >= 0; }) && loop.swellBars.empty()) return;
-                loop.source = "splice: " + juce::File (loop.samplePath).getFileNameWithoutExtension();
+                loop.source = sourceLabel (loop.samplePath) + juce::File (loop.samplePath).getFileNameWithoutExtension();
                 loop.remix = remixText (loop, 0.0, song) + arrangementText (loop);
                 song.parts.push_back (loop);
             };
@@ -556,7 +557,7 @@ private:
                 addArranged (*melodic[i], lp::song::loopKindName (melodic[i]->kind), melodicRoles[i]);
             if (padC != nullptr)   addArranged (*padC, "pad", Role::Pad);
             if (vocalC != nullptr) addArranged (*vocalC, "vocal", Role::Vocal);
-            if (fxC != nullptr && library.fxOfKind (lp::song::SampleKind::Riser).empty()) addArranged (*fxC, "fx", Role::Fx);
+            if (fxC != nullptr && usableLib.fxOfKind (lp::song::SampleKind::Riser).empty()) addArranged (*fxC, "fx", Role::Fx);
         }
         else if (picks.loop != nullptr && ! picks.loopSet.empty())
             addLoop (picks.loopSet.front(), "loop", { "chorus", "bridge" });
@@ -634,7 +635,7 @@ private:
         status.abletonSet = als;
         status.kindCounts.assign (lp::song::kNumLoopKinds, 0);
         for (int k = 1; k < lp::song::kNumLoopKinds; ++k)
-            status.kindCounts[(size_t) k] = (int) library.loopsOfKind ((lp::song::LoopKind) k, song.bpm).size();
+            status.kindCounts[(size_t) k] = (int) usableLib.loopsOfKind ((lp::song::LoopKind) k, song.bpm).size();
         status.haveSong = true;
         status.stage = Stage::Done;
         status.progress = 1.0f;
@@ -915,6 +916,25 @@ private:
         return t;
     }
 
+    // where a sound came from, as shown in the studio ("splice: ...", "wavs: ...", "folder: ...")
+    static juce::String sourceLabel (const juce::String& path)
+    {
+        switch (lp::song::Library::sourceOf (path))
+        {
+            case lp::song::Library::Source::Splice: return "splice: ";
+            case lp::song::Library::Source::Wavs:   return "wavs: ";
+            default:                                return "folder: ";
+        }
+    }
+    static juce::String kitLabel (const lp::song::LibraryPicks& picks)
+    {
+        return picks.drums.empty() ? juce::String ("splice: ") : sourceLabel (picks.drums.begin()->second);
+    }
+    static bool isLibrarySource (const juce::String& s)
+    {
+        return s.startsWith ("splice") || s.startsWith ("wavs") || s.startsWith ("folder") || s.startsWith ("library");
+    }
+
     static TrackInfo trackInfo (const lp::song::Part& p, const juce::File& stem)
     {
         TrackInfo t;
@@ -924,11 +944,11 @@ private:
         t.stem = stem;
         t.pitch = p.pitchSemis;
         t.reversed = p.reversed;
-        t.canReverse = p.kind == lp::song::PartKind::Loop || (p.kind == lp::song::PartKind::Drums && p.source.startsWith ("splice"));
+        t.canReverse = p.kind == lp::song::PartKind::Loop || (p.kind == lp::song::PartKind::Drums && isLibrarySource (p.source));
         t.canSwap = true;
         t.candidates = p.candidates.size();
         t.candidate = p.candidate;
-        t.sample = p.source.startsWith ("splice");
+        t.sample = isLibrarySource (p.source);
         const juce::String n (p.name);
         if (p.kind == lp::song::PartKind::Drums || p.kind == lp::song::PartKind::Fx || n.contains ("drum") || n == "percussion") t.group = 4;
         else if (p.kind == lp::song::PartKind::Bass || n.contains ("bass"))                t.group = 3;
@@ -971,7 +991,8 @@ private:
         const auto styleBit = 1u << (int) song.style;
         juce::Random rng;
         std::vector<std::pair<float, const lp::song::LibraryEntry*>> pool;
-        for (auto* e : library.loopsOfKind (kind, song.bpm))
+        refreshUsable();
+        for (auto* e : usableLib.loopsOfKind (kind, song.bpm))
         {
             bool used = false;
             for (auto& p : song.parts) used = used || p.samplePath == e->path;
@@ -1025,7 +1046,7 @@ private:
                         part.loopStartBars.push_back (b);
         if (part.loopStartBars.empty())
             for (int b = 0; b + bars <= song.totalBars(); b += bars) part.loopStartBars.push_back (b);
-        part.source = "splice: " + juce::File (part.samplePath).getFileNameWithoutExtension();
+        part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
         part.remix = remixText (part, 0.0, song) + " (added by you)";
         saveFeatures();
         song.parts.push_back (part);
@@ -1098,7 +1119,7 @@ private:
                     part.loopBars = bars;
                     if (! starts.empty()) part.loopStartBars = starts;
                 }
-                part.source = "splice: " + juce::File (part.samplePath).getFileNameWithoutExtension();
+                part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
                 part.remix = remixText (part, 0.0, song) + arrangementText (part);
             }
             else if (part.kind == PK::Fx)
@@ -1113,9 +1134,10 @@ private:
             else if (part.kind == PK::Drums && ! song.drumSamples.empty() && part.candidates.size() > 1)
             {
                 part.candidate = (part.candidate + 1) % part.candidates.size();
-                auto picks = lp::song::pickFromLibrary (library, currentTarget, currentSeed, {}, part.candidates[part.candidate]);
+                refreshUsable();
+                auto picks = lp::song::pickFromLibrary (usableLib, currentTarget, currentSeed, {}, part.candidates[part.candidate]);
                 song.drumSamples = picks.drums;
-                part.source = "splice: " + picks.drumPack + " kit";
+                part.source = kitLabel (picks) + picks.drumPack + " kit";
             }
             else if (part.kind == PK::Drums)
             {
@@ -1276,6 +1298,68 @@ private:
             it = (*it >= 0 && *it < total && p.barSrc[(size_t) *it] >= 0) ? std::next (it) : p.gapBars.erase (it);
     }
 
+    // ---------- which packs songs may use. WAVS packs start switched off (their licenses differ:
+    // switch on the royalty-free ones); everything else starts on
+public:
+    struct PackRow { juce::String name; int source = 0; int count = 0; bool on = true; };
+
+    std::vector<PackRow> packRows()
+    {
+        const juce::ScopedLock sl (lock);
+        loadSources();
+        std::map<std::pair<int, juce::String>, int> counts;
+        for (auto& e : library.all()) ++counts[{ (int) lp::song::Library::sourceOf (e.path), e.pack }];
+        std::vector<PackRow> rows;
+        for (auto& [k, n] : counts) rows.push_back ({ k.second, k.first, n, packOn (k.first, k.second) });
+        return rows;
+    }
+
+    void setPackOn (int source, const juce::String& pack, bool on)
+    {
+        const juce::ScopedLock sl (lock);
+        loadSources();
+        const auto id = juce::String (source) + "|" + pack;
+        packsOn.removeString (id); packsOff.removeString (id);
+        (on ? packsOn : packsOff).add (id);
+        auto obj = std::make_unique<juce::DynamicObject>();
+        juce::Array<juce::var> a, b;
+        for (auto& x : packsOn) a.add (x);
+        for (auto& x : packsOff) b.add (x);
+        obj->setProperty ("on", a);
+        obj->setProperty ("off", b);
+        sourcesFile().replaceWithText (juce::JSON::toString (juce::var (obj.release()), true));
+    }
+
+private:
+    static juce::File sourcesFile() { return lp::appFolder().getChildFile ("sources.json"); }
+    juce::StringArray packsOn, packsOff;
+    bool sourcesLoaded = false;
+    lp::song::Library usableLib;
+
+    void loadSources()
+    {
+        if (sourcesLoaded) return;
+        sourcesLoaded = true;
+        const auto v = juce::JSON::parse (sourcesFile());
+        if (auto* a = v["on"].getArray()) for (auto& x : *a) packsOn.add (x.toString());
+        if (auto* a = v["off"].getArray()) for (auto& x : *a) packsOff.add (x.toString());
+    }
+
+    bool packOn (int source, const juce::String& pack) const
+    {
+        const auto id = juce::String (source) + "|" + pack;
+        if (packsOff.contains (id)) return false;
+        if (packsOn.contains (id)) return true;
+        return source != (int) lp::song::Library::Source::Wavs;
+    }
+
+    void refreshUsable()
+    {
+        const juce::ScopedLock sl (lock);
+        loadSources();
+        usableLib = library.onlyWhere ([this] (const lp::song::LibraryEntry& e) { return packOn ((int) lp::song::Library::sourceOf (e.path), e.pack); });
+    }
+
     // ---------- transitions: FX from your library at the right spots
     lp::song::Part makeTransitions (const lp::song::Song& song, juce::uint32 seed, const juce::StringArray& preferPacks,
                                     const juce::StringArray& genreWords)
@@ -1289,7 +1373,7 @@ private:
         auto choose = [&] (SK k, int howMany)
         {
             std::vector<std::pair<float, const lp::song::LibraryEntry*>> pool;
-            for (auto* e : library.fxOfKind (k))
+            for (auto* e : usableLib.fxOfKind (k))
             {
                 float sc = rng.nextFloat() * 2.0f + (preferPacks.contains (e->pack) ? 3.0f : 0.0f);
                 for (auto& w : genreWords) if (e->path.containsIgnoreCase (w)) { sc += 2.0f; break; }
@@ -1334,7 +1418,7 @@ private:
                 add (! reverses.isEmpty() ? pick (reverses, 0) : pick (crashes, 0), at, ! reverses.isEmpty(), -34.0f); // a small lift out of the intro
         }
         int n = (int) p.fxHits.size();
-        p.source = n > 0 ? "splice: " + juce::String (n) + " transition fx" : juce::String();
+        p.source = n > 0 ? "library: " + juce::String (n) + " transition fx" : juce::String();
         juce::StringArray kinds;
         if (! risers.isEmpty()) kinds.add ("risers landing on each chorus");
         if (! reverses.isEmpty()) kinds.add ("reverse swells");
