@@ -35,6 +35,15 @@ DrumGrid::DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
         b.setTooltip (tip);
         addAndMakeVisible (b);
     };
+    setup (playBtn, "loop these bars with the rest of the song, and hear your changes as you make them");
+    playBtn.getProperties().set ("primary", true);
+    playBtn.onClick = [this]
+    {
+        if (proc.drumLoopPlaying()) { stopLoop(); return; }
+        sendLoop();
+        proc.startDrumLoop (track, startBar * 4.0, bars * 4.0);
+        playBtn.setButtonText ("stop");
+    };
     setup (prevBar, "earlier bars");
     setup (nextBar, "later bars");
     setup (lenBtn, "show one or two bars");
@@ -43,9 +52,9 @@ DrumGrid::DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
     setup (fillAll, "copy what you see to every section of the same kind (every chorus, every verse...)");
     setup (clearBtn, "erase every hit you see");
     setup (undoBtn, "undo your last change");
-    prevBar.onClick = [this] { startBar = std::max (0, startBar - bars); repaint(); };
-    nextBar.onClick = [this] { startBar = std::min (std::max (0, totalBars - bars), startBar + bars); repaint(); };
-    lenBtn.onClick = [this] { bars = bars == 1 ? 2 : 1; lenBtn.setButtonText (bars == 1 ? "1 bar" : "2 bars"); repaint(); };
+    prevBar.onClick = [this] { startBar = std::max (0, startBar - bars); sendLoop(); repaint(); };
+    nextBar.onClick = [this] { startBar = std::min (std::max (0, totalBars - bars), startBar + bars); sendLoop(); repaint(); };
+    lenBtn.onClick = [this] { bars = bars == 1 ? 2 : 1; lenBtn.setButtonText (bars == 1 ? "1 bar" : "2 bars"); sendLoop(); repaint(); };
     resBtn.onClick = [this] { stepsPerBeat = stepsPerBeat == 4 ? 8 : 4; resBtn.setButtonText (stepsPerBeat == 4 ? "1/16" : "1/32"); repaint(); };
     fillSection.onClick = [this] { copyAcross (false); };
     fillAll.onClick = [this] { copyAcross (true); };
@@ -74,6 +83,7 @@ void DrumGrid::load (int trackIndex)
     totalBars = std::max (1, pv.totalBars);
     sections = pv.sections;
     if (! pv.valid) return;
+    if (pv.kitKey + songTitle + String (track) != kitKey) { kitKey = pv.kitKey + songTitle + String (track); loadKit(); }
     // keep what you're drawing (and your place) while the track is being re-recorded
     if (! sameTrack || (! dirty && ! waitingForRender))
     {
@@ -99,8 +109,35 @@ void DrumGrid::load (int trackIndex)
     repaint();
 }
 
+Rectangle<float> DrumGrid::swapArrow (size_t row, int which) const
+{
+    const auto ga = gridArea();
+    const float rowH = ga.getHeight() / (float) std::max<size_t> (1, rows.size());
+    const float y = ga.getY() + (float) row * rowH + (rowH - 16.0f) * 0.5f;
+    return { 84.0f + (float) which * 22.0f, y, 19.0f, 16.0f };
+}
+
+void DrumGrid::mouseMove (const MouseEvent&) { if (canSwapRows) repaint (0, 0, 132, getHeight()); }
+
 void DrumGrid::refresh()
 {
+    canSwapRows = proc.songJob.kitIsSamples();
+    // a drum sound was swapped: show its name, and play it once its new sound is loaded
+    const auto [swapName, swapCount] = proc.songJob.lastDrumSwap();
+    if (swapCount != seenSwaps)
+    {
+        seenSwaps = swapCount;
+        swapMessage = swapName;
+        swapMessageUntil = Time::getMillisecondCounter() + 5000;
+    }
+    if (auditionAfterSwap >= 0 && kitReloads != kitReloadsAtSwap && ! proc.drumLoopPlaying())
+    {
+        proc.liveDrums.audition (auditionAfterSwap, 0.9f);
+        auditionAfterSwap = -1;
+    }
+    const bool playing = proc.drumLoopPlaying();
+    if (playBtn.getButtonText() != (playing ? "stop" : "play")) playBtn.setButtonText (playing ? "stop" : "play");
+    if (playing) repaint (gridArea().toNearestInt().expanded (2));
     // send your drawing a moment after you stop, so a quick paint isn't recorded twenty times
     if (dirty && Time::getMillisecondCounter() - lastChange > 350)
     {
@@ -120,12 +157,40 @@ void DrumGrid::changed()
 {
     dirty = true;
     lastChange = Time::getMillisecondCounter();
+    sendLoop();
     repaint();
+}
+
+// the kit's sounds, one hit each (made in the background: a second or so for sample kits)
+void DrumGrid::loadKit()
+{
+    ++proc.printsRunning; // (the plugin waits for this before closing)
+    Thread::launch ([&pr = proc, t = track, &reloads = kitReloads]
+    {
+        pr.liveDrums.setKit (pr.songJob.drumHits (t));
+        ++reloads;
+        --pr.printsRunning;
+    });
+}
+
+void DrumGrid::sendLoop()
+{
+    std::vector<LiveDrums::Hit> h;
+    const double a = startBar * 4.0, b = (startBar + bars) * 4.0;
+    for (auto& n : notes) if (n.beat >= a - 1e-6 && n.beat < b - 1e-6) h.push_back ({ n.beat, n.pitch, n.velocity });
+    proc.liveDrums.setPattern (std::move (h), a, b - a);
+    proc.setDrumLoop (a, b - a);
+}
+
+void DrumGrid::stopLoop()
+{
+    proc.stopDrumLoop();
+    playBtn.setButtonText ("play");
 }
 
 Rectangle<float> DrumGrid::gridArea() const
 {
-    return getLocalBounds().toFloat().withTrimmedTop (40.0f).withTrimmedLeft (78.0f).withTrimmedRight (12.0f).withTrimmedBottom (22.0f);
+    return getLocalBounds().toFloat().withTrimmedTop (40.0f).withTrimmedLeft (132.0f).withTrimmedRight (12.0f).withTrimmedBottom (22.0f);
 }
 
 int DrumGrid::numSteps() const { return bars * 4 * stepsPerBeat; }
@@ -169,12 +234,32 @@ void DrumGrid::setCell (int row, int step, bool on)
 
 void DrumGrid::mouseDown (const MouseEvent& e)
 {
+    const auto ga = gridArea();
+    // a row's < >: swap just that drum's sound (then hear it)
+    if (canSwapRows)
+        for (size_t i = 0; i < rows.size(); ++i)
+            for (int k = 0; k < 2; ++k)
+                if (swapArrow (i, k).contains (e.position))
+                {
+                    proc.songJob.swapDrum (track, rows[i], k == 0 ? -1 : 1);
+                    auditionAfterSwap = rows[i];
+                    kitReloadsAtSwap = kitReloads.load();
+                    return;
+                }
+    // a row's name: hear that drum
+    if (e.position.x < ga.getX() && e.position.y >= ga.getY() && e.position.y < ga.getBottom() && ! rows.empty())
+    {
+        const int row = jlimit (0, (int) rows.size() - 1, (int) ((e.position.y - ga.getY()) / (ga.getHeight() / (float) rows.size())));
+        proc.liveDrums.audition (rows[(size_t) row], 0.9f);
+        return;
+    }
     int row, step;
     if (! cellAt (e.position, row, step)) return;
     pushUndo();
     paintRow = row;
     painting = hitsIn (row, step).empty(); // started on an empty step: paint hits; on a hit: erase
     setCell (row, step, painting);
+    if (painting && ! proc.drumLoopPlaying()) proc.liveDrums.audition (rows[(size_t) row], 0.8f); // hear what you added
 }
 
 void DrumGrid::mouseDrag (const MouseEvent& e)
@@ -185,7 +270,12 @@ void DrumGrid::mouseDrag (const MouseEvent& e)
     // stays on the row you started on, like drawing in a drum clip
     const auto p = Point<float> (jlimit (g.getX(), g.getRight() - 1.0f, e.position.x),
                                  g.getY() + (paintRow + 0.5f) * g.getHeight() / (float) rows.size());
-    if (cellAt (p, row, step)) setCell (row, step, painting);
+    if (cellAt (p, row, step))
+    {
+        const bool was = ! hitsIn (row, step).empty();
+        setCell (row, step, painting);
+        if (painting && ! was && ! proc.drumLoopPlaying()) proc.liveDrums.audition (rows[(size_t) row], 0.8f);
+    }
 }
 
 void DrumGrid::mouseUp (const MouseEvent&) { paintRow = -1; }
@@ -230,6 +320,7 @@ void DrumGrid::copyAcross (bool everySectionOfKind)
 void DrumGrid::resized()
 {
     auto top = getLocalBounds().removeFromTop (34).reduced (10, 4);
+    playBtn.setBounds (top.removeFromLeft (64)); top.removeFromLeft (8);
     prevBar.setBounds (top.removeFromLeft (28)); top.removeFromLeft (4);
     nextBar.setBounds (top.removeFromLeft (28)); top.removeFromLeft (180); // the bar / section name sits here
     undoBtn.setBounds (top.removeFromRight (56)); top.removeFromRight (6);
@@ -267,7 +358,20 @@ void DrumGrid::paint (Graphics& g)
         const float y = ga.getY() + (float) i * rowH;
         if (i % 2 == 0) { g.setColour (Colours::white.withAlpha (0.025f)); g.fillRect (ga.getX(), y, ga.getWidth(), rowH); }
         g.setColour (t.inkDim);
-        g.drawText (rowName (rows[i]), Rectangle<float> (12.0f, y, 64.0f, rowH), Justification::centredLeft, false);
+        g.drawText (rowName (rows[i]), Rectangle<float> (12.0f, y, 70.0f, rowH), Justification::centredLeft, false);
+        if (canSwapRows)
+        {
+            // < > : another sound for just this drum
+            for (int k = 0; k < 2; ++k)
+            {
+                auto btn = swapArrow (i, k);
+                const bool over = btn.contains (getMouseXYRelative().toFloat()) && isMouseOver();
+                g.setColour (Colours::white.withAlpha (over ? 0.16f : 0.06f));
+                g.fillRoundedRectangle (btn, 4.0f);
+                g.setColour (over ? t.ink : t.inkDim);
+                g.drawText (k == 0 ? "<" : ">", btn, Justification::centred, false);
+            }
+        }
     }
     // steps: bars brightest, then beats, then steps
     for (int s = 0; s <= numSteps(); ++s)
@@ -290,8 +394,20 @@ void DrumGrid::paint (Graphics& g)
         g.setColour (t.grass.withAlpha (0.35f + 0.65f * n.velocity));
         g.fillRoundedRectangle (cell, 3.0f);
     }
+    // where the loop is playing
+    if (proc.drumLoopPlaying())
+    {
+        const double beat = proc.playheadPos.load() / StudioPlayer::fileRate * proc.songBpm.load() / 60.0;
+        if (beat >= a && beat < b)
+        {
+            const float x = ga.getX() + (float) ((beat - a) * stepsPerBeat) * stepW;
+            g.setColour (Colours::white.withAlpha (0.85f));
+            g.fillRect (x - 1.0f, ga.getY(), 2.0f, ga.getHeight());
+        }
+    }
     g.setFont (lp::ui::mono (9.0f, false, 0.1f));
     g.setColour (t.inkDim);
-    g.drawText (waitingForRender || dirty ? "RECORDING YOUR CHANGES..." : "CLICK: ADD OR ERASE   |   DRAG: PAINT A ROW   |   SCROLL ON A HIT: HOW HARD",
+    const bool showSwap = swapMessage.isNotEmpty() && Time::getMillisecondCounter() < swapMessageUntil;
+    g.drawText (showSwap ? "NOW: " + swapMessage.toUpperCase() : waitingForRender || dirty ? "RECORDING YOUR CHANGES..." : String ("CLICK: ADD OR ERASE   |   DRAG: PAINT A ROW   |   SCROLL ON A HIT: HOW HARD   |   CLICK A NAME TO HEAR IT") + (canSwapRows ? "   |   < > SWAPS ONE SOUND" : ""),
                 Rectangle<float> (12.0f, ga.getBottom() + 4.0f, ga.getRight() - 12.0f, 16.0f), Justification::centredLeft, false);
 }

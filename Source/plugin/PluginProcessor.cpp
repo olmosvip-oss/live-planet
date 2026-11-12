@@ -251,6 +251,8 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         else keysQuietSamples += n;
         if (keysQuietSamples < (juce::int64) (getSampleRate() * 4.0)) t.shouldPlay = false;
     }
+    bool auditioned = false;
+    if (liveTrack.load() >= 0 && ! previewPlaying.load()) { liveTrack = -1; studio.skipTrack = -1; } // stopped elsewhere
     const bool haveSong = studio.length() > 0;
     const bool preview = haveSong && previewPlaying.load();
     const bool playSong = haveSong && ! preview && t.hostPlaying && params.getRawParameterValue ("songplay")->load() > 0.5f;
@@ -318,15 +320,35 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             sampleFx.process (fxL.data(), fxR.data(), sendL.data(), sendR.data(), n, fs);
             for (int i = 0; i < n; ++i) { L[i] += fxL[(size_t) i]; R[i] += fxR[(size_t) i]; }
         }
-        masterLimiter.process (L, R, n, songMakeupDb.load());
         const double next = pos + n * inc;
+        // the drum editor's loop: your pattern played live (the recorded drum track is skipped)
+        const int lt = liveTrack.load();
+        const bool looping = preview && lt >= 0;
+        if (looping)
+        {
+            const double toBeats = sbpm / 60.0 / StudioPlayer::fileRate;
+            const auto& m = studio.mix[(size_t) juce::jlimit (0, StudioPlayer::maxTracks - 1, lt)];
+            const float g = m.mute.load() ? 0.0f : juce::Decibels::decibelsToGain (m.gainDb.load());
+            liveDrums.process (L, R, n, getSampleRate(), true, pos * toBeats, next * toBeats, g);
+            auditioned = true;
+        }
+        masterLimiter.process (L, R, n, songMakeupDb.load());
         playheadPos = next;
-        if (preview)
+        if (looping)
+        {
+            const double toSamples = 60.0 / sbpm * StudioPlayer::fileRate;
+            const double a = loopStartBeat.load() * toSamples, b = (loopStartBeat.load() + loopBeats.load()) * toSamples;
+            previewPos = next >= b || next < a ? a + std::fmod (std::max (0.0, next - a), std::max (1.0, b - a)) : next;
+        }
+        else if (preview)
         {
             if (next >= (double) studio.length()) { previewPlaying = false; previewPos = 0.0; }
             else previewPos = next;
         }
     }
+
+    // a drum you clicked in the editor (when the loop isn't playing it already)
+    if (! auditioned) liveDrums.process (L, R, n, getSampleRate(), false, 0.0, 0.0, 1.0f);
 
     // Send the notes out so they can play any other instrument too
     for (int i = 0; i < midiOut.count; ++i)
@@ -339,6 +361,29 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 }
 
 //==============================================================================
+
+void LivePlanetProcessor::startDrumLoop (int track, double startBeat, double beats)
+{
+    setDrumLoop (startBeat, beats);
+    liveTrack = track;
+    studio.skipTrack = track;
+    previewPos = startBeat * 60.0 / songBpm.load() * StudioPlayer::fileRate;
+    previewPlaying = true;
+}
+
+void LivePlanetProcessor::setDrumLoop (double startBeat, double beats)
+{
+    loopStartBeat = startBeat;
+    loopBeats = beats;
+}
+
+void LivePlanetProcessor::stopDrumLoop()
+{
+    if (liveTrack.load() < 0) return;
+    previewPlaying = false;
+    liveTrack = -1;
+    studio.skipTrack = -1;
+}
 
 void LivePlanetProcessor::searchCity (const juce::String& name)
 {

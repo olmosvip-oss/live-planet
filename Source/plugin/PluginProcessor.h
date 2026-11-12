@@ -7,6 +7,7 @@
 #include "WeatherService.h"
 #include "SongJob.h"
 #include "StudioPlayer.h"
+#include "LiveDrums.h"
 #include "../engine/SampleFx.h"
 #include "../engine/Limiter.h"
 
@@ -54,6 +55,14 @@ public:
     // the file to drag for a track: its dry stem, or (Print FX on) the stem with its own effects recorded in
     juce::File fileToDrag (int track);
     std::atomic<int> printsRunning { 0 };
+    // the drum editor: hear each hit, and loop the bars you're editing with the rest of the song
+    LiveDrums liveDrums;
+    std::atomic<int> liveTrack { -1 };
+    std::atomic<double> loopStartBeat { 0.0 }, loopBeats { 4.0 };
+    void startDrumLoop (int track, double startBeat, double beats);
+    void setDrumLoop (double startBeat, double beats);
+    void stopDrumLoop();
+    bool drumLoopPlaying() const { return liveTrack.load() >= 0 && previewPlaying.load(); }
     juce::int64 keysQuietSamples = 1LL << 40; // how long since you last played a key (Play mode)
     // a reopened project's track mixer, applied once its song is open again
     juce::SpinLock restoreLock;

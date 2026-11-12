@@ -1309,6 +1309,7 @@ Rectangle<int> LivePlanetEditor::tabBounds (int i) const
 void LivePlanetEditor::setPage (int p)
 {
     page = p;
+    if (p != Edit) trackEditor.stopLive(); // the drum editor's loop stops when you leave it
     const bool write = p == Write, studio = p == Studio, edit = p == Edit, sound = p == Sound, sky = false; // (the weather page is gone)
     trackEditor.setVisible (edit);
     studioKey.setVisible (studio);

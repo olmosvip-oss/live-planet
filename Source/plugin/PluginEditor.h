@@ -274,8 +274,19 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void stopLoop();          // leaving the drum editor
+    void mouseMove (const juce::MouseEvent&) override;
 
 private:
+    void loadKit();
+    juce::Rectangle<float> swapArrow (size_t row, int which) const;
+    bool canSwapRows = false;
+    int auditionAfterSwap = -1, kitReloadsAtSwap = 0, seenSwaps = 0;
+    std::atomic<int> kitReloads { 0 };
+    juce::String swapMessage;
+    juce::uint32 swapMessageUntil = 0;
+    void sendLoop();          // what the loop plays right now (your drawing, live)
+    juce::String kitKey;
     juce::Rectangle<float> gridArea() const;
     int numSteps() const;
     bool cellAt (juce::Point<float> p, int& row, int& step) const;
@@ -295,6 +306,7 @@ private:
     std::vector<lp::song::Note> notes;
     std::vector<std::vector<lp::song::Note>> undo;
     std::vector<int> rows; // drum notes, top to bottom
+    juce::TextButton playBtn { "play" };
     juce::TextButton prevBar { "<" }, nextBar { ">" }, lenBtn { "1 bar" }, resBtn { "1/16" },
                      fillSection { "fill section" }, fillAll { "every chorus" }, clearBtn { "clear" }, undoBtn { "undo" };
 };
@@ -312,6 +324,7 @@ public:
     void select (int track);
     void refresh();     // message thread, every frame while showing
     int selected() const { return track; }
+    void stopLive() { drumGrid.stopLoop(); }
 
 private:
     // a dial is either live (the mixer: plays as you turn it) or re-records the track when you let go (grains)

@@ -121,6 +121,7 @@ TrackEditor::Dial& TrackEditor::addDial (const char* name, double lo, double hi,
 
 void TrackEditor::select (int t)
 {
+    if (t != track) drumGrid.stopLoop(); // another track: the drum loop stops
     const int n = (int) proc.songJob.getStatus().tracks.size();
     track = n > 0 ? jlimit (0, n - 1, t) : 0;
     const auto st = proc.songJob.getStatus();

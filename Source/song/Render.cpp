@@ -835,6 +835,38 @@ void writeMidi (const Song& song, const juce::File& file)
 }
 
 // Renders one part on its own (also used when you swap, reverse or re-pitch a track in the studio).
+// one hit of a drum track's kit, on its own (for hearing it while you edit the pattern)
+juce::AudioBuffer<float> renderDrumHit (const Song& song, const Part& part, int note, double sr)
+{
+    juce::ScopedNoDenormals noDenormals;
+    const int len = (int) (1.4 * sr);
+    juce::AudioBuffer<float> out (2, len);
+    out.clear();
+    if (! song.drumSamples.empty())
+    {
+        auto it = song.drumSamples.find (note);
+        if (it == song.drumSamples.end()) return {};
+        auto a = loadAudio (it->second, sr);
+        const int n = std::min (len, a.getNumSamples());
+        for (int ch = 0; ch < 2; ++ch) out.copyFrom (ch, 0, a, ch, 0, n);
+        out.setSize (2, std::max (1, n), true);
+    }
+    else
+    {
+        DrumKit kit;
+        kit.prepare (sr, part.variant);
+        kit.hit (note, 1.0f);
+        constexpr int block = 256;
+        for (int pos = 0; pos < len; pos += block)
+        {
+            const int n = std::min (block, len - pos);
+            kit.render (out.getWritePointer (0, pos), out.getWritePointer (1, pos), n);
+        }
+    }
+    if (part.pitchSemis != 0) pitchShiftSimple (out, part.pitchSemis, sr);
+    return out;
+}
+
 bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs, juce::AudioBuffer<float>& buf,
                  std::function<bool()> shouldStop)
 {

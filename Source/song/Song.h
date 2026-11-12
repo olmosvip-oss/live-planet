@@ -328,6 +328,9 @@ bool render (const Song& song, const RenderSettings& settings, const juce::File&
 
 void writeMidi (const Song& song, const juce::File& file);
 
+// One hit of a drum part's kit (your samples or the built-in kit), about a second long.
+juce::AudioBuffer<float> renderDrumHit (const Song& song, const Part& part, int note, double sampleRate);
+
 // Renders one part on its own, with its edits (used by the studio to redo a single track).
 bool renderPart (const Song& song, const Part& part, const RenderSettings& rs, juce::AudioBuffer<float>& out,
                  std::function<bool()> shouldStop = {});

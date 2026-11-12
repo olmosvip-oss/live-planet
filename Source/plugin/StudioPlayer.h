@@ -30,6 +30,7 @@ public:
     ~StudioPlayer() { clear(); thread.stopThread (2000); }
 
     std::array<Mix, maxTracks> mix;
+    std::atomic<int> skipTrack { -1 }; // a track played live instead (the drum editor's loop)
 
     // message thread: (re)open the tracks' files
     // waitMs: how long a read may wait for the disk (0 while playing live; offline prints wait)
@@ -121,7 +122,7 @@ public:
         {
             auto* r = readers[t].get();
             auto& m = mix[t];
-            if (r == nullptr || m.mute.load() || (anySolo && ! m.solo.load())) continue;
+            if (r == nullptr || m.mute.load() || (anySolo && ! m.solo.load()) || (int) t == skipTrack.load()) continue;
             if (start >= r->lengthInSamples) continue;
             scratch.clear();
             r->read (&scratch, 0, need, start, true, true);

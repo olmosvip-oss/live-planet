@@ -1,5 +1,6 @@
 #pragma once
 #include "AppFolder.h"
+#include "StudioPlayer.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../song/Song.h"
 #include "../song/SongFile.h"
@@ -13,7 +14,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -160,6 +161,19 @@ public:
         startIfNeeded();
     }
 
+    // swap just one drum sound of the kit (the kick, the snare...) for another from your library.
+    // dir +1 = next, -1 = back
+    void swapDrum (int track, int note, int dir)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingDrumSwap[track] = { note, dir };
+            edits.push_back ({ track, EditOp::SwapDrum });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
     // re-play a track as grains (re-recorded in the background)
     void setGrains (int track, GrainSettings g)
     {
@@ -258,6 +272,7 @@ public:
         std::map<int, juce::String> drumSamples;
         juce::String title;
         int totalBars = 0;
+        juce::String kitKey; // changes when the drum sounds change (swap, pitch)
     };
     PartView partView (int track) const
     {
@@ -268,8 +283,58 @@ public:
         v.valid = true; v.kind = p.kind; v.notes = p.notes;
         v.sections = current.sections; v.drumSamples = current.drumSamples;
         v.title = current.title; v.totalBars = current.totalBars();
+        v.kitKey << p.variant << "|" << p.pitchSemis;
+        for (auto& [n, f] : current.drumSamples) v.kitKey << "|" << n << f;
         return v;
     }
+    // every drum sound of a track's kit, one hit each, at the level they have in the track's file
+    // (any thread; reads the track's file once, so not on the audio thread)
+    std::map<int, std::shared_ptr<juce::AudioBuffer<float>>> drumHits (int track) const
+    {
+        lp::song::Song song;
+        juce::File stem;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return {};
+            song = current;
+            if (track < (int) status.tracks.size()) stem = status.tracks[(size_t) track].stem;
+        }
+        const auto& part = song.parts[(size_t) track];
+        std::set<int> notes;
+        for (auto& n : part.notes) notes.insert (n.pitch);
+        for (auto& [n, f] : song.drumSamples) notes.insert (n);
+        for (int must : { 36, 38, 39, 42, 46, 45, 37, 70, 49 }) notes.insert (must);
+        std::map<int, std::shared_ptr<juce::AudioBuffer<float>>> hits;
+        float loudest = 0.0f;
+        std::map<int, float> maxVel;
+        for (auto& n : part.notes) maxVel[n.pitch] = std::max (maxVel[n.pitch], n.velocity);
+        for (int note : notes)
+        {
+            auto b = lp::song::renderDrumHit (song, part, note, StudioPlayer::fileRate);
+            if (b.getNumSamples() < 2) continue;
+            const float pk = std::max (b.getMagnitude (0, 0, b.getNumSamples()), b.getMagnitude (1, 0, b.getNumSamples()));
+            if (maxVel.count (note)) loudest = std::max (loudest, pk * maxVel[note]);
+            hits[note] = std::make_shared<juce::AudioBuffer<float>> (std::move (b));
+        }
+        // the same loudness as in the track: its loudest moment vs. the loudest hit
+        float stemPeak = 0.0f;
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        if (std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (stem)); rd != nullptr)
+        {
+            juce::Range<float> lr[2];
+            rd->readMaxLevels (0, rd->lengthInSamples, lr, 2);
+            for (auto& r : lr) stemPeak = std::max ({ stemPeak, std::abs (r.getStart()), std::abs (r.getEnd()) });
+        }
+        const float g = loudest > 1e-4f && stemPeak > 1e-4f ? juce::jlimit (0.05f, 8.0f, stemPeak / loudest) : 0.6f;
+        for (auto& [n, b] : hits) b->applyGain (g);
+        return hits;
+    }
+
+    // the name of the last drum sound swapped in, and a counter that goes up with each swap
+    std::pair<juce::String, int> lastDrumSwap() const { const juce::ScopedLock sl (lock); return { drumSwapName, drumSwapCount }; }
+    bool kitIsSamples() const { const juce::ScopedLock sl (lock); return ! current.drumSamples.empty(); }
+
     lp::song::PartKind kindOf (int track) const
     {
         const juce::ScopedLock sl (lock);
@@ -1389,6 +1454,52 @@ private:
             part.grainAmount = gs.amount; part.grainSizeMs = gs.sizeMs; part.grainChaos = gs.chaos;
             part.grainPosition = gs.position; part.grainRate = gs.rate;
         }
+        if (op == EditOp::SwapDrum && ! song.drumSamples.empty())
+        {
+            std::pair<int, int> req;
+            { const juce::ScopedLock sl (lock); req = pendingDrumSwap[tr]; }
+            const int note = req.first;
+            using SK = lp::song::SampleKind;
+            const SK want = note == 36 ? SK::Kick : note == 38 ? SK::Snare : note == 39 ? SK::Clap : note == 42 ? SK::Hat
+                          : note == 46 ? SK::OpenHat : note == 49 ? SK::Crash : SK::Perc;
+            refreshUsable();
+            // every sound of that kind: the kit's own pack first, then the rest of your library (in a set order,
+            // so next / back step through them), leaving out anything you said "not this" to
+            const auto cur = song.drumSamples.count (note) ? song.drumSamples[note] : juce::String();
+            const auto* curEntry = library.find (cur);
+            const juce::String pack = curEntry != nullptr ? curEntry->pack : juce::String();
+            std::vector<const lp::song::LibraryEntry*> same, other;
+            for (auto& e : usableLib.all())
+            {
+                if (e.kind != want) continue;
+                {
+                    const juce::ScopedLock tl (tasteLock);
+                    auto t = sampleTaste.find (e.path);
+                    if (t != sampleTaste.end() && t->second < 0) continue;
+                }
+                (e.pack == pack ? same : other).push_back (&e);
+            }
+            auto byName = [] (const lp::song::LibraryEntry* a, const lp::song::LibraryEntry* b) { return a->path < b->path; };
+            std::sort (same.begin(), same.end(), byName);
+            std::sort (other.begin(), other.end(), byName);
+            juce::Random shuffle ((juce::int64) currentSeed * 31 + note);
+            for (int i = (int) other.size() - 1; i > 0; --i) std::swap (other[(size_t) i], other[(size_t) shuffle.nextInt (i + 1)]);
+            std::vector<const lp::song::LibraryEntry*> all (same);
+            all.insert (all.end(), other.begin(), other.end());
+            if (! all.empty())
+            {
+                int at = -1;
+                for (int i = 0; i < (int) all.size(); ++i) if (all[(size_t) i]->path == cur) at = i;
+                const int nextIndex = at < 0 ? 0 : ((at + (req.second < 0 ? -1 : 1)) % (int) all.size() + (int) all.size()) % (int) all.size();
+                song.drumSamples[note] = all[(size_t) nextIndex]->path;
+                {
+                    const juce::ScopedLock sl (lock);
+                    drumSwapName = juce::File (all[(size_t) nextIndex]->path).getFileNameWithoutExtension();
+                    ++drumSwapCount;
+                }
+                part.source = sourceLabel (all[(size_t) nextIndex]->path) + "your own kit (mixed)";
+            }
+        }
         if (op == EditOp::Notes)
         {
             const juce::ScopedLock sl (lock);
@@ -1918,6 +2029,9 @@ private:
     std::map<int, std::pair<int, int>> pendingRegion;
     std::map<int, GrainSettings> pendingGrains;
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
+    std::map<int, std::pair<int, int>> pendingDrumSwap;
+    juce::String drumSwapName; // the drum sound just swapped in (for the editor to show)
+    int drumSwapCount = 0;
     Task task = Task::None;
     juce::File pendingReference;
     lp::song::Options options;

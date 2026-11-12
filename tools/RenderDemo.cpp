@@ -519,6 +519,45 @@ int oneNoteTest()
     return 0;
 }
 
+#include "../Source/plugin/LiveDrums.h"
+// the drum editor's live loop: hits land where they're drawn, every pass, across the loop's wrap
+int liveDrumsTest()
+{
+    LiveDrums ld;
+    LiveDrums::Kit kit;
+    auto click = std::make_shared<juce::AudioBuffer<float>> (2, 2000);
+    click->clear(); click->setSample (0, 0, 1.0f); click->setSample (1, 0, 1.0f);
+    kit[36] = click;
+    ld.setKit (kit);
+    const double bpm = 120, sr = 44100, beatsPerSample = bpm / 60.0 / sr;
+    ld.setPattern ({ { 16.0, 36, 1.0f }, { 17.5, 36, 1.0f } }, 16.0, 4.0); // a 1-bar loop at bar 5
+    std::vector<float> L ((size_t) (sr * 6), 0.0f), R = L;
+    double beat = 16.0;
+    for (int pos = 0; pos + 512 <= (int) L.size(); pos += 512)
+    {
+        double next = beat + 512 * beatsPerSample;
+        ld.process (L.data() + pos, R.data() + pos, 512, sr, true, beat, next, 1.0f);
+        if (next >= 20.0) next = 16.0 + (next - 20.0);
+        beat = next;
+    }
+    std::printf ("hits heard at beats:");
+    int count = 0; double worst = 0;
+    for (size_t i = 0; i < L.size(); ++i)
+        if (L[i] > 0.5f)
+        {
+            const double b = 16.0 + std::fmod (i * beatsPerSample, 4.0);
+            const double want = std::abs (b - 16.0) < 0.3 || b > 19.7 ? 16.0 : 17.5;
+            worst = std::max (worst, std::abs ((b > 19.7 ? b - 4.0 : b) - want) / beatsPerSample / sr * 1000.0);
+            std::printf (" %.2f", b); ++count;
+        }
+    std::printf ("\n%d hits in 6 s (want 6), worst timing %.1f ms\n", count, worst);
+    ld.audition (36, 1.0f);
+    std::fill (L.begin(), L.end(), 0.0f);
+    ld.process (L.data(), R.data(), 512, sr, false, 0, 0, 1.0f);
+    std::printf ("audition: %s\n", L[0] > 0.5f ? "heard" : "SILENT");
+    return 0;
+}
+
 int stretchTest (const juce::File& dir, int tune = 0)
 {
     const double sr = 48000.0, srcBpm = 155.0, songBpm = 120.0;
@@ -950,6 +989,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 1 && juce::String (argv[1]) == "--livedrums")
+        return liveDrumsTest();
     if (argc > 1 && juce::String (argv[1]) == "--onenote")
         return oneNoteTest();
     if (argc > 1 && juce::String (argv[1]) == "--chords")
