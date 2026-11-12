@@ -812,6 +812,27 @@ static int makeFromReference (const juce::File& refFile, const juce::File& outDi
     return 0;
 }
 
+// the key heard in audio files (to check that tuned tracks really are in the song's key)
+static int keyOf (int argc, char** argv)
+{
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    for (int i = 2; i < argc; ++i)
+    {
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (argv[i])));
+        if (rd == nullptr) continue;
+        const int n = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 240));
+        juce::AudioBuffer<float> b (2, n);
+        rd->read (&b, 0, n, 0, true, true);
+        std::vector<float> m ((size_t) n);
+        for (int k = 0; k < n; ++k) m[(size_t) k] = b.getSample (0, k) + b.getSample (1, k);
+        int key = -1; bool minor = false;
+        const bool clear = lp::song::detectKey (m.data(), n, rd->sampleRate, key, minor);
+        std::printf ("%-28s heard %s %s%s\n", juce::File (argv[i]).getFileNameWithoutExtension().substring (0, 28).toRawUTF8(),
+                     key >= 0 ? lp::noteName (key) : "?", minor ? "minor" : "major", clear ? "" : " (unclear)");
+    }
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -828,6 +849,8 @@ int main (int argc, char** argv)
         return sampleTest (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--stretch")
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
+    if (argc > 2 && juce::String (argv[1]) == "--keyof")
+        return keyOf (argc, argv);
     if (argc > 3 && juce::String (argv[1]) == "--make")
         return makeFromReference (juce::File (argv[2]), juce::File (argv[3]), argc > 4 ? juce::String (argv[4]).getIntValue() : 1);
     if (argc > 3 && juce::String (argv[1]) == "--match")

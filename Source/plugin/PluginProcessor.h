@@ -72,11 +72,23 @@ public:
     lp::Limiter masterLimiter;                  // the song's loudness, without squashing it
     std::atomic<float> songMakeupDb { 0.0f };
     juce::File loadedSongFolder;
+    // the key boxes changed: move the current song to that key (Auto = the reference's key)
+    void applyChosenKey()
+    {
+        const auto st = songJob.getStatus();
+        if (! st.haveSong) return;
+        const int k = (int) params.getRawParameterValue ("songkey")->load() - 1;
+        const int m = (int) params.getRawParameterValue ("songmode")->load();
+        const int key = k >= 0 ? k : (st.profile.valid ? st.profile.key : st.song.key);
+        const bool minor = m > 0 ? m == 2 : (st.profile.valid ? st.profile.minor : st.song.minor);
+        songJob.setSongKey (key, minor);
+    }
     std::vector<float> fxL, fxR, sendL, sendR;
     std::atomic<bool> previewPlaying { false };
     std::atomic<double> previewPos { 0.0 };   // in 48 kHz samples
     std::atomic<double> dawBpm { 0.0 };
-    juce::String songPrompt;                  // "describe your song" (message thread only)       // your project's tempo, as last reported
+    juce::String songPrompt;                  // "describe your song" (message thread only)
+    bool songPromptIsAuto = false;            // ...still just the description written from your reference       // your project's tempo, as last reported
     std::atomic<double> playheadPos { 0.0 };  // where the song is right now (preview or DAW)
     int loadedStudioVersion = -1;
     juce::String getSampleName() const { return sampleName; }

@@ -184,6 +184,8 @@ private:
     juce::ToggleButton newKey { "new key" }, useSamples { "my samples" }, playWith { "play it with my song" }, samplesOnly { "samples only" }, dawTempo { "daw tempo" };
     Segmented length;
     std::unique_ptr<ChoiceChips> style;
+    juce::ComboBox keyBox, modeBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> keyAtt, modeAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> useSamplesAtt, playWithAtt, samplesOnlyAtt, dawTempoAtt;
     juce::TextButton write { "write a song" };
     bool full = true;
@@ -366,6 +368,8 @@ private:
     SongView songView;
     StudioView studioView;
     TrackEditor trackEditor;
+    juce::ComboBox studioKey, studioMode;   // the song's key, at the top of the studio
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> studioKeyAtt, studioModeAtt;
     GrainView grainView;
     FilePill pillMidi, pillStems, pillMix, pillHelper, pillFolder;
     std::unique_ptr<Stepper> keyStepper, scaleStepper;

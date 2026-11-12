@@ -617,6 +617,24 @@ namespace
     }
 }
 
+// the song's key, like Ableton's: a note and Major / Minor ("Auto" follows your reference)
+static void setUpKeyBoxes (LivePlanetProcessor& p, ComboBox& key, ComboBox& mode,
+                           std::unique_ptr<AudioProcessorValueTreeState::ComboBoxAttachment>& keyAtt,
+                           std::unique_ptr<AudioProcessorValueTreeState::ComboBoxAttachment>& modeAtt)
+{
+    key.addItemList (StringArray { "Auto key", "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B" }, 1);
+    mode.addItemList (StringArray { "Auto", "Major", "Minor" }, 1);
+    keyAtt = std::make_unique<AudioProcessorValueTreeState::ComboBoxAttachment> (p.params, "songkey", key);
+    modeAtt = std::make_unique<AudioProcessorValueTreeState::ComboBoxAttachment> (p.params, "songmode", mode);
+    for (auto* b : { &key, &mode })
+    {
+        b->setWantsKeyboardFocus (false);
+        b->setMouseClickGrabsKeyboardFocus (false);
+        auto prev = b->onChange;
+        b->onChange = [&p, prev] { if (prev) prev(); MessageManager::callAsync ([&p] { p.applyChosenKey(); }); };
+    }
+}
+
 SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     : proc (p), th (theme),
       length ({ "Full song", "Sketch" }, [this] { return full ? 0 : 1; }, [this] (int i) { full = i == 0; }, theme)
@@ -631,6 +649,9 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     samplesOnly.setButtonText ("Samples only");
     playWith.setButtonText ("Play along with my DAW");
     write.getProperties().set ("primary", true);
+    setUpKeyBoxes (p, keyBox, modeBox, keyAtt, modeAtt);
+    addAndMakeVisible (keyBox);
+    addAndMakeVisible (modeBox);
     addAndMakeVisible (*style);
     addAndMakeVisible (useSamples);
     addAndMakeVisible (playWith);
@@ -642,7 +663,13 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     dawTempo.setWantsKeyboardFocus (false);
     dawTempo.setTooltip ("write the song at your project's tempo so every loop lines up");
     dawTempoAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "dawtempo", dawTempo);
-    write.onClick = [this] { proc.songPrompt = promptBox.getText(); proc.makeSong (full, newKey.getToggleState()); repaint(); };
+    write.onClick = [this]
+    {
+        proc.songPrompt = promptBox.getText();
+        proc.songPromptIsAuto = autoDescription.isNotEmpty() && promptBox.getText().trim() == autoDescription;
+        proc.makeSong (full, newKey.getToggleState());
+        repaint();
+    };
     addAndMakeVisible (write);
 
     promptBox.setTextToShowWhenEmpty ("describe it: dark trap 140 in f minor with piano + flute", lp::ui::theme (0).inkDim);
@@ -671,10 +698,18 @@ void SongPanel::resized()
     // the settings, one row each
     auto s = settings.reduced (22, 18);
     s.removeFromTop (40);
+    {
+        auto kr = s.removeFromTop (30);
+        kr.removeFromLeft (64); // "Key"
+        modeBox.setBounds (kr.removeFromRight (92));
+        kr.removeFromRight (8);
+        keyBox.setBounds (kr);
+    }
+    s.removeFromTop (6);
     for (auto* t : { &dawTempo, &useSamples, &samplesOnly, &playWith, &newKey })
-        t->setBounds (s.removeFromTop (29));
-    s.removeFromTop (8);
-    length.setBounds (s.removeFromTop (30));
+        t->setBounds (s.removeFromTop (25));
+    s.removeFromTop (6);
+    length.setBounds (s.removeFromTop (28));
     style->setBounds (0, hero.getBottom() + 16, r.getWidth(), 34);
 }
 
@@ -820,6 +855,9 @@ void SongPanel::paint (Graphics& g)
         g.setFont (font (19.0f, lp::ui::Medium, -0.01f));
         g.setColour (t.ink);
         g.drawText ("Settings", r.removeFromTop (26.0f), Justification::centredLeft, false);
+        g.setFont (font (13.5f, lp::ui::Medium));
+        g.setColour (t.ink.withAlpha (0.88f));
+        g.drawText ("Key", Rectangle<float> (r.getX(), (float) keyBox.getY(), 60.0f, (float) keyBox.getHeight()), Justification::centredLeft, false);
         // the library along the bottom
         auto lib = c.reduced (22.0f, 16.0f).removeFromBottom (16.0f);
         g.setFont (lp::ui::mono (10.0f, false, 0.1f));
@@ -1081,6 +1119,9 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (songView);
     addChildComponent (studioView);
     addChildComponent (trackEditor);
+    setUpKeyBoxes (p, studioKey, studioMode, studioKeyAtt, studioModeAtt);
+    addChildComponent (studioKey);
+    addChildComponent (studioMode);
     addChildComponent (grainView);
     studioView.onOpenTrack = [this] (int t) { trackEditor.select (t); setPage (Edit); };
     playButton.songMode = [this] { return page == Write || page == Studio || page == Edit; };
@@ -1173,6 +1214,13 @@ LivePlanetEditor::Knob& LivePlanetEditor::addKnob (const char* id, const String&
 void LivePlanetEditor::applyTheme()
 {
     lnf.th = &lp::ui::theme (proc.themeIndex.load());
+    lnf.setColour (ComboBox::backgroundColourId, lnf.th->bodyDark);
+    lnf.setColour (ComboBox::textColourId, lnf.th->ink);
+    lnf.setColour (ComboBox::outlineColourId, lnf.th->line);
+    lnf.setColour (ComboBox::arrowColourId, lnf.th->inkDim);
+    lnf.setColour (PopupMenu::backgroundColourId, lnf.th->bodyLight);
+    lnf.setColour (PopupMenu::highlightedBackgroundColourId, lnf.th->grass);
+    lnf.setColour (PopupMenu::textColourId, lnf.th->ink);
     for (auto* ed : { &cityBox, &songPanel.promptBox })
     {
         ed->setColour (TextEditor::textColourId, lnf.th->ink);
@@ -1199,6 +1247,8 @@ void LivePlanetEditor::setPage (int p)
     page = p;
     const bool write = p == Write, studio = p == Studio, edit = p == Edit, sound = p == Sound, sky = false; // (the weather page is gone)
     trackEditor.setVisible (edit);
+    studioKey.setVisible (studio);
+    studioMode.setVisible (studio);
     grainView.setVisible (p == Sound);
     const bool haveSong = proc.songJob.getStatus().haveSong;
     songPanel.setVisible (write);
@@ -1538,6 +1588,8 @@ void LivePlanetEditor::resized()
         }
     }
     studioView.setBounds (M, 84, W - 2 * M, 432);
+    studioMode.setBounds (cardTimeline.getRight() - 18 - 92, cardTimeline.getY() + 12, 92, 26);
+    studioKey.setBounds (cardTimeline.getRight() - 18 - 92 - 8 - 128, cardTimeline.getY() + 12, 128, 26);
     trackEditor.setBounds (M + 24, 84 + 18, W - 2 * M - 48, 644 - 36);
     if (page == Edit) playButton.setBounds (W - M - 24 - 44, 84 + 644 - 18 - 44, 44, 44);
 

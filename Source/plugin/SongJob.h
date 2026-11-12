@@ -3,6 +3,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../song/Song.h"
 #include "../song/Library.h"
+#include "../engine/Limiter.h"
 
 // Runs song mode in the background so the music (and your DAW) never stutters:
 // listening to a reference song, then writing and rendering new songs.
@@ -11,7 +12,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains }; // Add: the "track" is the LoopKind to add
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -30,6 +31,7 @@ public:
         int loopBars = 0, regionStart = 0, regionBars = 0;
         bool isLoop = false;
         GrainSettings grains;
+        juce::String keyText; // e.g. "Abmaj > C minor -5 st"
     };
 
     struct Status
@@ -102,6 +104,18 @@ public:
             settings = rs;
             weather = sky;
             task = Task::Write;
+        }
+        startIfNeeded();
+    }
+
+    // move the whole song to another key: every melodic sample is re-tuned (drums aren't), played parts transposed
+    void setSongKey (int key, bool minor)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            if (current.parts.empty()) return;
+            edits.push_back ({ key + (minor ? 12 : 0), EditOp::Key });
+            status.editing = true;
         }
         startIfNeeded();
     }
@@ -609,7 +623,7 @@ private:
         currentSeed = o.seed;
         status.tracks.clear();
         for (int i = 0; i < (int) song.parts.size(); ++i)
-            status.tracks.push_back (trackInfo (song.parts[(size_t) i], files.stems[i]));
+            status.tracks.push_back (info (song.parts[(size_t) i], files.stems[i], song));
         ++status.version;
         status.song = song;
         status.usedSamples = used;
@@ -799,6 +813,108 @@ private:
 
     std::map<juce::String, Heard> keyCache;
 
+    // the song in a new key: melodic samples re-tuned from their own key, played parts moved, the mix rebuilt
+    void retuneSong (int key, bool minor)
+    {
+        lp::song::Song song;
+        std::vector<TrackInfo> tracks;
+        {
+            const juce::ScopedLock sl (lock);
+            song = current;
+            tracks = status.tracks;
+        }
+        if (song.parts.empty() || (song.key == key && song.minor == minor)) return;
+        using PK = lp::song::PartKind;
+        using LK = lp::song::LoopKind;
+        // played parts move by the shortest way between the two keys' home notes (relative keys count as the same)
+        const int shift = lp::song::tuneShift (song.key, song.minor, key, minor);
+        song.key = key;
+        song.minor = minor;
+        for (size_t i = 0; i < song.parts.size() && i < tracks.size(); ++i)
+        {
+            auto& part = song.parts[i];
+            bool changed = false;
+            if (part.kind == PK::Loop)
+            {
+                const auto* e = library.find (part.samplePath);
+                const bool untuned = e != nullptr && (e->loop == LK::Drums || e->loop == LK::Perc || e->loop == LK::FX);
+                if (untuned) continue;
+                for (int c = 0; c < part.candidates.size(); ++c)
+                {
+                    const int t = tuneFor (part.candidates[c], key, minor);
+                    if (c < part.candidateTunes.size()) part.candidateTunes.set (c, t == 99 ? 0 : t);
+                }
+                const int t = tuneFor (part.samplePath, key, minor);
+                part.autoTune = t == 99 ? 0 : t;
+                part.remix = remixText (part, 0.0, song) + arrangementText (part);
+                changed = true;
+            }
+            else if (part.kind != PK::Drums && part.kind != PK::Fx && shift != 0)
+            {
+                for (auto& nt : part.notes) nt.pitch += shift;
+                changed = true;
+            }
+            if (! changed) continue;
+            {
+                const juce::ScopedLock sl (lock);
+                status.message = "moving \"" + juce::String (part.name) + "\" to " + lp::noteName (key) + (minor ? " minor" : " major") + "...";
+            }
+            juce::AudioBuffer<float> buf;
+            if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
+            const auto stem = currentFolder.getChildFile ("stems").getChildFile (
+                juce::String ((int) i + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (" + lp::noteName (key) + (minor ? "m" : "") + ").wav");
+            if (! writeStem (stem, buf, currentRs.sampleRate)) return;
+            tracks[i] = info (part, stem, song);
+        }
+        rebuildMix (song, tracks);
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks = tracks;
+        status.message = "\"" + song.title + "\" is now in " + lp::noteName (key) + (minor ? " minor" : " major");
+        ++status.version;
+    }
+
+    // the full mix again from the tracks (after a key change), through the same limiter
+    void rebuildMix (const lp::song::Song& song, const std::vector<TrackInfo>& tracks)
+    {
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        juce::AudioBuffer<float> mix;
+        for (auto& t : tracks)
+        {
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (t.stem));
+            if (rd == nullptr) continue;
+            const int n = (int) rd->lengthInSamples;
+            if (mix.getNumSamples() < n) mix.setSize (2, n, true, true);
+            juce::AudioBuffer<float> b (2, n);
+            rd->read (&b, 0, n, 0, true, true);
+            for (int ch = 0; ch < 2; ++ch) mix.addFrom (ch, 0, b, ch, 0, n);
+        }
+        if (mix.getNumSamples() == 0) return;
+        lp::Limiter lim;
+        lim.prepare (currentRs.sampleRate, -1.0f);
+        lim.process (mix.getWritePointer (0), mix.getWritePointer (1), mix.getNumSamples(), song.playbackMakeupDb);
+        writeStem (currentFolder.getChildFile (song.title + " - full mix.wav"), mix, currentRs.sampleRate);
+    }
+
+    // a track's info, with what happened to its key
+    TrackInfo info (const lp::song::Part& p, const juce::File& stem, const lp::song::Song& song) const
+    {
+        auto t = trackInfo (p, stem);
+        if (p.kind == lp::song::PartKind::Loop)
+            if (const auto* e = library.find (p.samplePath); e != nullptr && e->loop != lp::song::LoopKind::Drums
+                                                                && e->loop != lp::song::LoopKind::Perc && e->loop != lp::song::LoopKind::FX)
+            {
+                const juce::String songKey = juce::String (lp::noteName (song.key)) + (song.minor ? " minor" : " major");
+                const int tune = p.autoTune;
+                juce::String from = e->key >= 0 ? juce::String (lp::noteName (e->key)) + (e->minor ? "m" : "") : juce::String ("its key");
+                t.keyText = tune == 0 ? from + " = " + songKey + " (already fits)"
+                                      : from + "  >  " + songKey + "  " + (tune > 0 ? "+" : "") + juce::String (tune) + " st";
+            }
+        return t;
+    }
+
     static TrackInfo trackInfo (const lp::song::Part& p, const juce::File& stem)
     {
         TrackInfo t;
@@ -922,7 +1038,7 @@ private:
         const juce::ScopedLock sl (lock);
         current = song;
         status.song = song;
-        status.tracks.push_back (trackInfo (part, stem));
+        status.tracks.push_back (info (part, stem, song));
         status.message = "added " + juce::String (part.name) + ": " + juce::File (part.samplePath).getFileNameWithoutExtension();
         ++status.version;
     }
@@ -930,6 +1046,7 @@ private:
     void applyEdit (int tr, EditOp op)
     {
         if (op == EditOp::Add) { addInstrument ((lp::song::LoopKind) tr); return; }
+        if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
         lp::song::Song song;
         {
             const juce::ScopedLock sl (lock);
@@ -1020,7 +1137,7 @@ private:
         const juce::ScopedLock sl (lock);
         current = song;
         status.song = song;
-        status.tracks[(size_t) tr] = trackInfo (part, stem);
+        status.tracks[(size_t) tr] = info (part, stem, song);
         ++status.version;
     }
 

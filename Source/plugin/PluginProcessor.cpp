@@ -39,6 +39,10 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
     // plays without the DAW running (the play button on the screen)
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "play", 1 }, "Play", false));
     // song mode
+    l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "songkey", 1 }, "Song Key",
+        juce::StringArray { "Auto", "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B" }, 0));
+    l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "songmode", 1 }, "Song Scale",
+        juce::StringArray { "Auto", "Major", "Minor" }, 0));
     l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "songstyle", 1 }, "Song Style",
         juce::StringArray { "auto", "dusty", "boom bap", "trap", "house", "brushes", "electronic" }, 0));
     l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "usesamples", 1 }, "Use My Samples", true));
@@ -671,6 +675,9 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
     o.shiftKey = newKey;
     o.seed = (uint32_t) juce::Random::getSystemRandom().nextInt (1 << 30);
     o.style = (int) params.getRawParameterValue ("songstyle")->load() - 1;
+    // a key you chose wins over the reference's (applied after the description, below)
+    const int chosenKey = (int) params.getRawParameterValue ("songkey")->load() - 1;
+    const int chosenMode = (int) params.getRawParameterValue ("songmode")->load();
     if (params.getRawParameterValue ("dawtempo")->load() > 0.5f && dawBpm.load() > 30.0)
         o.dawBpm = std::round (dawBpm.load() * 100.0) / 100.0;
     // "describe your song": genre, tempo, key, mood, instruments
@@ -680,7 +687,10 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
         if (pr.genre != nullptr)
         {
             if (o.style < 0) o.style = (int) pr.genre->style; // the style switch still wins if you set it
-            o.genreLo = pr.genre->lo; o.genreHi = pr.genre->hi; o.genreBpm = pr.genre->typical;
+            if (! songPromptIsAuto) // a description the plugin wrote never moves your tempo
+            {
+                o.genreLo = pr.genre->lo; o.genreHi = pr.genre->hi; o.genreBpm = pr.genre->typical;
+            }
             for (auto* w : pr.genre->libraryWords) o.genreWords.add (w);
         }
         o.promptBpm = pr.bpm;
@@ -691,6 +701,13 @@ void LivePlanetProcessor::makeSong (bool full, bool newKey)
         o.wish = pr.wish;
         if (pr.key >= 0) o.shiftKey = false;
         if (pr.sketch) o.full = false;
+    }
+    if (chosenKey >= 0 || chosenMode > 0)
+    {
+        const auto ref = songJob.getStatus().profile;
+        o.promptKey = chosenKey >= 0 ? chosenKey : (ref.valid ? ref.key : 0);
+        o.promptMinor = chosenMode > 0 ? chosenMode == 2 : (ref.valid ? ref.minor : true);
+        o.shiftKey = false;
     }
     const int soundIdx = (int) params.getRawParameterValue ("sound")->load();
     o.mainSound = (soundIdx <= 0 || soundIdx >= kSampleChoice) ? lp::SoundId::Auto : (lp::SoundId) (soundIdx - 1);
