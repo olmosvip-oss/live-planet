@@ -279,6 +279,63 @@ static int latencyTest()
 
 // Song mode round trip: make a reference song with a known tempo/key/shape, analyse it,
 // then write a new song from what was learned.
+#include "../Source/song/Chords.h"
+// chords read from a song's own tracks, against the chords it was written with
+static int chordTest (const juce::File& outDir)
+{
+    using namespace lp::song;
+    int right = 0, total = 0;
+    for (int seed : { 3, 11, 27, 40 })
+    {
+        lp::Weather sky; sky.temperatureC = 14; sky.windKmh = 10; sky.cloudPct = 60; sky.rainMm = 0.6f;
+        Options o; o.seed = (uint32_t) seed; o.full = false;
+        Song song = generate (Profile {}, sky, o);
+        Rendered out;
+        if (! render (song, {}, outDir.getChildFile ("chords-" + juce::String (seed)), out)) return 1;
+        const double barSamples = 4.0 * 60.0 / song.bpm * 48000.0;
+        const int bars = song.totalBars(), len = (int) (bars * barSamples);
+        std::vector<float> music ((size_t) len, 0.0f), bass ((size_t) len, 0.0f);
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        // the truth: which pitch classes the chord part holds at each half bar
+        const Part* chordPart = nullptr;
+        for (size_t i = 0; i < song.parts.size(); ++i)
+        {
+            const auto& p = song.parts[i];
+            if (p.kind == PartKind::Chords || p.kind == PartKind::Pad) if (chordPart == nullptr) chordPart = &p;
+            if (p.kind == PartKind::Drums) continue;
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (out.stems[(int) i]));
+            juce::AudioBuffer<float> b (2, len); b.clear();
+            rd->read (&b, 0, (int) std::min<juce::int64> (len, rd->lengthInSamples), 0, true, true);
+            auto& dst = p.kind == PartKind::Bass ? bass : music;
+            for (int k = 0; k < len; ++k) dst[(size_t) k] += 0.5f * (b.getSample (0, k) + b.getSample (1, k));
+        }
+        if (chordPart == nullptr) continue;
+        const auto got = chords::read (barChroma (music.data(), len, 48000.0, bars * 2), barChroma (bass.data(), len, 48000.0, bars * 2), song.key, song.minor, 2.0);
+        std::printf ("seed %2d  %s %s:", seed, lp::noteName (song.key), song.minor ? "minor" : "major");
+        int shown = 0;
+        for (auto& c : got) if (c.valid && shown++ < 10) std::printf (" %s", chords::name (c).toRawUTF8());
+        std::printf ("\n");
+        for (int slot = 0; slot < bars * 2; ++slot)
+        {
+            const double t = slot * 2.0 + 1.0;
+            std::set<int> held;
+            for (auto& n : chordPart->notes) if (n.beat <= t && n.beat + n.length > t) held.insert (n.pitch % 12);
+            if (held.size() < 3) continue;
+            const chords::Chord* c = nullptr;
+            for (auto& g : got) if (g.beat <= t && g.beat + g.length > t) c = &g;
+            ++total;
+            if (c == nullptr || ! c->valid) continue;
+            // right when the read chord's root, third and fifth are all in what was held
+            const auto tn = chords::tones (*c);
+            bool ok = true;
+            for (size_t k = 0; k < 3; ++k) ok = ok && held.count (tn[k]);
+            right += ok ? 1 : 0;
+        }
+    }
+    std::printf ("chords right: %d of %d half-bars (%.0f%%)\n", right, total, 100.0 * right / std::max (1, total));
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -989,6 +1046,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 2 && juce::String (argv[1]) == "--chordread")
+        return chordTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--livedrums")
         return liveDrumsTest();
     if (argc > 1 && juce::String (argv[1]) == "--onenote")

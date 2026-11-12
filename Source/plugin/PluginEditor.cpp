@@ -1146,6 +1146,9 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       grainView (p),
       sourcesPanel (p, lnf.th),
       pillMidi ("drag midi", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.midiFile.getFullPathName()) : StringArray(); }),
+      pillChords ("chords + bass", [&p] { auto st = p.songJob.getStatus(); if (! st.haveSong) return StringArray();
+                                          const auto f = st.files.folder.getChildFile (st.song.title + " - chords and bass.mid");
+                                          return StringArray (f.existsAsFile() ? f.getFullPathName() : st.files.folder.getFullPathName()); }),
       pillStems ("drag stems", [&p] { auto st = p.songJob.getStatus(); StringArray a; if (st.haveSong) for (auto& t : st.tracks) a.add (t.stem.getFullPathName()); return a; }),
       pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray(); }),
       pillHelper ("locators", [&p] { auto st = p.songJob.getStatus(); return st.abletonSet.existsAsFile() ? StringArray (st.abletonSet.getFullPathName()) : StringArray(); }),
@@ -1189,7 +1192,9 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     pillStems.filesToDrag = [&p] { auto st = p.songJob.getStatus(); StringArray a;
                                    for (int t = 0; t < (int) st.tracks.size(); ++t) if (auto f = p.fileToDrag (t); f.existsAsFile()) a.add (f.getFullPathName());
                                    return a; };
-    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+    // the chords: read from the song's tracks when you drag (or click) it
+    pillChords.filesToDrag = [&p] { const auto f = p.songJob.chordsMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
+    for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
         addChildComponent (pill);
     addAndMakeVisible (themeDots);
 
@@ -1321,7 +1326,7 @@ void LivePlanetEditor::setPage (int p)
     songPanel.setVisible (write);
     songView.setVisible (write || studio);
     studioView.setVisible (studio && haveSong);
-    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+    for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
         pill->setVisible (write || studio);
     // sound: the instrument and the knobs
     keys.setVisible (sound);
@@ -1406,7 +1411,7 @@ void LivePlanetEditor::timerCallback()
         if (haveSong && page == Studio) studioView.repaint();
         songPanel.refresh();
         songView.repaint();
-        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
             pill->repaint();
     }
     if (page == Sound)
@@ -1648,8 +1653,8 @@ void LivePlanetEditor::resized()
         const int y = cardTimeline.getBottom() - 54;
         playButton.setBounds (cardTimeline.getX() + 18, y + 2, 40, 40);
         int px = cardTimeline.getX() + 74;
-        const int pw = (cardTimeline.getRight() - 18 - px) / 5;
-        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        const int pw = (cardTimeline.getRight() - 18 - px) / 6;
+        for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
         {
             pill->setBounds (px, y + 4, pw - 8, 36);
             px += pw;

@@ -478,7 +478,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> studioKeyAtt, studioModeAtt;
     GrainView grainView;
     SourcesPanel sourcesPanel;
-    FilePill pillMidi, pillStems, pillMix, pillHelper, pillFolder;
+    FilePill pillMidi, pillChords, pillStems, pillMix, pillHelper, pillFolder;
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;
     juce::TextButton loadButton { "Load sample" };

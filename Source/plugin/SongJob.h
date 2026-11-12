@@ -4,6 +4,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../song/Song.h"
 #include "../song/SongFile.h"
+#include "../song/Chords.h"
 #include "../song/Library.h"
 #include "../engine/Limiter.h"
 
@@ -334,6 +335,56 @@ public:
     // the name of the last drum sound swapped in, and a counter that goes up with each swap
     std::pair<juce::String, int> lastDrumSwap() const { const juce::ScopedLock sl (lock); return { drumSwapName, drumSwapCount }; }
     bool kitIsSamples() const { const juce::ScopedLock sl (lock); return ! current.drumSamples.empty(); }
+
+    // the song's chords and bass as MIDI ("drag chords"): read from what its tracks really play, so it
+    // matches the song even after swaps and key changes. Made once per version of the song.
+    juce::File chordsMidi (juce::String* summary = nullptr)
+    {
+        lp::song::Song song;
+        std::vector<TrackInfo> tracks;
+        juce::File folder;
+        int version = 0;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong) return {};
+            song = current; tracks = status.tracks; folder = currentFolder; version = status.version;
+        }
+        const auto file = folder.getChildFile (song.title + " - chords and bass.mid");
+        if (chordsVersion == version && file.existsAsFile()) { if (summary) *summary = chordsSummary; return file; }
+        const double barSamples = 4.0 * 60.0 / song.bpm * StudioPlayer::fileRate;
+        const int bars = song.totalBars(), slots = bars * 2; // two chords a bar at most
+        const int len = (int) (bars * barSamples);
+        std::vector<float> music ((size_t) len, 0.0f), bassLine ((size_t) len, 0.0f);
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        bool anyBass = false;
+        for (size_t i = 0; i < tracks.size() && i < song.parts.size(); ++i)
+        {
+            const auto& p = song.parts[i];
+            const juce::String n (p.name);
+            if (p.kind == lp::song::PartKind::Drums || p.kind == lp::song::PartKind::Fx || n.containsIgnoreCase ("drum")
+                || n.containsIgnoreCase ("perc") || n.containsIgnoreCase ("transition")) continue;
+            const bool isBass = p.kind == lp::song::PartKind::Bass || n.containsIgnoreCase ("bass");
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (tracks[i].stem));
+            if (rd == nullptr) continue;
+            juce::AudioBuffer<float> b (2, len);
+            b.clear();
+            rd->read (&b, 0, (int) std::min<juce::int64> (len, rd->lengthInSamples), 0, true, true);
+            auto& dst = isBass ? bassLine : music;
+            for (int k = 0; k < len; ++k) dst[(size_t) k] += 0.5f * (b.getSample (0, k) + b.getSample (1, k));
+            anyBass = anyBass || isBass;
+        }
+        const auto mc = lp::song::barChroma (music.data(), len, StudioPlayer::fileRate, slots);
+        const auto bc = anyBass ? lp::song::barChroma (bassLine.data(), len, StudioPlayer::fileRate, slots) : std::vector<std::array<float, 12>> {};
+        const auto chords = lp::song::chords::read (mc, bc, song.key, song.minor, 2.0);
+        lp::song::chords::writeMidi (chords, song.bpm, song.title, file);
+        juce::StringArray names;
+        for (auto& c : chords) if (c.valid && (names.isEmpty() || names[names.size() - 1] != lp::song::chords::name (c))) names.add (lp::song::chords::name (c));
+        chordsSummary = names.joinIntoString ("  ");
+        chordsVersion = version;
+        if (summary) *summary = chordsSummary;
+        return file;
+    }
 
     lp::song::PartKind kindOf (int track) const
     {
@@ -2064,6 +2115,8 @@ private:
     std::map<int, GrainSettings> pendingGrains;
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
     std::map<int, std::pair<int, int>> pendingDrumSwap;
+    int chordsVersion = -1;
+    juce::String chordsSummary;
     juce::String drumSwapName; // the drum sound just swapped in (for the editor to show)
     int drumSwapCount = 0;
     Task task = Task::None;
