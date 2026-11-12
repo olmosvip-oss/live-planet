@@ -536,9 +536,9 @@ juce::AudioBuffer<float> keySong (int key, bool minor, double seconds, bool drum
     };
     for (int barN = 0; barN * bar < seconds; ++barN)
     {
-        const int deg = type == 1 ? (barN % 2 == 0 ? 0 : (minor ? 6 : 3)) : prog[barN % 4];
+        const int deg = type == 1 ? (barN % 2 == 0 ? 0 : (minor ? 6 : 3)) : prog[(barN + (type == 5 ? 2 : 0)) % 4]; // type 5: same key, chords shifted 2 bars
         const double t0 = barN * bar;
-        if (type == 0 || type == 1)
+        if (type == 0 || type == 1 || type == 5)
             for (int k = 0; k < 3; ++k)
             {
                 const int d = deg + 2 * k;
@@ -833,6 +833,28 @@ static int keyOf (int argc, char** argv)
     return 0;
 }
 
+// chord agreement: same chords should score high, same key but other chords low
+static int chordTest()
+{
+    juce::Random rng (3);
+    double same = 0, clash = 0; int n = 0, wins = 0;
+    for (int key = 0; key < 12; key += 3)
+        for (int mi = 0; mi < 2; ++mi)
+        {
+            double det;
+            const double bpm = 120.0, len = 4 * 240.0 / bpm; // 4 bars
+            auto a = keySong (key, mi == 1, len, false, false, rng, det, 0);
+            auto b = keySong (key, mi == 1, len, false, false, rng, det, 0);
+            auto c = keySong (key, mi == 1, len, false, false, rng, det, 5);
+            auto ch = [] (juce::AudioBuffer<float>& x) { return lp::song::barChroma (x.getReadPointer (0), x.getNumSamples(), 44100.0, 4); };
+            const auto ca = ch (a), cb = ch (b), cc = ch (c);
+            const float s1 = lp::song::chordAgreement (ca, 0, 4, cb, 0, 4), s2 = lp::song::chordAgreement (ca, 0, 4, cc, 0, 4);
+            same += s1; clash += s2; ++n; wins += s1 > s2 + 0.1f;
+        }
+    std::printf ("same chords: %.2f   same key, other chords: %.2f   told apart %d / %d\n", same / n, clash / n, wins, n);
+    return wins == n ? 0 : 1;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -849,6 +871,8 @@ int main (int argc, char** argv)
         return sampleTest (juce::File (juce::String (argv[2])));
     if (argc > 2 && juce::String (argv[1]) == "--stretch")
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
+    if (argc > 1 && juce::String (argv[1]) == "--chords")
+        return chordTest();
     if (argc > 2 && juce::String (argv[1]) == "--keyof")
         return keyOf (argc, argv);
     if (argc > 3 && juce::String (argv[1]) == "--make")

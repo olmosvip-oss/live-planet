@@ -157,6 +157,41 @@ bool detectKey (const float* input, int numSamples, double sampleRate, int& key,
     return sc[(size_t) bi] > 0.5f; // a clear enough key
 }
 
+std::vector<std::array<float, 12>> barChroma (const float* input, int numSamples, double sampleRate, int bars)
+{
+    std::vector<std::array<float, 12>> out;
+    if (bars <= 0 || numSamples <= 0) return out;
+    constexpr int N = 8192;
+    const int step = std::max (1, (int) std::round (sampleRate / 22050.0));
+    const double sr = sampleRate / step;
+    std::vector<float> x ((size_t) (numSamples / step));
+    for (size_t i = 0; i < x.size(); ++i) x[i] = input[i * (size_t) step];
+    if ((int) x.size() < N) return out;
+    std::vector<float> win (N);
+    for (int i = 0; i < N; ++i) win[(size_t) i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * (float) i / (float) (N - 1));
+    // peaks per window, then one tuning for the whole loop
+    std::vector<std::pair<int, std::vector<Peak>>> wins;
+    std::vector<Peak> all;
+    std::vector<cpx> b (N);
+    for (int start = 0; start + N <= (int) x.size(); start += N / 4)
+    {
+        for (int i = 0; i < N; ++i) b[(size_t) i] = cpx (x[(size_t) (start + i)] * win[(size_t) i], 0.0f);
+        fft (b);
+        wins.push_back ({ start + N / 2, {} });
+        findPeaks (b, N, sr, 60.0, 2500.0, wins.back().second);
+        all.insert (all.end(), wins.back().second.begin(), wins.back().second.end());
+    }
+    const double off = tuningOffset (all);
+    out.assign ((size_t) bars, {});
+    const double barLen = (double) x.size() / bars;
+    for (auto& [centre, peaks] : wins)
+    {
+        const int bar = juce::jlimit (0, bars - 1, (int) (centre / barLen));
+        for (auto& pk : peaks) out[(size_t) bar][(size_t) pitchClass (pk.freq, off)] += pk.w;
+    }
+    return out;
+}
+
 Feel measureFeel (const float* x, int n, double sr)
 {
     Feel f;

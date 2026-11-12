@@ -485,8 +485,8 @@ private:
             // a full band from your library: drums, percussion, bass, up to three melodic instruments
             // (a different mix each time), a pad, a vocal and an fx
             using LK = lp::song::LoopKind;
-            const lp::song::LoopChoice *drumC = nullptr, *percC = nullptr, *bassC = nullptr, *vocalC = nullptr, *padC = nullptr, *fxC = nullptr;
-            std::vector<const lp::song::LoopChoice*> melodic;
+            lp::song::LoopChoice *drumC = nullptr, *percC = nullptr, *bassC = nullptr, *vocalC = nullptr, *padC = nullptr, *fxC = nullptr;
+            std::vector<lp::song::LoopChoice*> melodic;
             for (auto& c : picks.loopSet)
                 switch (c.kind)
                 {
@@ -515,6 +515,35 @@ private:
             }
             if (! missing.isEmpty()) noteForYou = "no " + missing.joinIntoString (" / ") + " loops in your library fit this song";
             const bool kit = ! song.drumSamples.empty();
+            // chords that agree: everything that plays with the main loop is picked (from its options) for
+            // chords that match it bar by bar; if none match well, that sound only plays where the main loop doesn't
+            std::map<const lp::song::LoopChoice*, bool> clashes;
+            if (! melodic.empty() && ! melodic[0]->options.empty())
+            {
+                const auto& lead = melodic[0]->options[0];
+                const int leadBars = songBars (lead.entry->path, lead.entry->bpm, song.bpm);
+                const auto& leadCh = chordsOf (lead.entry->path);
+                for (auto* c : { bassC, padC, vocalC })
+                    if (c != nullptr) melodic.push_back (c);
+                for (size_t i = 1; i < melodic.size(); ++i)
+                {
+                    auto* c = melodic[i];
+                    float best = -1.0f;
+                    std::vector<std::pair<float, lp::song::LoopOption>> scored;
+                    for (auto& opt : c->options)
+                    {
+                        const int bars = songBars (opt.entry->path, opt.entry->bpm, song.bpm);
+                        const float agree = lp::song::chordAgreement (leadCh, lead.tune, leadBars, chordsOf (opt.entry->path), opt.tune, bars);
+                        best = std::max (best, agree);
+                        scored.push_back ({ agree * 2.0f + opt.like - (float) std::abs (opt.tune) * 0.05f, opt });
+                    }
+                    std::stable_sort (scored.begin(), scored.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+                    c->options.clear();
+                    for (auto& [sc, opt] : scored) c->options.push_back (opt);
+                    clashes[c] = best >= 0.0f && best < 0.75f;
+                }
+                melodic.resize (melodic.size() - (size_t) ((bassC != nullptr) + (padC != nullptr) + (vocalC != nullptr)));
+            }
             // a produced arrangement: each loop has a role, and plays (and is treated) section by section
             auto addArranged = [&] (const lp::song::LoopChoice& choice, const juce::String& name, Role role)
             {
@@ -526,7 +555,8 @@ private:
                 loop.autoTune = loop.candidateTunes[0];
                 loop.loopBars = songBars (loop.samplePath, choice.options[0].entry->bpm, song.bpm);
                 if (loop.loopBars <= 0) return;
-                arrange (loop, song, role, kit, ref);
+                const bool clash = clashes.count (&choice) && clashes[&choice] && role != Role::Bass;
+                arrange (loop, song, clash ? Role::Fourth : role, kit, ref, clash);
                 // mixed by role: the lead and the low end up front and centred, the rest a little back and to the sides
                 switch (role)
                 {
@@ -546,7 +576,8 @@ private:
                 if (stem >= 0) loop.mixDb += adj[(size_t) stem];
                 if (std::none_of (loop.barSrc.begin(), loop.barSrc.end(), [] (int v) { return v >= 0; }) && loop.swellBars.empty()) return;
                 loop.source = sourceLabel (loop.samplePath) + juce::File (loop.samplePath).getFileNameWithoutExtension();
-                loop.remix = remixText (loop, 0.0, song) + arrangementText (loop);
+                loop.remix = remixText (loop, 0.0, song) + arrangementText (loop)
+                           + (clash ? ". plays on its own (its chords don't match the main loop's)" : juce::String());
                 song.parts.push_back (loop);
             };
             if (drumC != nullptr)  addArranged (*drumC, "drum loop", Role::DrumLoop);
@@ -647,7 +678,33 @@ private:
     }
 
     // semitones to put a sample in the song's key (99 = it has no clear key). Listens once per file.
-    struct Heard { lp::song::KeyReading reading; bool clear = false; int key = -1; bool minor = false; lp::song::Tone tone; lp::song::Feel feel; };
+    struct Heard { lp::song::KeyReading reading; bool clear = false; int key = -1; bool minor = false; lp::song::Tone tone; lp::song::Feel feel;
+                   std::vector<std::array<float, 12>> chords; bool chordsRead = false; };
+
+    // the notes in each bar of a loop (read once, remembered)
+    const std::vector<std::array<float, 12>>& chordsOf (const juce::String& path)
+    {
+        tuneFor (path, 0, false); // make sure it has been listened to (key and sound) first
+        auto& h = keyCache[path];
+        if (h.chordsRead) return h.chords;
+        h.chordsRead = true;
+        featuresDirty = true;
+        const auto* e = library.find (path);
+        if (e == nullptr || e->bpm <= 0) return h.chords;
+        const int bars = loopBars (path, e->bpm);
+        if (bars <= 0) return h.chords;
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (path)));
+        if (rd == nullptr) return h.chords;
+        const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 90.0));
+        juce::AudioBuffer<float> b ((int) rd->numChannels, len);
+        rd->read (&b, 0, len, 0, true, true);
+        std::vector<float> mono ((size_t) len);
+        for (int i = 0; i < len; ++i) { float v = 0; for (int ch = 0; ch < b.getNumChannels(); ++ch) v += b.getSample (ch, i); mono[(size_t) i] = v; }
+        h.chords = lp::song::barChroma (mono.data(), len, rd->sampleRate, bars);
+        return h.chords;
+    }
 
     // how much a sample sounds like your reference (0..1)
     // how well a sample fits, 0..1: its tone against the matching part of the reference (a bass loop against
@@ -723,6 +780,17 @@ private:
                     t.crestDb = (float) (double) a[42]; h.feel.sustain = (float) (double) a[43]; h.feel.busy = (float) (double) a[44];
                     t.valid = h.feel.valid = true;
                 }
+                if (a.size() >= 46 && (int) a[45] >= 0)
+                {
+                    const int nb = (int) a[45];
+                    h.chordsRead = a.size() >= 46 + nb * 12;
+                    for (int bi = 0; h.chordsRead && bi < nb; ++bi)
+                    {
+                        std::array<float, 12> bar {};
+                        for (int k = 0; k < 12; ++k) bar[(size_t) k] = (float) (double) a[46 + bi * 12 + k];
+                        h.chords.push_back (bar);
+                    }
+                }
                 h.tone = t;
                 keyCache[prop.name.toString()] = h;
             }
@@ -740,6 +808,8 @@ private:
             for (float v : h.feel.tone.bandsDb) a.add (v);
             a.add (h.feel.tone.rolloffHz); a.add (h.feel.tone.airDb); a.add (h.feel.tone.rmsDb); a.add (h.feel.tone.crestDb);
             a.add (h.feel.sustain); a.add (h.feel.busy);
+            a.add (h.chordsRead ? (int) h.chords.size() : -1);
+            for (auto& bar : h.chords) for (float v : bar) a.add (v);
             obj->setProperty (juce::Identifier (path), a);
         }
         featuresFile().getParentDirectory().createDirectory();
@@ -1238,7 +1308,7 @@ private:
         }
     }
 
-    static void arrange (lp::song::Part& p, const lp::song::Song& song, Role role, bool kit, const lp::song::Profile& ref = {})
+    static void arrange (lp::song::Part& p, const lp::song::Song& song, Role role, bool kit, const lp::song::Profile& ref = {}, bool alone = false)
     {
         const int total = song.totalBars();
         p.barSrc.assign ((size_t) total, -1);
@@ -1268,7 +1338,9 @@ private:
             // the reference leaves this part out here: so do we (the lead stays if there's anything up front)
             const bool refSaysNo = stem >= 0 && ! present[(size_t) stem]
                                    && ! (role == Role::Main && (present[lp::song::StemMusic] || present[lp::song::StemVocals]));
-            if (plays (role, base, n, lastChorus, kit) && ! refSaysNo)
+            // its chords don't agree with the main loop's: it only plays where the main loop is silent
+            const bool mainHere = plays (Role::Main, base, n, lastChorus, kit);
+            if (plays (role, base, n, lastChorus, kit) && ! refSaysNo && ! (alone && mainHere))
             {
                 for (int b = s0; b < s1 && b < total; ++b) p.barSrc[(size_t) b] = (b - s0) % L;
                 // the build: the last beat before a chorus drops out

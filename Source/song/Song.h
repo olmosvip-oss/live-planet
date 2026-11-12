@@ -54,6 +54,36 @@ struct Feel
 };
 Feel measureFeel (const float* mono, int numSamples, double sampleRate);
 
+// The notes ringing in each bar of a loop (12 pitch classes per bar, A440 = 9), for `bars` equal bars
+std::vector<std::array<float, 12>> barChroma (const float* mono, int numSamples, double sampleRate, int bars);
+
+// How well two loops' chords agree, bar by bar (0 = clash .. 1 = the same chords). Each is shifted by its tuning
+// and read on the song's bars (lengths in song bars), compared over 8 bars.
+inline float chordAgreement (const std::vector<std::array<float, 12>>& a, int tuneA, int barsA,
+                             const std::vector<std::array<float, 12>>& b, int tuneB, int barsB)
+{
+    if (a.empty() || b.empty() || barsA <= 0 || barsB <= 0) return 0.6f;
+    double sum = 0; int n = 0;
+    for (int j = 0; j < 8; ++j)
+    {
+        const auto& x = a[(size_t) (((j % barsA) * (int) a.size()) / barsA)];
+        const auto& y = b[(size_t) (((j % barsB) * (int) b.size()) / barsB)];
+        double mx = 0, my = 0;
+        for (int k = 0; k < 12; ++k) { mx += x[(size_t) k]; my += y[(size_t) k]; }
+        mx /= 12; my /= 12;
+        double num = 0, dx = 0, dy = 0;
+        for (int k = 0; k < 12; ++k)
+        {
+            const double u = x[(size_t) ((k - tuneA + 120) % 12)] - mx, v = y[(size_t) ((k - tuneB + 120) % 12)] - my;
+            num += u * v; dx += u * u; dy += v * v;
+        }
+        if (dx < 1e-12 || dy < 1e-12) continue;
+        sum += num / std::sqrt (dx * dy);
+        ++n;
+    }
+    return n > 0 ? (float) ((sum / n + 1.0) * 0.5) : 0.6f;
+}
+
 // How alike two sounds are in character (bright / dark, lo-fi / polished), 0..1
 inline float toneLikeness (const Tone& a, const Tone& b)
 {
