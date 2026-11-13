@@ -6,6 +6,7 @@
 #include "../song/SongFile.h"
 #include "../song/Chords.h"
 #include "../song/Hook.h"
+#include "../song/Arrange.h"
 #include "../song/Library.h"
 #include "../engine/Limiter.h"
 
@@ -16,7 +17,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -715,6 +716,19 @@ private:
     }
 
 public:
+    // a new structure for the song (sections moved, resized, added, removed, duplicated): every track
+    // follows it, and the song is recorded again (your mixer, master and takes stay)
+    void rearrange (std::vector<lp::song::arrange::Item> plan)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingPlan = std::move (plan);
+            edits.push_back ({ 0, EditOp::Arrange });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
     // switch to take i (A/B while it plays: the studio reloads the tracks, the position stays)
     void openTake (int i)
     {
@@ -1680,6 +1694,45 @@ private:
         saveSession();
     }
 
+    void applyArrange()
+    {
+        std::vector<lp::song::arrange::Item> plan;
+        lp::song::Song old;
+        {
+            const juce::ScopedLock sl (lock);
+            plan = pendingPlan;
+            old = current;
+        }
+        if (plan.empty() || old.sections.empty()) return;
+        auto song = lp::song::arrange::rebuild (old, plan);
+        setStage (Stage::Rendering, 0.05f, "rebuilding \"" + song.title + "\" in its new shape...");
+        const auto sub = currentFolder.getChildFile ("arrangement " + juce::String (++editCounter));
+        lp::song::Rendered files;
+        const bool ok = lp::song::render (song, currentRs, sub, files,
+                                          [this] (float p) { const juce::ScopedLock sl (lock); status.progress = 0.05f + 0.9f * p; },
+                                          [this] { return threadShouldExit(); });
+        if (! ok) { setStage (Stage::Failed, 0.0f, "couldn't record the new arrangement"); return; }
+        song.matchEqDb = files.matchEqDb; song.matchGainDb = files.matchGainDb;
+        song.playbackMakeupDb = files.playbackMakeupDb; song.mixShaped = true;
+        juce::File als;
+        if (writeAbletonSet) als = writeAbletonSet (song, files);
+        files.folder = currentFolder; // the same song (so your mixer and master stay), in its new shape
+        files.mixAudio.reset();
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks.clear();
+        for (int i = 0; i < (int) song.parts.size(); ++i)
+            status.tracks.push_back (info (song.parts[(size_t) i], files.stems[i], song));
+        status.files = files;
+        if (als.existsAsFile()) status.abletonSet = als;
+        ++status.version;
+        status.stage = Stage::Done;
+        status.progress = 1.0f;
+        status.message = "\"" + song.title + "\" rebuilt: " + juce::String (song.totalBars()) + " bars, " + juce::String ((int) song.sections.size()) + " sections";
+        saveSession();
+    }
+
     void applyFromTake (int dst)
     {
         std::pair<int, int> req;
@@ -1813,6 +1866,7 @@ private:
         if (op == EditOp::Add) { addInstrument ((lp::song::LoopKind) tr); return; }
         if (op == EditOp::AddHook || op == EditOp::AddChops) { addHook (op == EditOp::AddChops); return; }
         if (op == EditOp::FromTake) { applyFromTake (tr); return; }
+        if (op == EditOp::Arrange) { applyArrange(); return; }
         if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
         lp::song::Song song;
@@ -2440,6 +2494,7 @@ private:
     std::map<int, std::pair<int, int>> pendingDrumSwap;
     int chordsVersion = -1;
     std::pair<int, int> pendingFromTake { -1, -1 };
+    std::vector<lp::song::arrange::Item> pendingPlan;
     float pendingFeel = 1.0f;
     juce::String chordsSummary;
     juce::String drumSwapName; // the drum sound just swapped in (for the editor to show)

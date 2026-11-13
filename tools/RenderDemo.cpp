@@ -454,6 +454,55 @@ static int samplerTest (const juce::File& dir)
     return 0;
 }
 
+#include "../Source/song/Arrange.h"
+// a new structure: every section plays what its source played, bar for bar
+static int arrangeTest (const juce::File& outDir)
+{
+    using namespace lp::song;
+    lp::Weather sky; sky.temperatureC = 18;
+    Options o; o.seed = 21; o.full = true;
+    Song song = generate (Profile {}, sky, o);
+    std::printf ("before:");
+    for (auto& s : song.sections) std::printf (" %s(%d)", s.name.c_str(), s.bars);
+    auto plan = arrange::planOf (song);
+    // remove the second verse, make the first chorus 4 bars longer, play the last chorus twice
+    int verses = 0, chorus1 = -1;
+    for (size_t i = 0; i < plan.size(); ++i)
+    {
+        if (plan[i].name == "verse" && ++verses == 2) { plan.erase (plan.begin() + (long) i); break; }
+    }
+    for (size_t i = 0; i < plan.size(); ++i) if (plan[i].name == "chorus") { chorus1 = (int) i; break; }
+    plan[(size_t) chorus1].bars += 4;
+    for (int i = (int) plan.size() - 1; i >= 0; --i) if (plan[(size_t) i].name == "chorus") { plan.insert (plan.begin() + i + 1, plan[(size_t) i]); break; }
+    Song s2 = arrange::rebuild (song, plan);
+    std::printf ("\nafter: ");
+    for (auto& s : s2.sections) std::printf (" %s(%d)", s.name.c_str(), s.bars);
+    std::printf ("\n%d bars -> %d bars\n", song.totalBars(), s2.totalBars());
+    // check: each new bar's notes equal its source bar's notes, every part
+    int bad = 0, checked = 0;
+    for (size_t j = 0; j < plan.size(); ++j)
+    {
+        const auto& src = song.sections[(size_t) plan[j].src];
+        for (int k = 0; k < s2.sections[j].bars; ++k)
+        {
+            const int nb = s2.sections[j].startBar + k, ob = src.startBar + k % src.bars;
+            for (size_t p = 0; p < song.parts.size(); ++p)
+            {
+                auto inBar = [] (const Part& part, int b) { std::vector<std::pair<int,int>> v; for (auto& n : part.notes) if (n.beat >= b * 4.0 - 1e-6 && n.beat < b * 4.0 + 4.0 - 1e-6) v.push_back ({ (int) std::lround ((n.beat - b * 4.0) * 96), n.pitch }); std::sort (v.begin(), v.end()); return v; };
+                ++checked;
+                if (inBar (song.parts[p], ob) != inBar (s2.parts[p], nb)) ++bad;
+            }
+        }
+    }
+    std::printf ("bars x parts checked: %d, different from their source: %d\n", checked, bad);
+    Rendered out;
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    if (! render (s2, {}, outDir.getChildFile ("arranged"), out)) { std::printf ("render FAILED\n"); return 1; }
+    std::printf ("recorded the new arrangement in %.1f s: %d stems, mix %.1f s long\n", (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0, out.stems.size(),
+                 out.mixAudio ? out.mixAudio->getNumSamples() / 48000.0 : 0.0);
+    return bad == 0 ? 0 : 1;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1164,6 +1213,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 2 && juce::String (argv[1]) == "--arrange")
+        return arrangeTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--sampler")
         return samplerTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--master")

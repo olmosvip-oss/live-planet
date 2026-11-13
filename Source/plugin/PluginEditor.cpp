@@ -981,6 +981,195 @@ void SongPanel::mouseUp (const MouseEvent& e)
                           });
 }
 
+SongView::SongView (LivePlanetProcessor& p) : proc (p)
+{
+    for (auto* b : { &addBtn, &dupBtn, &removeBtn, &undoBtn, &rebuildBtn })
+    {
+        b->setWantsKeyboardFocus (false);
+        b->setMouseClickGrabsKeyboardFocus (false);
+        addChildComponent (b);
+    }
+    rebuildBtn.getProperties().set ("primary", true);
+    addBtn.setTooltip ("add a section (a verse, a chorus, a drop...) after the one you picked");
+    dupBtn.setTooltip ("play the section you picked twice");
+    removeBtn.setTooltip ("take the section you picked out");
+    rebuildBtn.setTooltip ("record the song in its new shape: every track follows it");
+    addBtn.onClick = [this] { showAddMenu(); };
+    dupBtn.onClick = [this]
+    {
+        if (selected < 0 || selected >= (int) draft.size()) return;
+        draft.insert (draft.begin() + selected + 1, draft[(size_t) selected]);
+        ++selected; dirty = true; repaint();
+    };
+    removeBtn.onClick = [this]
+    {
+        if (selected < 0 || selected >= (int) draft.size() || draft.size() <= 1) return;
+        draft.erase (draft.begin() + selected);
+        selected = std::min (selected, (int) draft.size() - 1); dirty = true; repaint();
+    };
+    undoBtn.onClick = [this] { dirty = false; version = -1; refresh(); };
+    rebuildBtn.onClick = [this]
+    {
+        if (! dirty) return;
+        proc.songJob.rearrange (draft);
+        dirty = false; waiting = true; repaint();
+    };
+}
+
+void SongView::refresh()
+{
+    const auto st = proc.songJob.getStatus();
+    // follow the song as it is, unless you're shaping a new structure
+    if (st.haveSong && st.version != version && ! dirty)
+    {
+        version = st.version;
+        draft = lp::song::arrange::planOf (st.song);
+        waiting = false;
+        if (selected >= (int) draft.size()) selected = -1;
+    }
+    const bool edit = st.haveSong;
+    for (auto* b : { &addBtn, &dupBtn, &removeBtn }) if (b->isVisible() != edit) b->setVisible (edit);
+    dupBtn.setEnabled (selected >= 0);
+    removeBtn.setEnabled (selected >= 0 && draft.size() > 1);
+    for (auto* b : { &undoBtn, &rebuildBtn }) if (b->isVisible() != (edit && dirty)) b->setVisible (edit && dirty);
+    repaint();
+}
+
+void SongView::resized()
+{
+    auto head = getLocalBounds().reduced (8, 4).removeFromTop (24);
+    for (auto* b : { &rebuildBtn, &undoBtn, &removeBtn, &dupBtn, &addBtn })
+    {
+        const int w = b == &rebuildBtn ? 120 : b == &addBtn ? 92 : 80;
+        b->setBounds (head.removeFromRight (w).withSizeKeepingCentre (w, 24));
+        head.removeFromRight (6);
+    }
+}
+
+Rectangle<float> SongView::lane() const
+{
+    auto r = getLocalBounds().toFloat().reduced (8.0f, 4.0f);
+    r.removeFromTop (22.0f);
+    auto l = r.withTrimmedTop (8.0f);
+    return l.withTrimmedTop (std::max (0.0f, l.getHeight() - 96.0f));
+}
+
+int SongView::totalDraftBars() const
+{
+    int t = 0;
+    for (auto& it : draft) t += it.bars;
+    return std::max (1, t);
+}
+
+Rectangle<float> SongView::blockRect (int i) const
+{
+    const auto l = lane();
+    int start = 0;
+    for (int k = 0; k < i; ++k) start += draft[(size_t) k].bars;
+    const float total = (float) totalDraftBars();
+    const float x0 = l.getX() + l.getWidth() * (float) start / total, x1 = l.getX() + l.getWidth() * (float) (start + draft[(size_t) i].bars) / total;
+    return { x0 + 2.0f, l.getY(), x1 - x0 - 4.0f, l.getHeight() };
+}
+
+// "verse 2": numbered the way the song will name it
+String SongView::shownName (int i) const
+{
+    int n = 0, total = 0;
+    for (int k = 0; k < (int) draft.size(); ++k)
+        if (draft[(size_t) k].name == draft[(size_t) i].name) { ++total; if (k <= i) ++n; }
+    const auto& nm = draft[(size_t) i].name;
+    return String (nm) + (total > 1 && nm != "intro" && nm != "outro" ? " " + String (n) : String());
+}
+
+void SongView::showAddMenu()
+{
+    const auto st = proc.songJob.getStatus();
+    if (! st.haveSong) return;
+    // each kind the song has, plus a drop (made from a chorus)
+    std::vector<std::pair<std::string, int>> kinds;
+    for (int i = 0; i < (int) st.song.sections.size(); ++i)
+    {
+        const auto k = lp::song::arrange::kindOf (st.song.sections[(size_t) i].name);
+        bool have = false;
+        for (auto& [n, src] : kinds) if (n == k) { have = true; src = i; }
+        if (! have) kinds.push_back ({ k, i });
+    }
+    int chorusSrc = -1;
+    for (auto& [n, src] : kinds) if (n == "chorus") chorusSrc = src;
+    bool haveDrop = false;
+    for (auto& [n, src] : kinds) haveDrop = haveDrop || n == "drop";
+    if (! haveDrop && chorusSrc >= 0) kinds.push_back ({ "drop", chorusSrc });
+    PopupMenu m;
+    m.addSectionHeader (selected >= 0 ? "add after " + shownName (selected) : String ("add at the end"));
+    for (size_t i = 0; i < kinds.size(); ++i) m.addItem ((int) i + 1, String (kinds[i].first));
+    m.showMenuAsync (PopupMenu::Options().withTargetComponent (&addBtn), [this, kinds, st] (int r)
+    {
+        if (r <= 0) return;
+        const auto& [name, src] = kinds[(size_t) r - 1];
+        lp::song::arrange::Item it { src, st.song.sections[(size_t) src].bars, name };
+        const int at = selected >= 0 ? selected + 1 : (int) draft.size();
+        draft.insert (draft.begin() + at, it);
+        selected = at; dirty = true; repaint();
+    });
+}
+
+void SongView::mouseMove (const MouseEvent& e)
+{
+    bool edge = false;
+    for (int i = 0; i < (int) draft.size(); ++i)
+    {
+        const auto r = blockRect (i);
+        if (std::abs (e.position.x - r.getRight()) < 7.0f && e.position.y >= r.getY()) edge = true;
+    }
+    setMouseCursor (edge ? MouseCursor::LeftRightResizeCursor : MouseCursor::NormalCursor);
+}
+
+void SongView::mouseDown (const MouseEvent& e)
+{
+    if (! proc.songJob.getStatus().haveSong || waiting) return;
+    drag = Drag::None;
+    for (int i = 0; i < (int) draft.size(); ++i)
+    {
+        const auto r = blockRect (i);
+        if (e.position.y < r.getY()) continue;
+        if (std::abs (e.position.x - r.getRight()) < 7.0f) { drag = Drag::Resize; dragIndex = i; selected = i; break; }
+        if (e.position.x >= r.getX() && e.position.x <= r.getRight()) { drag = Drag::Move; dragIndex = i; selected = i; break; }
+    }
+    if (drag == Drag::None) selected = -1;
+    dragStartX = e.position.x;
+    pxPerBarAtStart = lane().getWidth() / (float) totalDraftBars();
+    if (dragIndex >= 0 && dragIndex < (int) draft.size()) dragOrigBars = draft[(size_t) dragIndex].bars;
+    refresh();
+}
+
+void SongView::mouseDrag (const MouseEvent& e)
+{
+    if (drag == Drag::Resize && dragIndex >= 0)
+    {
+        // whole bars, at least one, at most 64
+        const int bars = jlimit (1, 64, dragOrigBars + (int) std::round ((e.position.x - dragStartX) / pxPerBarAtStart));
+        if (bars != draft[(size_t) dragIndex].bars) { draft[(size_t) dragIndex].bars = bars; dirty = true; }
+        repaint();
+    }
+    else if (drag == Drag::Move && dragIndex >= 0 && e.getDistanceFromDragStartX() != 0)
+    {
+        // move it past the neighbour whose middle you've crossed
+        if (dragIndex + 1 < (int) draft.size() && e.position.x > blockRect (dragIndex + 1).getCentreX())
+        {
+            std::swap (draft[(size_t) dragIndex], draft[(size_t) dragIndex + 1]);
+            ++dragIndex; selected = dragIndex; dirty = true;
+        }
+        else if (dragIndex > 0 && e.position.x < blockRect (dragIndex - 1).getCentreX())
+        {
+            std::swap (draft[(size_t) dragIndex], draft[(size_t) dragIndex - 1]);
+            --dragIndex; selected = dragIndex; dirty = true;
+        }
+        repaint();
+    }
+}
+
+void SongView::mouseUp (const MouseEvent&) { drag = Drag::None; refresh(); }
+
 void SongView::paint (Graphics& g)
 {
     const auto& th = lp::ui::theme (proc.themeIndex.load());
@@ -989,29 +1178,40 @@ void SongView::paint (Graphics& g)
     auto r = b.reduced (8.0f, 4.0f);
     auto head = r.removeFromTop (22.0f);
 
-    struct Block { std::string name; int start, bars; float energy; };
+    struct Block { String name; int start, bars; float energy; };
     std::vector<Block> blocks;
     int totalBars = 0;
     String title;
     if (st.haveSong)
     {
-        for (auto& s : st.song.sections) blocks.push_back ({ s.name, s.startBar, s.bars, s.energy });
-        totalBars = st.song.totalBars();
+        // the structure you're shaping (or the song's own)
+        int start = 0;
+        for (int i = 0; i < (int) draft.size(); ++i)
+        {
+            const int src = jlimit (0, std::max (0, (int) st.song.sections.size() - 1), draft[(size_t) i].src);
+            const float e = st.song.sections.empty() ? 0.5f : st.song.sections[(size_t) src].energy;
+            blocks.push_back ({ shownName (i), start, draft[(size_t) i].bars, e });
+            start += draft[(size_t) i].bars;
+        }
+        totalBars = start;
+        const double secs = totalBars * 4.0 * 60.0 / std::max (40.0, st.song.bpm);
         title = st.song.title + "  \xc2\xb7  " + String (roundToInt (st.song.bpm)) + " BPM  \xc2\xb7  " + lp::noteName (st.song.key)
-              + (st.song.minor ? " MINOR" : " MAJOR") + "  \xc2\xb7  " + timeText (st.song.lengthSeconds());
+              + (st.song.minor ? " MINOR" : " MAJOR") + "  \xc2\xb7  " + timeText (secs) + "  \xc2\xb7  " + String (totalBars) + " BARS"
+              + (dirty ? "  \xc2\xb7  NEW SHAPE: REBUILD TO HEAR IT" : "");
     }
     else if (st.haveReference)
     {
         float maxE = 0.01f;
         for (auto& s : st.profile.sections) maxE = std::max (maxE, s.energy);
-        for (auto& s : st.profile.sections) blocks.push_back ({ s.label, s.startBar, s.bars, s.energy / maxE });
+        for (auto& s : st.profile.sections) blocks.push_back ({ String (s.label), s.startBar, s.bars, s.energy / maxE });
         for (auto& bl : blocks) totalBars = std::max (totalBars, bl.start + bl.bars);
         title = "THE SHAPE OF YOUR REFERENCE";
     }
     const bool busy = st.stage == SongJob::Stage::Writing || st.stage == SongJob::Stage::Rendering || st.stage == SongJob::Stage::Listening;
     g.setFont (lp::ui::mono (10.5f, false, 0.12f));
-    g.setColour (th.inkDim);
-    g.drawText (String (CharPointer_UTF8 ((busy ? st.message : title).toUpperCase().toRawUTF8())), head, Justification::centredLeft, true);
+    g.setColour (dirty ? th.grassLight : th.inkDim);
+    g.drawText (String (CharPointer_UTF8 ((busy ? st.message : title).toUpperCase().toRawUTF8())), head.withTrimmedRight (st.haveSong ? 500.0f : 0.0f),
+                Justification::centredLeft, true);
 
     if (blocks.empty() || totalBars == 0)
     {
@@ -1021,36 +1221,43 @@ void SongView::paint (Graphics& g)
     }
     else
     {
-        auto lane = r.withTrimmedTop (8.0f);
-        lane = lane.withTrimmedTop (std::max (0.0f, lane.getHeight() - 96.0f));
-        for (auto& bl : blocks)
+        const auto ln = lane();
+        for (size_t i = 0; i < blocks.size(); ++i)
         {
-            const float x0 = lane.getX() + lane.getWidth() * (float) bl.start / (float) totalBars;
-            const float x1 = lane.getX() + lane.getWidth() * (float) (bl.start + bl.bars) / (float) totalBars;
-            const float h = lane.getHeight() * (0.4f + 0.6f * jlimit (0.0f, 1.0f, bl.energy));
-            auto rect = Rectangle<float> (x0 + 2.0f, lane.getBottom() - h, x1 - x0 - 4.0f, h);
+            const auto& bl = blocks[i];
+            const float x0 = ln.getX() + ln.getWidth() * (float) bl.start / (float) totalBars;
+            const float x1 = ln.getX() + ln.getWidth() * (float) (bl.start + bl.bars) / (float) totalBars;
+            const float h = ln.getHeight() * (0.4f + 0.6f * jlimit (0.0f, 1.0f, bl.energy));
+            auto rect = Rectangle<float> (x0 + 2.0f, ln.getBottom() - h, x1 - x0 - 4.0f, h);
             const String n (bl.name);
-            const bool big = n.startsWith ("chorus");
+            const bool big = n.startsWith ("chorus") || n.startsWith ("drop");
             const auto c = big ? th.grass : (n.startsWith ("verse") ? th.grass.withSaturation (0.35f).withBrightness (0.55f)
                                            : (n.startsWith ("bridge") ? th.grassLight.withAlpha (0.55f) : Colour (0xff3a3a40)));
             g.setColour (c.withMultipliedAlpha (0.9f));
             g.fillRoundedRectangle (rect, 6.0f);
+            if ((int) i == selected && st.haveSong)
+            {
+                g.setColour (Colours::white);
+                g.drawRoundedRectangle (rect.reduced (0.5f), 6.0f, 2.0f);
+                g.fillRoundedRectangle (Rectangle<float> (rect.getRight() - 4.0f, rect.getCentreY() - 10.0f, 3.0f, 20.0f), 1.5f); // the handle to resize
+            }
             if (rect.getWidth() > 40.0f)
             {
                 g.setFont (lp::ui::mono (9.5f, false, 0.1f));
                 g.setColour (Colours::white.withAlpha (0.9f));
-                g.drawFittedText (n.toUpperCase(), rect.reduced (8.0f, 7.0f).toNearestInt(), Justification::topLeft, 1, 0.8f);
+                g.drawFittedText (n.toUpperCase() + (st.haveSong ? "\n" + String (bl.bars) + " BARS" : String()), rect.reduced (8.0f, 7.0f).toNearestInt(),
+                                  Justification::topLeft, 2, 0.8f);
             }
         }
-        if (st.haveSong && proc.studio.length() > 0 && proc.songIsPlaying())
+        if (st.haveSong && ! dirty && proc.studio.length() > 0 && proc.songIsPlaying())
         {
             const float frac = (float) jlimit (0.0, 1.0, proc.playheadPos.load() / (double) proc.studio.length());
-            const float x = lane.getX() + lane.getWidth() * frac;
+            const float x = ln.getX() + ln.getWidth() * frac;
             g.setColour (Colours::white);
-            g.drawLine (x, lane.getY() - 4.0f, x, lane.getBottom(), 1.5f);
+            g.drawLine (x, ln.getY() - 4.0f, x, ln.getBottom(), 1.5f);
         }
     }
-    if (busy)
+    if (busy || waiting)
     {
         auto bar = Rectangle<float> (b.getX() + 8.0f, b.getBottom() - 3.0f, b.getWidth() - 16.0f, 3.0f);
         g.setColour (Colours::white.withAlpha (0.1f));
@@ -1551,7 +1758,7 @@ void LivePlanetEditor::timerCallback()
         if (page == Studio && studioView.isVisible() != haveSong) studioView.setVisible (haveSong);
         if (haveSong && page == Studio) studioView.repaint();
         songPanel.refresh();
-        songView.repaint();
+        songView.refresh();
         for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
             pill->repaint();
     }

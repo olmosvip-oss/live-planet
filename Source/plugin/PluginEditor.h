@@ -200,14 +200,34 @@ private:
 };
 
 // Song mode, on the screen: the song's sections as a timeline, and progress
+// The song's shape: its sections as blocks. Edit the structure here: click a section to pick it,
+// drag it to move it, drag its right edge to make it longer or shorter; add, duplicate or remove
+// sections; then "rebuild song" records it in its new shape.
 class SongView : public juce::Component
 {
 public:
-    explicit SongView (LivePlanetProcessor& p) : proc (p) {}
+    explicit SongView (LivePlanetProcessor& p);
     void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void refresh(); // every frame
 
 private:
+    juce::Rectangle<float> lane() const;
+    juce::Rectangle<float> blockRect (int i) const;
+    int totalDraftBars() const;
+    juce::String shownName (int i) const;
+    void showAddMenu();
     LivePlanetProcessor& proc;
+    std::vector<lp::song::arrange::Item> draft; // the structure you're shaping
+    bool dirty = false, waiting = false;
+    int version = -1, selected = -1, dragIndex = -1, dragOrigBars = 0;
+    enum class Drag { None, Move, Resize } drag = Drag::None;
+    float dragStartX = 0.0f, pxPerBarAtStart = 1.0f;
+    juce::TextButton addBtn { "+ section" }, dupBtn { "duplicate" }, removeBtn { "remove" }, undoBtn { "undo" }, rebuildBtn { "rebuild song" };
 };
 
 // The studio: every track of the song, where its sound came from, and its mixer and remix tools
