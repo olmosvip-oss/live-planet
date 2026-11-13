@@ -397,6 +397,7 @@ private:
     FilePill dragTrack;
     juce::TextButton love { "Love it" }, notThis { "Not this" }; // your taste: remembered for every later song
     DrumGrid drumGrid;
+    juce::TextButton sliceBtn { "Slice into hits" }; // a drum loop -> a drum track you can edit
     bool drumBig = false;
     bool showingDrums() const;
 };

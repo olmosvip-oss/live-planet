@@ -7,6 +7,7 @@
 #include "../song/Chords.h"
 #include "../song/Hook.h"
 #include "../song/Arrange.h"
+#include "../song/Slice.h"
 #include "../song/Library.h"
 #include "../engine/Limiter.h"
 
@@ -17,7 +18,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808 }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -300,10 +301,10 @@ public:
         if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return v;
         const auto& p = current.parts[(size_t) track];
         v.valid = true; v.kind = p.kind; v.notes = p.notes;
-        v.sections = current.sections; v.drumSamples = current.drumSamples;
+        v.sections = current.sections; v.drumSamples = p.kitIn (current);
         v.title = current.title; v.totalBars = current.totalBars();
         v.kitKey << p.variant << "|" << p.pitchSemis;
-        for (auto& [n, f] : current.drumSamples) v.kitKey << "|" << n << f;
+        for (auto& [n, f] : p.kitIn (current)) v.kitKey << "|" << n << f;
         return v;
     }
     // every drum sound of a track's kit, one hit each, at the level they have in the track's file
@@ -321,8 +322,8 @@ public:
         const auto& part = song.parts[(size_t) track];
         std::set<int> notes;
         for (auto& n : part.notes) notes.insert (n.pitch);
-        for (auto& [n, f] : song.drumSamples) notes.insert (n);
-        for (int must : { 36, 38, 39, 42, 46, 45, 37, 70, 49 }) notes.insert (must);
+        for (auto& [n, f] : part.kitIn (song)) notes.insert (n);
+        if (part.kit.empty()) for (int must : { 36, 38, 39, 42, 46, 45, 37, 70, 49 }) notes.insert (must);
         std::map<int, std::shared_ptr<juce::AudioBuffer<float>>> hits;
         float loudest = 0.0f;
         std::map<int, float> maxVel;
@@ -352,7 +353,13 @@ public:
 
     // the name of the last drum sound swapped in, and a counter that goes up with each swap
     std::pair<juce::String, int> lastDrumSwap() const { const juce::ScopedLock sl (lock); return { drumSwapName, drumSwapCount }; }
-    bool kitIsSamples() const { const juce::ScopedLock sl (lock); return ! current.drumSamples.empty(); }
+    // can a drum track's sounds be swapped one by one? (a kit from your library; a sliced loop keeps its own)
+    bool kitIsSamples (int track = 0) const
+    {
+        const juce::ScopedLock sl (lock);
+        if (track >= 0 && track < (int) current.parts.size() && ! current.parts[(size_t) track].kit.empty()) return false;
+        return ! current.drumSamples.empty();
+    }
 
     // the chords the song's tracks really play (two a bar at most), heard from their files.
     // (a written hook is left out: it follows the chords, it doesn't make them)
@@ -1761,6 +1768,88 @@ private:
         saveSession();
     }
 
+    // a drum loop track becomes a drum track you can edit: every hit found in it, sorted into kick, snare,
+    // hats and percussion, each with a sound cut from the loop itself (its own kit)
+    void sliceDrums (int tr)
+    {
+        lp::song::Song song;
+        juce::File stem;
+        {
+            const juce::ScopedLock sl (lock);
+            if (tr < 0 || tr >= (int) current.parts.size() || current.parts[(size_t) tr].kind != lp::song::PartKind::Loop) return;
+            song = current;
+            stem = status.tracks[(size_t) tr].stem;
+        }
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (stem));
+        if (rd == nullptr) return;
+        const double sr = rd->sampleRate;
+        const int len = (int) rd->lengthInSamples;
+        juce::AudioBuffer<float> b (2, len);
+        rd->read (&b, 0, len, 0, true, true);
+        auto hits = lp::song::slice::findHits (b, sr);
+        if (hits.size() < 4) { const juce::ScopedLock sl (lock); status.message = "couldn't find clear hits in this loop"; return; }
+        float peak = 0;
+        for (auto& h : hits) peak = std::max (peak, h.level);
+        // each kind's sound: its loudest clean hit (up to the next hit, at most 0.6 s), cut from the loop
+        const auto dir = currentFolder.getChildFile ("slices");
+        dir.createDirectory();
+        std::map<int, juce::String> kit;
+        std::map<int, float> loudest;
+        for (auto& h : hits) loudest[h.cls] = std::max (loudest[h.cls], h.level);
+        for (auto& [cls, lv] : loudest)
+        {
+            size_t best = 0;
+            for (size_t i = 0; i < hits.size(); ++i) if (hits[i].cls == cls && hits[i].level >= lv * 0.999f) best = i;
+            const int a0 = hits[best].at;
+            const int a1 = std::min ({ len, best + 1 < hits.size() ? hits[best + 1].at : len, a0 + (int) (0.6 * sr) });
+            juce::AudioBuffer<float> one (2, a1 - a0);
+            for (int ch = 0; ch < 2; ++ch) one.copyFrom (ch, 0, b, ch, a0, a1 - a0);
+            const int fade = std::min ((a1 - a0) / 3, (int) (0.02 * sr));
+            one.applyGainRamp (a1 - a0 - fade, fade, 1.0f, 0.0f);
+            const auto f = dir.getChildFile (juce::String (tr + 1) + " " + juce::String (song.parts[(size_t) tr].name) + " " + juce::String (cls) + " (" + juce::String (++editCounter) + ").wav");
+            if (writeStem (f, one, sr)) kit[cls] = f.getFullPathName();
+        }
+        // the hits as notes, on the 16th grid (the song's groove puts the feel back)
+        const double spb = sr * 60.0 / song.bpm;
+        std::vector<lp::song::Note> notes;
+        for (auto& h : hits)
+        {
+            double beat = h.at / spb;
+            const double q = std::round (beat * 4.0) / 4.0;
+            if (std::abs (beat - q) < 0.08) beat = q;
+            const float vel = juce::jlimit (0.2f, 1.0f, std::sqrt (h.level / std::max (1e-6f, loudest[h.cls])));
+            notes.push_back ({ beat, 0.25, h.cls, vel });
+        }
+        auto& part = song.parts[(size_t) tr];
+        const auto loopName = juce::File (part.samplePath).getFileNameWithoutExtension();
+        part.kind = lp::song::PartKind::Drums;
+        part.kit = kit;
+        part.notes = notes;
+        part.samplePath = {};
+        part.candidates.clear();
+        part.autoTune = 0; part.regionStart = 0; part.regionBars = 0;
+        part.barSrc.clear(); part.loopStartBars.clear();
+        std::map<int, int> count;
+        for (auto& h : hits) ++count[h.cls];
+        part.source = "sliced: " + loopName;
+        part.remix = "sliced into " + juce::String ((int) hits.size()) + " hits: " + juce::String (count[36]) + " kicks, "
+                   + juce::String (count[38]) + " snares, " + juce::String (count[42] + count[46]) + " hats, " + juce::String (count[70]) + " other. edit them on the grid";
+        juce::AudioBuffer<float> buf;
+        if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
+        const auto newStem = currentFolder.getChildFile ("stems").getChildFile (
+            juce::String (tr + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (sliced " + juce::String (++editCounter) + ").wav");
+        if (! writeStem (newStem, buf, currentRs.sampleRate)) return;
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks[(size_t) tr] = info (part, newStem, song);
+        status.message = juce::String (part.name) + ": " + part.remix;
+        ++status.version;
+        saveSession();
+    }
+
     void add808()
     {
         lp::song::Song song;
@@ -2049,6 +2138,7 @@ private:
         if (op == EditOp::AddHook || op == EditOp::AddChops) { addHook (op == EditOp::AddChops); return; }
         if (op == EditOp::FromTake) { applyFromTake (tr); return; }
         if (op == EditOp::Add808) { add808(); return; }
+        if (op == EditOp::SliceDrums) { sliceDrums (tr); return; }
         if (op == EditOp::Arrange) { applyArrange(); return; }
         if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
@@ -2068,7 +2158,7 @@ private:
             part.grainAmount = gs.amount; part.grainSizeMs = gs.sizeMs; part.grainChaos = gs.chaos;
             part.grainPosition = gs.position; part.grainRate = gs.rate;
         }
-        if (op == EditOp::SwapDrum && ! song.drumSamples.empty())
+        if (op == EditOp::SwapDrum && ! song.drumSamples.empty() && part.kit.empty())
         {
             std::pair<int, int> req;
             { const juce::ScopedLock sl (lock); req = pendingDrumSwap[tr]; }

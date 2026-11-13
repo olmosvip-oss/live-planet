@@ -303,6 +303,8 @@ struct Part
     float grainAmount = 0.0f, grainSizeMs = 120.0f, grainChaos = 0.0f, grainPosition = 0.0f;
     int grainRate = 2;               // 0 = 1/4, 1 = 1/8, 2 = 1/16, 3 = 1/32 notes
     float pan = 0.0f;                // -1 left .. 0 centre .. +1 right
+    std::map<int, juce::String> kit; // a drum part with its own sounds (a sliced drum loop); empty = the song's kit
+    const std::map<int, juce::String>& kitIn (const struct Song& s) const;
 };
 
 struct Section
@@ -329,8 +331,11 @@ struct Song
     bool mixShaped = false;
     Groove groove;                           // the drums' feel (from the reference, or the style)
     int totalBars() const { return sections.empty() ? 0 : sections.back().startBar + sections.back().bars; }
+    // the drum sounds a drum part plays: its own (sliced), or the song's kit
     double lengthSeconds() const { return totalBars() * 4.0 * 60.0 / bpm; }
 };
+
+inline const std::map<int, juce::String>& Part::kitIn (const Song& s) const { return kit.empty() ? s.drumSamples : kit; }
 
 // what the words you typed ask of the sounds: +1 / -1 / 0 (don't care)
 struct SoundWish { int dark = 0, plucky = 0, punchy = 0, lofi = 0, warm = 0, airy = 0; };

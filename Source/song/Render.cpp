@@ -872,10 +872,11 @@ juce::AudioBuffer<float> renderDrumHit (const Song& song, const Part& part, int 
     const int len = (int) (1.4 * sr);
     juce::AudioBuffer<float> out (2, len);
     out.clear();
-    if (! song.drumSamples.empty())
+    if (! part.kitIn (song).empty())
     {
-        auto it = song.drumSamples.find (note);
-        if (it == song.drumSamples.end()) return {};
+        const auto& kitMap = part.kitIn (song);
+        auto it = kitMap.find (note);
+        if (it == kitMap.end()) return {};
         auto a = loadAudio (it->second, sr);
         const int n = std::min (len, a.getNumSamples());
         for (int ch = 0; ch < 2; ++ch) out.copyFrom (ch, 0, a, ch, 0, n);
@@ -1150,10 +1151,10 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
             }
         }
     }
-    else if (part.kind == PartKind::Drums && ! song.drumSamples.empty())
+    else if (part.kind == PartKind::Drums && ! part.kitIn (song).empty())
     {
         SampleKit kit;
-        for (auto& [note, path] : song.drumSamples)
+        for (auto& [note, path] : part.kitIn (song))
         {
             auto a = loadAudio (path, sr);
             if (a.getNumSamples() > 0) kit.sounds[note] = std::move (a);

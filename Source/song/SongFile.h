@@ -58,6 +58,12 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("mixDb", p.mixDb); o->setProperty ("regionStart", p.regionStart); o->setProperty ("regionBars", p.regionBars);
     o->setProperty ("grainAmount", p.grainAmount); o->setProperty ("grainSizeMs", p.grainSizeMs); o->setProperty ("grainChaos", p.grainChaos);
     o->setProperty ("grainPosition", p.grainPosition); o->setProperty ("grainRate", p.grainRate); o->setProperty ("pan", p.pan);
+    if (! p.kit.empty())
+    {
+        juce::Array<juce::var> kit;
+        for (auto& [note, path] : p.kit) kit.add (juce::Array<juce::var> { note, path });
+        o->setProperty ("kit", kit);
+    }
     return o;
 }
 
@@ -82,6 +88,7 @@ inline Part partFromVar (const juce::var& v)
     p.mixDb = v["mixDb"]; p.regionStart = v["regionStart"]; p.regionBars = v["regionBars"];
     p.grainAmount = v["grainAmount"]; p.grainSizeMs = v.getProperty ("grainSizeMs", 120.0f); p.grainChaos = v["grainChaos"];
     p.grainPosition = v["grainPosition"]; p.grainRate = v.getProperty ("grainRate", 2); p.pan = v["pan"];
+    if (auto* a = v["kit"].getArray()) for (auto& e : *a) p.kit[(int) e[0]] = e[1].toString();
     return p;
 }
 

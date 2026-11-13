@@ -29,6 +29,10 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     };
     addAndMakeVisible (dragTrack);
     addChildComponent (drumGrid);
+    sliceBtn.setTooltip ("Turn this drum loop into hits you can edit on the drum grid: kick, snare, hats, each with its own sound from the loop");
+    sliceBtn.onClick = [this] { proc.songJob.editTrack (track, SongJob::EditOp::SliceDrums); };
+    sliceBtn.setWantsKeyboardFocus (false);
+    addChildComponent (sliceBtn);
     drumGrid.onToggleBig = [this] { drumBig = ! drumBig; drumGrid.setBig (drumBig); resized(); repaint(); };
     auto mixOf = [this] (int t) -> StudioPlayer::Mix& { return proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, t)]; };
     addDial ("volume", -30.0, 6.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).gainDb; }, 72);
@@ -251,6 +255,7 @@ void TrackEditor::resized()
 
     // the drum editor: in the screen, or (bigger) down to the bottom of the page
     drumGrid.setBounds (drumBig ? screen().withBottom ((float) getHeight() - 70.0f).toNearestInt() : screen().toNearestInt());
+    sliceBtn.setBounds ((int) screen().getRight() - 150, (int) screen().getY() + 10, 138, 28);
     // two rows of dials: the track's sound and space, then its grains
     auto rows = getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
     const int h = rows.getHeight() / 2;
@@ -279,12 +284,19 @@ void TrackEditor::paint (Graphics& g)
         for (auto* c : getChildren()) c->setVisible (false);
         return;
     }
+    const juce::String tr0name = track < (int) st.tracks.size() ? st.tracks[(size_t) track].name : juce::String();
     // the drum editor made bigger covers the dials: they hide until it's made smaller again
     const bool big = drumBig && showingDrums();
     for (auto* c : getChildren())
     {
         bool want = true;
         if (c == &drumGrid) want = showingDrums();
+        else if (c == &sliceBtn)
+        {
+            // drum loops and percussion loops can be sliced
+            const auto nm = String (tr0name).toLowerCase();
+            want = ! showingDrums() && (nm.contains ("drum") || nm.contains ("perc"));
+        }
         else if (big && (c == &printFx || c == &dragTrack || std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s; })))
             want = false;
         if (c->isVisible() != want) c->setVisible (want);

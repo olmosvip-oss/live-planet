@@ -693,6 +693,27 @@ static int pumpTest (const juce::File& dir)
     return 0;
 }
 
+#include "../Source/song/Slice.h"
+// a drum loop sliced into its hits, each sorted into kick, snare, hat or percussion
+static int sliceTest (const juce::File& f)
+{
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (f));
+    juce::AudioBuffer<float> b (2, (int) rd->lengthInSamples);
+    rd->read (&b, 0, b.getNumSamples(), 0, true, true);
+    const auto hits = lp::song::slice::findHits (b, rd->sampleRate);
+    const double spb = rd->sampleRate * 60.0 / 100.0;
+    std::map<int, int> count;
+    std::printf ("hits (beat: what):");
+    for (auto& h : hits)
+    {
+        ++count[h.cls];
+        std::printf (" %.2f:%s", h.at / spb, h.cls == 36 ? "kick" : h.cls == 38 ? "SNARE" : h.cls == 42 ? "hat" : h.cls == 46 ? "openhat" : "perc");
+    }
+    std::printf ("\n%d hits: %d kicks, %d snares, %d hats, %d open hats, %d other\n", (int) hits.size(), count[36], count[38], count[42], count[46], count[70]);
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1403,6 +1424,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 2 && juce::String (argv[1]) == "--slice")
+        return sliceTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--pump")
         return pumpTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--pitched")

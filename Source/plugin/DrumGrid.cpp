@@ -254,7 +254,7 @@ void DrumGrid::mouseMove (const MouseEvent&) { repaint(); } // hover highlights 
 
 void DrumGrid::refresh()
 {
-    canSwapRows = proc.songJob.kitIsSamples();
+    canSwapRows = proc.songJob.kitIsSamples (track);
     // a drum sound was swapped: show its name, and play it once its new sound is loaded
     const auto [swapName, swapCount] = proc.songJob.lastDrumSwap();
     if (swapCount != seenSwaps)
