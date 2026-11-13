@@ -262,6 +262,8 @@ private:
     LivePlanetProcessor& proc;
     int hoverRow = -1, dragRow = -1;
     std::array<lp::ui::MeterBallistics, StudioPlayer::maxTracks> meterL {}, meterR {};
+    juce::Rectangle<float> pumpBounds() const;
+    bool draggingPump = false;
     Col dragCol = None;
 };
 

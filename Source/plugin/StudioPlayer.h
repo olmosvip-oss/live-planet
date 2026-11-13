@@ -36,6 +36,34 @@ public:
     std::array<std::atomic<float>, maxTracks> peakL {}, peakR {};
     std::atomic<float> meterGain { 1.0f }; // the song's playback level, so the meters read what you hear
 
+    // ---- the pump: everything but the drums ducks under each kick and swells back (sidechain)
+    std::atomic<float> pumpDepth { 0.0f };   // 0 off .. 1 deep
+    // message thread: where the kicks are (in beats) and the song's tempo
+    void setKicks (std::vector<double> beats, double songBpm)
+    {
+        std::sort (beats.begin(), beats.end());
+        const juce::SpinLock::ScopedLockType sl (lock);
+        std::swap (kicks, beats);
+        kickBpm = songBpm;
+    }
+    // the pump's gain at a song position (in file samples); 1 = no ducking
+    float pumpGain (double pos) const
+    {
+        const float depth = pumpDepth.load();
+        if (depth <= 0.001f || kicks.empty()) return 1.0f;
+        const double beat = pos / fileRate * kickBpm / 60.0;
+        auto it = std::upper_bound (kicks.begin(), kicks.end(), beat);
+        if (it == kicks.begin()) return 1.0f;
+        const double since = (beat - *(it - 1)) * 60.0 / kickBpm;          // seconds since the kick
+        const double release = 0.5 * 60.0 / kickBpm;                       // back up over an eighth note
+        const double attack = 0.004;
+        double duck;
+        if (since < attack) duck = since / attack;
+        else if (since < release) { const double x = (since - attack) / (release - attack); duck = 1.0 - x * x * (3.0 - 2.0 * x); }
+        else duck = 0.0;
+        return (float) (1.0 - depth * 0.85 * duck);
+    }
+
     // message thread: (re)open the tracks' files
     // waitMs: how long a read may wait for the disk (0 while playing live; offline prints wait)
     void load (const juce::Array<juce::File>& stems, int waitMs = 0)
@@ -66,11 +94,13 @@ public:
     void clear() { load ({}); }
 
     // the whole song as you hear it in the studio (every track with its mixer and its own effects), for mastering
-    static juce::AudioBuffer<float> bounce (const juce::Array<juce::File>& stems, const std::array<Mix, maxTracks>& mixes, double bpm)
+    static juce::AudioBuffer<float> bounce (const juce::Array<juce::File>& stems, const std::array<Mix, maxTracks>& mixes, double bpm,
+                                            const StudioPlayer* pumpFrom = nullptr)
     {
         juce::ScopedNoDenormals noDenormals;
         StudioPlayer p;
         p.load (stems, 5000);
+        if (pumpFrom != nullptr) p.copyPump (*pumpFrom);
         const auto len = p.length();
         if (len <= 0) return {};
         for (size_t t = 0; t < maxTracks; ++t)
@@ -78,6 +108,7 @@ public:
             auto& d = p.mix[t]; const auto& m = mixes[t];
             d.gainDb = m.gainDb.load(); d.pan = m.pan.load(); d.tone = m.tone.load(); d.mute = m.mute.load(); d.solo = m.solo.load();
             d.space = m.space.load(); d.echo = m.echo.load(); d.warmth = m.warmth.load(); d.nostalgia = m.nostalgia.load(); d.chorus = m.chorus.load();
+            d.group = m.group.load();
         }
         constexpr int block = 1024;
         p.prepare (block);
@@ -97,17 +128,19 @@ public:
     // records one track as you hear it: its volume, pan, tone, warmth / nostalgia / chorus, and its
     // own reverb and delay (with their tails), into a new file. The master knobs aren't included.
     // message thread (takes a second or two for a whole song)
-    static bool printTrack (const juce::File& stem, const Mix& m, double bpm, const juce::File& out)
+    static bool printTrack (const juce::File& stem, const Mix& m, double bpm, const juce::File& out, const StudioPlayer* pumpFrom = nullptr)
     {
         juce::ScopedNoDenormals noDenormals;
         StudioPlayer p;
         p.load ({ stem }, 5000);
+        if (pumpFrom != nullptr) p.copyPump (*pumpFrom);
         const auto len = p.length();
         if (len <= 0) return false;
         auto& d = p.mix[0];
         d.gainDb = m.gainDb.load(); d.pan = m.pan.load(); d.tone = m.tone.load();
         d.space = m.space.load(); d.echo = m.echo.load(); d.warmth = m.warmth.load();
         d.nostalgia = m.nostalgia.load(); d.chorus = m.chorus.load();
+        d.group = m.group.load();
         constexpr int block = 1024;
         p.prepare (block);
         const auto total = len + (juce::int64) (fileRate * 6.0); // room for the echo and reverb tails
@@ -197,6 +230,7 @@ public:
             const float cho = m.chorus.load();
             const bool inserts = warm > 0.002f || nost > 0.002f || cho > 0.002f;
             float pkL = 0.0f, pkR = 0.0f;
+            const bool pumped = grp != 4 && pumpDepth.load() > 0.001f && ! kicks.empty();
             for (int i = 0; i < n; ++i, ph += inc)
             {
                 const int i0 = (int) ph;
@@ -240,6 +274,7 @@ public:
                         xr = xr * (1.0f - 0.35f * cho) + wr * 0.75f * cho;
                     }
                 }
+                if (pumped) { const float pg = pumpGain (pos + i * inc); xl *= pg; xr *= pg; }
                 oL[i] += xl * gl;
                 oR[i] += xr * gr;
                 pkL = std::max (pkL, std::abs (xl * gl));
@@ -276,7 +311,18 @@ public:
         fxRate = 0; // set up on the first block, at the real rate
     }
 
+    void copyPump (const StudioPlayer& o)
+    {
+        std::vector<double> k;
+        double b;
+        { const juce::SpinLock::ScopedLockType sl (o.lock); k = o.kicks; b = o.kickBpm; }
+        setKicks (std::move (k), b);
+        pumpDepth = o.pumpDepth.load();
+    }
+
 private:
+    std::vector<double> kicks;
+    double kickBpm = 120.0;
     struct Filter { lp::dsp::SVF l, r; float lastTone = 99.0f; };
     struct TrackFx { lp::dsp::SVF lpL, lpR, hpL, hpR; lp::dsp::Delay wobL, wobR, chL, chR; float phase = 0, chPhase = 0, lastWarm = -1, lastNost = -1; };
 
@@ -307,6 +353,6 @@ private:
     std::vector<std::unique_ptr<juce::BufferingAudioReader>> readers;
     std::array<Filter, maxTracks> filters;
     juce::AudioBuffer<float> scratch;
-    juce::SpinLock lock;
+    mutable juce::SpinLock lock;
     std::atomic<juce::int64> lengthSamples { 0 };
 };

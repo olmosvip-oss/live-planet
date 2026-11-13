@@ -742,6 +742,21 @@ public:
     }
     bool hasSong() const { const juce::ScopedLock sl (lock); return status.haveSong; }
 
+    // where the kicks are (in beats), for the pump: the drum track's kicks, or every beat where the music plays
+    std::vector<double> kickBeats() const
+    {
+        const juce::ScopedLock sl (lock);
+        std::vector<double> k;
+        for (auto& p : current.parts)
+            if (p.kind == lp::song::PartKind::Drums)
+                for (auto& n : p.notes) if (n.pitch == 36) k.push_back (n.beat);
+        if (k.empty())
+            for (auto& sec : current.sections)
+                if (sec.energy >= 0.35f)
+                    for (int b = sec.startBar * 4; b < (sec.startBar + sec.bars) * 4; ++b) k.push_back (b);
+        return k;
+    }
+
     // switch to take i (A/B while it plays: the studio reloads the tracks, the position stays)
     void openTake (int i)
     {

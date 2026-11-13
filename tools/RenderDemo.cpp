@@ -665,6 +665,34 @@ static int pitchedTest (const juce::File& dir)
     return 0;
 }
 
+#include "../Source/plugin/StudioPlayer.h"
+// the pump: a steady pad ducks under each kick and swells back by the next
+static int pumpTest (const juce::File& dir)
+{
+    dir.createDirectory();
+    auto f = dir.getChildFile ("pad.wav");
+    {
+        juce::AudioBuffer<float> b (2, 48000 * 4);
+        for (int i = 0; i < b.getNumSamples(); ++i) { const float v = 0.3f * (float) std::sin (2 * juce::MathConstants<double>::pi * 220.0 * i / 48000.0); b.setSample (0, i, v); b.setSample (1, i, v); }
+        f.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (f), 48000.0, 2, 24, {}, 0));
+        w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+    }
+    for (float depth : { 0.0f, 0.5f, 1.0f })
+    {
+        StudioPlayer src;
+        src.setKicks ({ 0, 1, 2, 3, 4, 5, 6, 7 }, 120.0);
+        src.pumpDepth = depth;
+        src.mix[0].group = 1;
+        auto out = StudioPlayer::bounce ({ f }, src.mix, 120.0, &src);
+        auto rmsAt = [&] (double sec) { return juce::Decibels::gainToDecibels (out.getRMSLevel (0, (int) (sec * 48000), 960)); };
+        std::printf ("pump %3.0f%%: just after a kick %6.1f dB, a 16th later %6.1f dB, just before the next %6.1f dB\n",
+                     depth * 100, rmsAt (1.01), rmsAt (1.125), rmsAt (1.46));
+    }
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1375,6 +1403,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 2 && juce::String (argv[1]) == "--pump")
+        return pumpTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--pitched")
         return pitchedTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--ownchops")

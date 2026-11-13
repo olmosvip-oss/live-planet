@@ -451,6 +451,7 @@ juce::String LivePlanetProcessor::masterKeyNow (int preset)
                          m.nostalgia.load(), m.chorus.load(), m.mute.load() ? 1.0f : 0.0f, m.solo.load() ? 1.0f : 0.0f })
             k << "|" << juce::String (v, 3);
     }
+    k << "|pump " << studio.pumpDepth.load();
     return k;
 }
 
@@ -467,7 +468,7 @@ bool LivePlanetProcessor::masterNow (int preset)
     for (auto& t : st.tracks) stems.add (t.stem);
     const auto p = presets[preset];
     juce::ScopedNoDenormals nd;
-    auto song = StudioPlayer::bounce (stems, studio.mix, st.song.bpm);
+    auto song = StudioPlayer::bounce (stems, studio.mix, st.song.bpm, &studio);
     if (song.getNumSamples() == 0) return false;
     const double sr = StudioPlayer::fileRate;
     // where the glue starts: a little under the song's loud parts (its 90th-percentile loudness)
@@ -609,6 +610,7 @@ void LivePlanetProcessor::timerCallback()
             songBpm = st.song.bpm;
             songMakeupDb = st.song.playbackMakeupDb;
             studio.load (stems);
+            studio.setKicks (songJob.kickBeats(), st.song.bpm); // the pump follows the kick
         }
         static bool scannedOnce = false;
         if (! scannedOnce && ! SongJob::libraryCache().existsAsFile())
@@ -953,7 +955,7 @@ juce::File LivePlanetProcessor::fileToDrag (int t)
     for (float v : { m.gainDb.load(), m.pan.load(), m.tone.load(), m.space.load(), m.echo.load(),
                      m.warmth.load(), m.nostalgia.load(), m.chorus.load() })
         key << juce::String (v, 3) << ",";
-    key << stem.getLastModificationTime().toMilliseconds() << "," << songBpm;
+    key << stem.getLastModificationTime().toMilliseconds() << "," << songBpm << "," << studio.pumpDepth.load();
     // (a folder per sound, so the file keeps the track's plain name when it lands in Ableton)
     const auto printed = st.files.folder.getChildFile ("printed");
     const auto out = printed.getChildFile (juce::String::toHexString (key.hashCode64()).substring (0, 8))
@@ -961,7 +963,7 @@ juce::File LivePlanetProcessor::fileToDrag (int t)
     if (out.existsAsFile()) return out;
     for (auto& old : printed.findChildFiles (juce::File::findFiles, true, out.getFileName()))
         old.getParentDirectory().deleteRecursively(); // an older print of this track
-    return StudioPlayer::printTrack (stem, m, songBpm, out) ? out : stem;
+    return StudioPlayer::printTrack (stem, m, songBpm, out, &studio) ? out : stem;
 }
 
 void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
@@ -987,6 +989,7 @@ void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
         if (st.haveSong)
         {
             state.setProperty ("songFolder", st.files.folder.getFullPathName(), nullptr);
+            state.setProperty ("pump", studio.pumpDepth.load(), nullptr);
             juce::ValueTree mixTree ("studioMix");
             for (size_t i = 0; i < st.tracks.size() && i < (size_t) StudioPlayer::maxTracks; ++i)
             {
@@ -1045,6 +1048,7 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
             restoredMixFolder = songFolder;
         }
         songJob.openSong (songFolder);
+        studio.pumpDepth = (float) state.getProperty ("pump", 0.0f);
     }
 
     const juce::File f (state.getProperty ("samplePath", "").toString());

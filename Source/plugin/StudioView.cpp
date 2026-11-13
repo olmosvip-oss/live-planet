@@ -109,6 +109,18 @@ void StudioView::paint (Graphics& g)
     auto head = Rectangle<float> (12.0f, 8.0f, b.getWidth() - 24.0f, 16.0f);
     g.drawText ("TRACKS", head.withTrimmedLeft (6.0f), Justification::centredLeft, false);
     g.drawText ("CLICK A TRACK TO EDIT IT", head.withTrimmedLeft (90.0f).withWidth (260.0f), Justification::centredLeft, false);
+    if (! st.tracks.empty())
+    {
+        // the pump: everything but the drums ducks under the kick
+        const auto pb = pumpBounds();
+        const float v = proc.studio.pumpDepth.load();
+        g.setColour (v > 0.001f ? th.grassLight : dim);
+        g.drawText ("PUMP " + (v > 0.001f ? String (roundToInt (v * 100.0f)) + "%" : String ("OFF")), Rectangle<float> (pb.getX() - 86.0f, 8.0f, 82.0f, 16.0f), Justification::centredRight, false);
+        g.setColour (Colours::white.withAlpha (0.08f));
+        g.fillRoundedRectangle (pb, 4.5f);
+        g.setColour (th.grass);
+        if (v > 0.001f) g.fillRoundedRectangle (pb.withWidth (std::max (pb.getHeight(), pb.getWidth() * v)), 4.5f);
+    }
     for (auto [label, c] : { std::pair { "VOLUME", Volume }, { "PAN", Pan }, { "TONE", Tone }, { "SWAP", Swap }, { "REV", Reverse }, { "PITCH", PitchDown } })
         g.drawText (label, Rectangle<float> (colBounds (scroll, c).getX(), 8.0f, 80.0f, 16.0f), Justification::centredLeft, false);
     if (st.editing)
@@ -242,10 +254,23 @@ void StudioView::setFromX (int row, Col c, float x)
     if (onMixChanged) onMixChanged();
 }
 
+Rectangle<float> StudioView::pumpBounds() const
+{
+    return { colBounds (scroll, Volume).getX() - 160.0f, 11.5f, 110.0f, 9.0f };
+}
+
 void StudioView::mouseDown (const MouseEvent& e)
 {
     const auto st = proc.songJob.getStatus();
     dragRow = -1;
+    draggingPump = false;
+    if (! st.tracks.empty() && pumpBounds().expanded (4.0f, 6.0f).contains (e.position))
+    {
+        if (e.getNumberOfClicks() > 1) proc.studio.pumpDepth = 0.0f; // double-click: off
+        else { draggingPump = true; proc.studio.pumpDepth = jlimit (0.0f, 1.0f, (e.position.x - pumpBounds().getX()) / pumpBounds().getWidth()); }
+        repaint();
+        return;
+    }
     if (! st.tracks.empty() && (int) st.tracks.size() < StudioPlayer::maxTracks && rowShown ((int) st.tracks.size())
         && addBounds ((int) st.tracks.size()).contains (e.position))
     {
@@ -288,6 +313,7 @@ void StudioView::mouseDown (const MouseEvent& e)
 
 void StudioView::mouseDrag (const MouseEvent& e)
 {
+    if (draggingPump) { proc.studio.pumpDepth = jlimit (0.0f, 1.0f, (e.position.x - pumpBounds().getX()) / pumpBounds().getWidth()); repaint(); return; }
     if (dragRow >= 0) { setFromX (dragRow, dragCol, e.position.x); repaint(); }
 }
 
