@@ -155,6 +155,11 @@ void SourcesPanel::mouseUp (const MouseEvent& e)
 void SourcesPanel::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
 {
     const int visible = (int) ((panel().getHeight() - 190.0f) / 34.0f);
-    scroll = jlimit (0, std::max (0, (int) shown().size() - visible), scroll + (w.deltaY < 0 ? 2 : -2));
+    // as far as you scroll: a trackpad's many small steps add up to a row at a time
+    wheelRows -= (double) w.deltaY * (w.isSmooth ? 6.0 : 10.0);
+    const int rows = (int) wheelRows;
+    if (rows == 0) return;
+    wheelRows -= rows;
+    scroll = jlimit (0, std::max (0, (int) shown().size() - visible), scroll + rows);
     repaint();
 }

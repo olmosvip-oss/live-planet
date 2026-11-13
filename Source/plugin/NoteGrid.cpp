@@ -542,11 +542,13 @@ void NoteGrid::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
     if (e.mods.isShiftDown() || std::abs (w.deltaX) > std::abs (w.deltaY))
     {
         const double d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
-        setView (viewStart - d * viewLen * 0.5, viewLen);
+        setView (viewStart - d * viewLen * 0.25, viewLen);
         return;
     }
-    // up and down the notes
-    setPitchView (lowPitch + (w.deltaY > 0 ? 2 : -2));
+    // up and down the notes: as far as you scroll (a trackpad sends many small steps; each moves a little)
+    wheelRows += (double) w.deltaY * (w.isSmooth ? 5.0 : 6.0);
+    const int rows = (int) wheelRows;
+    if (rows != 0) { wheelRows -= rows; setPitchView (lowPitch + rows); }
 }
 
 void NoteGrid::mouseMagnify (const MouseEvent& e, float scale)

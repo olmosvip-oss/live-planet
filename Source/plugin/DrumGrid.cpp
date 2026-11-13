@@ -485,7 +485,7 @@ void DrumGrid::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
     }
     // scroll (either way, or sideways on a trackpad): move along the song
     const double d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
-    setView (viewStart - d * viewLen * 0.5, viewLen);
+    setView (viewStart - d * viewLen * 0.25, viewLen);
 }
 
 void DrumGrid::mouseMagnify (const MouseEvent& e, float scale)

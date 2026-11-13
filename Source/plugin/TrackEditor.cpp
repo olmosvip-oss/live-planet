@@ -149,6 +149,7 @@ void TrackEditor::select (int t)
     // (the two editors share the live player: only the one showing loads its sounds)
     if (showingDrums()) drumGrid.load (track);
     if (notesTrack) noteGrid.load (track);
+    resized(); // a drum or note track lays out around its editor
     repaint();
 }
 
@@ -284,22 +285,28 @@ void TrackEditor::resized()
     notThis.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40)); top.removeFromRight (6);
     love.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40));
 
-    // the drum editor: in the screen, or (bigger) down to the bottom of the page
-    drumGrid.setBounds (drumBig ? screen().withBottom ((float) getHeight() - 70.0f).toNearestInt() : screen().toNearestInt());
-    noteGrid.setBounds (noteBig ? screen().withBottom ((float) getHeight() - 70.0f).toNearestInt() : screen().toNearestInt());
+    // the drum / note editor: in the screen, or (bigger) down to just above the track's effect knobs
+    // (made bigger, the knobs stay: only the grains row gives way)
+    const bool gridBig = (showingDrums() || notesTrack) && bigNow();
+    const int knobRowH = 112;
+    const auto bigGrid = screen().withBottom ((float) (getHeight() - knobRowH - 14)).toNearestInt();
+    drumGrid.setBounds (drumBig ? bigGrid : screen().toNearestInt());
+    noteGrid.setBounds (noteBig ? bigGrid : screen().toNearestInt());
     sliceBtn.setBounds ((int) screen().getRight() - 150, (int) screen().getY() + 10, 138, 28);
     // two rows of dials: the track's sound and space, then its grains
-    auto rows = getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
-    const int h = rows.getHeight() / 2;
-    // left of the effects: print them into the dragged track, and the track to drag
-    bypassFx.setBounds (0, rows.getY() + 6, 100, 30);
-    printFx.setBounds (0, rows.getY() + 42, 100, 30);
-    dragTrack.setBounds (0, rows.getY() + 78, 100, 30);
+    auto rows = gridBig ? Rectangle<int> (0, getHeight() - knobRowH, getWidth(), knobRowH * 2)
+                        : getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
+    const int h = gridBig ? knobRowH : rows.getHeight() / 2;
+    // left of the effects: switch them off, print them into the dragged track, and the track to drag
+    const int bh = gridBig ? 32 : 36;
+    bypassFx.setBounds (0, rows.getY() + 4, 100, bh - 6);
+    printFx.setBounds (0, rows.getY() + 4 + bh, 100, bh - 6);
+    dragTrack.setBounds (0, rows.getY() + 4 + 2 * bh, 100, bh - 6);
     for (int r = 0; r < 2; ++r)
     {
         std::vector<Dial*> inRow;
         for (auto& d : dials) if (d->row == r) inRow.push_back (d.get());
-        auto area = Rectangle<int> (rows.getX() + 110, rows.getY() + r * h, rows.getWidth() - 110, h);
+        auto area = Rectangle<int> (rows.getX() + 110, rows.getY() + r * h, rows.getWidth() - 110 - (gridBig ? 70 : 0), h); // (room for the play button)
         const int w = area.getWidth() / std::max (1, (int) inRow.size());
         for (size_t i = 0; i < inRow.size(); ++i) inRow[i]->s.setBounds (area.getX() + (int) i * w, area.getY(), w, h);
     }
@@ -331,7 +338,7 @@ void TrackEditor::paint (Graphics& g)
             const auto nm = String (tr0name).toLowerCase();
             want = ! showingDrums() && (nm.contains ("drum") || nm.contains ("perc"));
         }
-        else if (big && (c == &printFx || c == &bypassFx || c == &dragTrack || std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s; })))
+        else if (big && std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s && d->row == 1; }))
             want = false;
         if (c->isVisible() != want) c->setVisible (want);
     }

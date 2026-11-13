@@ -258,6 +258,7 @@ private:
     void showAddMenu();
     bool hoverAdd = false;
     int scroll = 0;                 // first track row shown
+    double wheelRows = 0.0;         // scrolling, a bit at a time
     int visibleRows() const;
     bool rowShown (int row) const { return row >= scroll && row < scroll + visibleRows(); }
     Col colAt (int row, juce::Point<float> p) const;
@@ -423,6 +424,7 @@ private:
     juce::Point<float> downAt, boxTo;
     double grabBeat = 0.0, rulerFrom = 0.0, overviewGrab = 0.0, lastLen = 0.5;
     int grabPitch = 0, drawn = -1, lastHeard = -1;
+    double wheelRows = 0.0;   // scrolling up and down, a bit at a time
     std::vector<lp::song::Note> notes, before;  // before: the notes as they were when a drag started
     std::set<size_t> picked;
     bool dirty = false, waitingForRender = false, moved = false;
@@ -522,6 +524,7 @@ private:
     const lp::ui::Theme*& th;
     std::vector<SongJob::PackRow> rows;
     int filter = 2, scroll = 0; // filter: 0 all, 1 splice, 2 wavs, 3 folders
+    double wheelRows = 0.0;     // scrolling, a bit at a time
 };
 
 // A pill you drag into your DAW (or click to show in Finder)
