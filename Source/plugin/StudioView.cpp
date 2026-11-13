@@ -64,12 +64,21 @@ void StudioView::showAddMenu()
     }
     m.addSectionHeader ("write something new over your chords");
     m.addItem (1001, "Hook: a melody (original, written for this song)");
-    m.addItem (1002, "Hook: vocal chops (your vocals, cut and sung to a new melody)");
+    m.addItem (1002, "Hook: vocal chops (vocals from your sample folders, sung to a new melody)");
+    m.addItem (1003, "Hook: vocal chops from my own vocal...");
     m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (addBounds ((int) st.tracks.size()).toNearestInt())),
                      [this] (int r)
                      {
                          if (r == 1001) proc.songJob.editTrack (0, SongJob::EditOp::AddHook);
                          else if (r == 1002) proc.songJob.editTrack (0, SongJob::EditOp::AddChops);
+                         else if (r == 1003)
+                         {
+                             chooser = std::make_unique<FileChooser> ("Choose your vocal: it becomes a catchy chop hook for this song", File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
+                             chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+                             {
+                                 if (fc.getResult().existsAsFile()) proc.songJob.addChopHookFrom (fc.getResult());
+                             });
+                         }
                          else if (r > 0) proc.songJob.editTrack (r, SongJob::EditOp::Add);
                          repaint();
                      });

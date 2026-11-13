@@ -258,6 +258,7 @@ private:
     bool rowShown (int row) const { return row >= scroll && row < scroll + visibleRows(); }
     Col colAt (int row, juce::Point<float> p) const;
     void setFromX (int row, Col c, float x);
+    std::unique_ptr<juce::FileChooser> chooser;
     LivePlanetProcessor& proc;
     int hoverRow = -1, dragRow = -1;
     std::array<lp::ui::MeterBallistics, StudioPlayer::maxTracks> meterL {}, meterR {};

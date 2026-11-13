@@ -2190,6 +2190,7 @@ void LivePlanetEditor::filesDropped (const StringArray& files, int, int)
     if (! file.existsAsFile()) return;
     PopupMenu m;
     m.addSectionHeader (file.getFileNameWithoutExtension());
+    m.addItem (4, "Make a catchy chop hook for my song (a new track)", proc.songJob.hasSong());
     m.addItem (1, "Chop it: one syllable on each key (for vocals)");
     m.addItem (2, "Play it across the keyboard (a one-shot)");
     m.addItem (3, "Make it the instrument's sound (grains)");
@@ -2202,6 +2203,12 @@ void LivePlanetEditor::filesDropped (const StringArray& files, int, int)
             ok = n > 0;
             chopMessage = ok ? String (n) + " chops on the keys from C3 up: play them in Play mode"
                              : String ("couldn't find syllables in it: try a recording with short gaps between words");
+            chopMessageUntil = Time::getMillisecondCounter() + 8000;
+        }
+        else if (r == 4)
+        {
+            proc.songJob.addChopHookFrom (file);
+            chopMessage = "writing a vocal-chop hook from your vocal: it's added to your song (Studio) in a few seconds";
             chopMessageUntil = Time::getMillisecondCounter() + 8000;
         }
         else if (r == 2) ok = proc.loadSamplerInstrument (file);

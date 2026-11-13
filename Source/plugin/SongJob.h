@@ -729,6 +729,19 @@ public:
         startIfNeeded();
     }
 
+    // a catchy vocal-chop hook for the song, sung with your own vocal's syllables (a new track)
+    void addChopHookFrom (const juce::File& vocal)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingOwnVocal = vocal;
+            edits.push_back ({ 0, EditOp::AddChops });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    bool hasSong() const { const juce::ScopedLock sl (lock); return status.haveSong; }
+
     // switch to take i (A/B while it plays: the studio reloads the tracks, the position stays)
     void openTake (int i)
     {
@@ -1829,7 +1842,10 @@ private:
         part.notes = lp::song::hook::write (song, chordList, seed + (juce::uint32) part.variant, chops, where);
         if (chops)
         {
-            part.candidates = vocalsToChop (song, seed);
+            // your own vocal (dropped or picked), or vocals from your sample folders
+            juce::File own;
+            { const juce::ScopedLock sl (lock); own = pendingOwnVocal; pendingOwnVocal = juce::File(); }
+            part.candidates = own.existsAsFile() ? juce::StringArray (own.getFullPathName()) : vocalsToChop (song, seed);
             if (part.candidates.isEmpty())
             {
                 const juce::ScopedLock sl (lock);
@@ -1837,7 +1853,7 @@ private:
                 return;
             }
             part.samplePath = part.candidates[0];
-            part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
+            part.source = (own.existsAsFile() ? juce::String ("your vocal: ") : sourceLabel (part.samplePath)) + juce::File (part.samplePath).getFileNameWithoutExtension();
         }
         else
         {
@@ -2496,6 +2512,7 @@ private:
     std::pair<int, int> pendingFromTake { -1, -1 };
     std::vector<lp::song::arrange::Item> pendingPlan;
     float pendingFeel = 1.0f;
+    juce::File pendingOwnVocal;
     juce::String chordsSummary;
     juce::String drumSwapName; // the drum sound just swapped in (for the editor to show)
     int drumSwapCount = 0;

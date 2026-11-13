@@ -554,6 +554,84 @@ static int chopTest()
     return 0;
 }
 
+#include "../Source/song/Hook.h"
+// your own vocal, cut and sung to a hook written over the song's chords
+static int ownChopTest (const juce::File& dir)
+{
+    using namespace lp::song;
+    const double sr = 48000.0;
+    // "your vocal": 8 sung syllables at different pitches, with small gaps
+    dir.createDirectory();
+    auto vf = dir.getChildFile ("my vocal.wav");
+    {
+        juce::AudioBuffer<float> v (2, (int) (sr * 4.0));
+        v.clear();
+        const double pitches[] = { 220, 247, 262, 294, 330, 349, 392, 440 };
+        for (int k = 0; k < 8; ++k)
+        {
+            const int a = (int) ((0.1 + k * 0.45) * sr), n = (int) (0.32 * sr);
+            for (int i = 0; i < n; ++i)
+            {
+                const double env = std::min (1.0, i / (0.01 * sr)) * std::min (1.0, (n - i) / (0.03 * sr));
+                const float x = (float) (0.4 * env * (std::sin (2 * juce::MathConstants<double>::pi * pitches[k] * i / sr) + 0.4 * std::sin (6 * juce::MathConstants<double>::pi * pitches[k] * i / sr)));
+                v.setSample (0, a + i, x); v.setSample (1, a + i, x);
+            }
+        }
+        vf.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (vf), sr, 2, 24, {}, 0));
+        w->writeFromAudioSampleBuffer (v, 0, v.getNumSamples());
+    }
+    lp::Weather sky; sky.temperatureC = 18;
+    Options o; o.seed = 4; o.full = false;
+    Song song = generate (Profile {}, sky, o);
+    // the hook over the song's own chords (from its chord part)
+    std::vector<chords::Chord> cl;
+    for (auto& p : song.parts)
+        if (p.kind == PartKind::Chords)
+            for (int b = 0; b < song.totalBars() * 2; ++b)
+            {
+                std::array<float, 12> pcs {};
+                for (auto& n : p.notes) if (n.beat <= b * 2.0 + 1.0 && n.beat + n.length > b * 2.0 + 1.0) pcs[(size_t) (n.pitch % 12)] += 1.0f;
+                auto got = chords::read ({ pcs }, {}, song.key, song.minor, 2.0);
+                if (! got.empty()) { auto c = got[0]; c.beat = b * 2.0; c.length = 2.0; cl.push_back (c); }
+            }
+    juce::String where;
+    Part hook;
+    hook.kind = PartKind::Melody; hook.name = "vocal chops"; hook.samplePath = vf.getFullPathName();
+    hook.notes = hook::write (song, cl, 7, true, where);
+    juce::AudioBuffer<float> out;
+    if (! renderPart (song, hook, {}, out)) { std::printf ("render FAILED\n"); return 1; }
+    // check: sound where the hook plays, silence elsewhere, and the pitches of the chops match the notes
+    double inHook = 0, outside = 0; int nIn = 0, nOut = 0;
+    const double spb = 48000.0 * 60.0 / song.bpm;
+    for (int i = 0; i < out.getNumSamples(); i += 64)
+    {
+        const double beat = i / spb;
+        bool playing = false;
+        for (auto& n : hook.notes) playing = playing || (beat >= n.beat && beat < n.beat + n.length);
+        const double v = out.getSample (0, i) * out.getSample (0, i);
+        (playing ? inHook : outside) += v; (playing ? nIn : nOut)++;
+    }
+    std::printf ("hook in the %s: %d notes; level where it sings %.1f dB, elsewhere %.1f dB\n", where.toRawUTF8(), (int) hook.notes.size(),
+                 10 * std::log10 (inHook / std::max (1, nIn) + 1e-12), 10 * std::log10 (outside / std::max (1, nOut) + 1e-12));
+    int right = 0, total = 0;
+    for (size_t k = 0; k < hook.notes.size() && total < 40; ++k)
+    {
+        const auto& n = hook.notes[k];
+        const int a = (int) (n.beat * spb) + 600, len = std::min ((int) (n.length * spb) - 1200, (int) (0.25 * 48000));
+        if (len < 9000) continue;
+        std::vector<float> seg ((size_t) len);
+        for (int i = 0; i < len; ++i) seg[(size_t) i] = out.getSample (0, a + i);
+        const double hz = lp::sources::detectPitch (seg, 48000.0);
+        if (hz <= 0) continue;
+        const int pc = ((int) std::lround (69 + 12 * std::log2 (hz / 440.0)) % 12 + 12) % 12;
+        ++total; right += pc == n.pitch % 12 ? 1 : 0;
+    }
+    std::printf ("chops sung on the hook's notes: %d of %d checked\n", right, total);
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1264,6 +1342,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 2 && juce::String (argv[1]) == "--ownchops")
+        return ownChopTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--chop")
         return chopTest();
     if (argc > 2 && juce::String (argv[1]) == "--arrange")
