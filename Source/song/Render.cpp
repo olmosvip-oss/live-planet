@@ -3,6 +3,7 @@
 #include <atomic>
 #include "../engine/Limiter.h"
 #include "../engine/Engine.h"
+#include "../engine/Sources.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <signalsmith-stretch/signalsmith-stretch.h>
 
@@ -952,6 +953,66 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
                     if (o < 0 || o >= total) continue;
                     const float fi = firstUsed > 0 ? std::min (1.0f, (float) (i - firstUsed) / (float) fadeIn) : 1.0f;
                     dst[o] += src[i] * g * fi;
+                }
+            }
+        }
+    }
+    else if (part.kind == PartKind::Melody && part.samplePath.isNotEmpty())
+    {
+        // vocal chops: the recording cut into short sung slices, each moved to a note of the hook
+        auto src = loadAudio (part.samplePath, sr);
+        const int n = src.getNumSamples();
+        struct Slice { int start, len; double midi; };
+        std::vector<Slice> slices;
+        if (n > (int) (0.2 * sr))
+        {
+            // where new syllables start: the loudness jumps up
+            const int hop = (int) (0.01 * sr);
+            std::vector<float> envl;
+            for (int i = 0; i + hop <= n; i += hop) envl.push_back (0.5f * (src.getRMSLevel (0, i, hop) + src.getRMSLevel (1, i, hop)));
+            float peak = 0; for (float v : envl) peak = std::max (peak, v);
+            std::vector<int> starts;
+            for (size_t k = 5; k < envl.size(); ++k)
+            {
+                const float before = *std::max_element (envl.begin() + (long) k - 5, envl.begin() + (long) k);
+                if (envl[k] > peak * 0.15f && envl[k] > before * 1.8f && (starts.empty() || (int) k * hop - starts.back() > (int) (0.12 * sr)))
+                    starts.push_back ((int) k * hop);
+            }
+            if (starts.size() < 3) for (int i = 0; i + (int) (0.3 * sr) < n; i += (int) (0.3 * sr)) starts.push_back (i); // no clear syllables: even slices
+            for (size_t k = 0; k < starts.size() && slices.size() < 24; ++k)
+            {
+                const int a0 = starts[k];
+                const int a1 = std::min ({ n, k + 1 < starts.size() ? starts[k + 1] : n, a0 + (int) (0.6 * sr) });
+                if (a1 - a0 < (int) (0.17 * sr)) continue;
+                std::vector<float> mono ((size_t) (a1 - a0));
+                for (int i = a0; i < a1; ++i) mono[(size_t) (i - a0)] = 0.5f * (src.getSample (0, i) + src.getSample (1, i));
+                const double hz = lp::sources::detectPitch (mono, sr);
+                if (hz <= 0.0) continue; // breaths and noises don't sing
+                slices.push_back ({ a0, a1 - a0, 69.0 + 12.0 * std::log2 (hz / 440.0) });
+            }
+        }
+        if (! slices.empty())
+        {
+            int k = 0;
+            for (auto& note : part.notes)
+            {
+                // a different syllable for each note, in a pattern that repeats with the hook
+                const auto& sl = slices[(size_t) ((k++ + note.pitch * 3) % (int) slices.size())];
+                double shift = note.pitch - sl.midi;
+                shift -= 12.0 * std::round (shift / 12.0);                    // its own octave: the voice stays natural
+                const double ratio = std::pow (2.0, shift / 12.0);
+                const long at = (long) (note.beat * spb);
+                const int outLen = (int) std::min ((double) sl.len / ratio, note.length * spb);
+                const int fadeIn = (int) (0.004 * sr), fadeOut = std::min (outLen / 3, (int) (0.03 * sr));
+                for (int i = 0; i < outLen && at + i < total; ++i)
+                {
+                    const double pos = sl.start + i * ratio;
+                    const int i0 = (int) pos;
+                    if (i0 + 1 >= n) break;
+                    const float f = (float) (pos - i0);
+                    const float g = note.velocity * std::min ({ 1.0f, (float) i / (float) fadeIn, (float) (outLen - i) / (float) std::max (1, fadeOut) });
+                    L[at + i] += (src.getSample (0, i0) + (src.getSample (0, i0 + 1) - src.getSample (0, i0)) * f) * g;
+                    R[at + i] += (src.getSample (1, i0) + (src.getSample (1, i0 + 1) - src.getSample (1, i0)) * f) * g;
                 }
             }
         }

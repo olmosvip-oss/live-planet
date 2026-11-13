@@ -62,8 +62,17 @@ void StudioView::showAddMenu()
         const int n = (size_t) k < st.kindCounts.size() ? st.kindCounts[(size_t) k] : 0;
         m.addItem ((int) k, String (lp::song::loopKindName (k)) + "   (" + String (n) + ")", n > 0);
     }
+    m.addSectionHeader ("write something new over your chords");
+    m.addItem (1001, "Hook: a melody (original, written for this song)");
+    m.addItem (1002, "Hook: vocal chops (your vocals, cut and sung to a new melody)");
     m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (addBounds ((int) st.tracks.size()).toNearestInt())),
-                     [this] (int r) { if (r > 0) { proc.songJob.editTrack (r, SongJob::EditOp::Add); repaint(); } });
+                     [this] (int r)
+                     {
+                         if (r == 1001) proc.songJob.editTrack (0, SongJob::EditOp::AddHook);
+                         else if (r == 1002) proc.songJob.editTrack (0, SongJob::EditOp::AddChops);
+                         else if (r > 0) proc.songJob.editTrack (r, SongJob::EditOp::Add);
+                         repaint();
+                     });
 }
 
 StudioView::Col StudioView::colAt (int row, Point<float> p) const

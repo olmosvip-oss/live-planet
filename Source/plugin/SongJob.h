@@ -5,6 +5,7 @@
 #include "../song/Song.h"
 #include "../song/SongFile.h"
 #include "../song/Chords.h"
+#include "../song/Hook.h"
 #include "../song/Library.h"
 #include "../engine/Limiter.h"
 
@@ -15,7 +16,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -350,6 +351,38 @@ public:
     std::pair<juce::String, int> lastDrumSwap() const { const juce::ScopedLock sl (lock); return { drumSwapName, drumSwapCount }; }
     bool kitIsSamples() const { const juce::ScopedLock sl (lock); return ! current.drumSamples.empty(); }
 
+    // the chords the song's tracks really play (two a bar at most), heard from their files.
+    // (a written hook is left out: it follows the chords, it doesn't make them)
+    static std::vector<lp::song::chords::Chord> songChords (const lp::song::Song& song, const std::vector<TrackInfo>& tracks)
+    {
+        const double barSamples = 4.0 * 60.0 / song.bpm * StudioPlayer::fileRate;
+        const int bars = song.totalBars(), slots = bars * 2;
+        const int len = (int) (bars * barSamples);
+        std::vector<float> music ((size_t) len, 0.0f), bassLine ((size_t) len, 0.0f);
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        bool anyBass = false;
+        for (size_t i = 0; i < tracks.size() && i < song.parts.size(); ++i)
+        {
+            const auto& p = song.parts[i];
+            const juce::String n (p.name);
+            if (p.kind == lp::song::PartKind::Drums || p.kind == lp::song::PartKind::Fx || n.containsIgnoreCase ("drum")
+                || n.containsIgnoreCase ("perc") || n.containsIgnoreCase ("transition") || n == "hook" || n == "vocal chops") continue;
+            const bool isBass = p.kind == lp::song::PartKind::Bass || n.containsIgnoreCase ("bass");
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (tracks[i].stem));
+            if (rd == nullptr) continue;
+            juce::AudioBuffer<float> b (2, len);
+            b.clear();
+            rd->read (&b, 0, (int) std::min<juce::int64> (len, rd->lengthInSamples), 0, true, true);
+            auto& dst = isBass ? bassLine : music;
+            for (int k = 0; k < len; ++k) dst[(size_t) k] += 0.5f * (b.getSample (0, k) + b.getSample (1, k));
+            anyBass = anyBass || isBass;
+        }
+        const auto mc = lp::song::barChroma (music.data(), len, StudioPlayer::fileRate, slots);
+        const auto bc = anyBass ? lp::song::barChroma (bassLine.data(), len, StudioPlayer::fileRate, slots) : std::vector<std::array<float, 12>> {};
+        return lp::song::chords::read (mc, bc, song.key, song.minor, 2.0);
+    }
+
     // the song's chords and bass as MIDI ("drag chords"): read from what its tracks really play, so it
     // matches the song even after swaps and key changes. Made once per version of the song.
     juce::File chordsMidi (juce::String* summary = nullptr)
@@ -365,32 +398,7 @@ public:
         }
         const auto file = folder.getChildFile (song.title + " - chords and bass.mid");
         if (chordsVersion == version && file.existsAsFile()) { if (summary) *summary = chordsSummary; return file; }
-        const double barSamples = 4.0 * 60.0 / song.bpm * StudioPlayer::fileRate;
-        const int bars = song.totalBars(), slots = bars * 2; // two chords a bar at most
-        const int len = (int) (bars * barSamples);
-        std::vector<float> music ((size_t) len, 0.0f), bassLine ((size_t) len, 0.0f);
-        juce::AudioFormatManager fm;
-        fm.registerBasicFormats();
-        bool anyBass = false;
-        for (size_t i = 0; i < tracks.size() && i < song.parts.size(); ++i)
-        {
-            const auto& p = song.parts[i];
-            const juce::String n (p.name);
-            if (p.kind == lp::song::PartKind::Drums || p.kind == lp::song::PartKind::Fx || n.containsIgnoreCase ("drum")
-                || n.containsIgnoreCase ("perc") || n.containsIgnoreCase ("transition")) continue;
-            const bool isBass = p.kind == lp::song::PartKind::Bass || n.containsIgnoreCase ("bass");
-            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (tracks[i].stem));
-            if (rd == nullptr) continue;
-            juce::AudioBuffer<float> b (2, len);
-            b.clear();
-            rd->read (&b, 0, (int) std::min<juce::int64> (len, rd->lengthInSamples), 0, true, true);
-            auto& dst = isBass ? bassLine : music;
-            for (int k = 0; k < len; ++k) dst[(size_t) k] += 0.5f * (b.getSample (0, k) + b.getSample (1, k));
-            anyBass = anyBass || isBass;
-        }
-        const auto mc = lp::song::barChroma (music.data(), len, StudioPlayer::fileRate, slots);
-        const auto bc = anyBass ? lp::song::barChroma (bassLine.data(), len, StudioPlayer::fileRate, slots) : std::vector<std::array<float, 12>> {};
-        const auto chords = lp::song::chords::read (mc, bc, song.key, song.minor, 2.0);
+        const auto chords = songChords (song, tracks);
         lp::song::chords::writeMidi (chords, song.bpm, song.title, file);
         juce::StringArray names;
         for (auto& c : chords) if (c.valid && (names.isEmpty() || names[names.size() - 1] != lp::song::chords::name (c))) names.add (lp::song::chords::name (c));
@@ -1554,9 +1562,97 @@ private:
         saveSession();
     }
 
+    // vocals to chop: vocal loops and vocal one-shots in your library (the song's own packs first)
+    juce::StringArray vocalsToChop (const lp::song::Song& song, juce::uint32 seed)
+    {
+        refreshUsable();
+        juce::StringArray packsInSong;
+        for (auto& p : song.parts) if (const auto* e = library.find (p.samplePath)) packsInSong.addIfNotAlreadyThere (e->pack);
+        std::vector<std::pair<float, juce::String>> pool;
+        juce::Random rng ((juce::int64) seed);
+        for (auto& e : usableLib.all())
+        {
+            const auto lower = e.path.toLowerCase();
+            const bool vocal = e.loop == lp::song::LoopKind::Vocal || lower.contains ("vocal") || lower.contains ("vox") || lower.contains ("voice") || lower.contains ("chop");
+            if (! vocal || e.kind == lp::song::SampleKind::Riser || e.kind == lp::song::SampleKind::Impact) continue;
+            pool.push_back ({ (packsInSong.contains (e.pack) ? 2.0f : 0.0f) + rng.nextFloat() * 1.5f, e.path });
+        }
+        std::sort (pool.begin(), pool.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+        juce::StringArray out;
+        for (size_t i = 0; i < pool.size() && i < 8; ++i) out.add (pool[i].second);
+        return out;
+    }
+
+    // the instrument a written hook is played on, by style (Swap changes the melody, not the sound)
+    static lp::SoundId hookSound (lp::song::Style st)
+    {
+        using S = lp::song::Style;
+        switch (st)
+        {
+            case S::Trap: case S::Electronic: return lp::SoundId::Vapor;
+            case S::Dusty: case S::BoomBap:   return lp::SoundId::Rhodes;
+            case S::House:                    return lp::SoundId::Glass;
+            default:                          return lp::SoundId::Celesta;
+        }
+    }
+
+    // a hook, written over the song's chords, added as a new track: a melody, or chopped vocals
+    void addHook (bool chops)
+    {
+        lp::song::Song song;
+        std::vector<TrackInfo> tracks;
+        {
+            const juce::ScopedLock sl (lock);
+            if (current.parts.empty() || (int) current.parts.size() >= 12) return;
+            song = current; tracks = status.tracks;
+        }
+        setStage (Stage::Done, 1.0f, chops ? "writing vocal chops over your chords..." : "writing a hook over your chords...");
+        const auto chordList = songChords (song, tracks);
+        lp::song::Part part;
+        part.kind = lp::song::PartKind::Melody;
+        part.name = chops ? "vocal chops" : "hook";
+        part.variant = 1;
+        const auto seed = currentSeed * 31u + (juce::uint32) song.parts.size() * 7919u;
+        juce::String where;
+        part.notes = lp::song::hook::write (song, chordList, seed + (juce::uint32) part.variant, chops, where);
+        if (chops)
+        {
+            part.candidates = vocalsToChop (song, seed);
+            if (part.candidates.isEmpty())
+            {
+                const juce::ScopedLock sl (lock);
+                status.message = "no vocals in your sample folders to chop: try the melody hook";
+                return;
+            }
+            part.samplePath = part.candidates[0];
+            part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
+        }
+        else
+        {
+            part.sound = hookSound (song.style);
+            part.source = juce::String ("loopwright: written hook, ") + lp::profileFor (part.sound).name;
+        }
+        part.remix = "an original hook over your chords, in the " + where + ". swap: another hook";
+        song.parts.push_back (part);
+        juce::AudioBuffer<float> buf;
+        if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
+        const int tr = (int) song.parts.size() - 1;
+        const auto stem = currentFolder.getChildFile ("stems").getChildFile (
+            juce::String (tr + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (added " + juce::String (++editCounter) + ").wav");
+        if (! writeStem (stem, buf, currentRs.sampleRate)) return;
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks.push_back (info (part, stem, song));
+        status.message = juce::String (chops ? "vocal chops" : "a hook") + " written over your chords, in the " + where;
+        ++status.version;
+        saveSession();
+    }
+
     void applyEdit (int tr, EditOp op)
     {
         if (op == EditOp::Add) { addInstrument ((lp::song::LoopKind) tr); return; }
+        if (op == EditOp::AddHook || op == EditOp::AddChops) { addHook (op == EditOp::AddChops); return; }
         if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
         lp::song::Song song;
@@ -1644,7 +1740,24 @@ private:
         }
         if (op == EditOp::PitchUp) part.pitchSemis = std::min (12, part.pitchSemis + 1);
         if (op == EditOp::PitchDown) part.pitchSemis = std::max (-12, part.pitchSemis - 1);
-        if (op == EditOp::Swap)
+        if (op == EditOp::Swap && part.kind == PK::Melody && (part.name == "hook" || part.name == "vocal chops"))
+        {
+            // another hook: a new melody over the same chords (chops: every other time, another vocal too)
+            std::vector<TrackInfo> tracks;
+            { const juce::ScopedLock sl (lock); tracks = status.tracks; }
+            const bool chops = part.name == "vocal chops";
+            ++part.variant;
+            juce::String where;
+            part.notes = lp::song::hook::write (song, songChords (song, tracks), currentSeed * 31u + (juce::uint32) tr * 7919u + (juce::uint32) part.variant, chops, where);
+            if (chops && part.candidates.size() > 1 && part.variant % 2 == 0)
+            {
+                part.candidate = (part.candidate + 1) % part.candidates.size();
+                part.samplePath = part.candidates[part.candidate];
+                part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
+            }
+            part.remix = "an original hook over your chords (take " + juce::String (part.variant) + "), in the " + where + ". swap: another hook";
+        }
+        else if (op == EditOp::Swap)
         {
             if (part.kind == PK::Loop && part.candidates.size() > 1)
             {
