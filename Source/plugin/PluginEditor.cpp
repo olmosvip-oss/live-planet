@@ -1967,7 +1967,7 @@ void LivePlanetEditor::paint (Graphics& g)
         const auto smp = proc.getSampleName();
         g.setFont (font (12.5f));
         g.setColour (th.inkDim);
-        String line = smp.isEmpty() ? String ("or drop a sound anywhere") : smp + String (CharPointer_UTF8 ("  \xc2\xb7  ")) + proc.getSampleInfo();
+        String line = smp.isEmpty() ? String ("or drop a sound here (a vocal from Ableton: drop it to chop it)") : smp + String (CharPointer_UTF8 ("  \xc2\xb7  ")) + proc.getSampleInfo();
         if (proc.samplerOn.load())
         {
             const SpinLock::ScopedLockType sl (proc.samplerInfoLock);
@@ -2170,7 +2170,7 @@ void LivePlanetEditor::resized()
 bool LivePlanetEditor::isInterestedInFileDrag (const StringArray& files)
 {
     for (auto& f : files)
-        if (File (f).hasFileExtension ("wav;aif;aiff;flac;mp3;ogg"))
+        if (File (f).hasFileExtension ("wav;aif;aiff;flac;mp3;ogg;m4a"))
             return true;
     return false;
 }
@@ -2184,9 +2184,31 @@ void LivePlanetEditor::filesDropped (const StringArray& files, int, int)
         repaint();
         return;
     }
-    for (auto& f : files)
-        if (proc.loadSample (File (f)))
-            break;
+    // the sound page: what to do with it (a vocal recording from Ableton: chop it)
+    File file;
+    for (auto& f : files) if (File (f).existsAsFile()) { file = File (f); break; }
+    if (! file.existsAsFile()) return;
+    PopupMenu m;
+    m.addSectionHeader (file.getFileNameWithoutExtension());
+    m.addItem (1, "Chop it: one syllable on each key (for vocals)");
+    m.addItem (2, "Play it across the keyboard (a one-shot)");
+    m.addItem (3, "Make it the instrument's sound (grains)");
+    m.showMenuAsync (PopupMenu::Options().withTargetComponent (&chopButton), [this, file] (int r)
+    {
+        bool ok = false;
+        if (r == 1)
+        {
+            const int n = proc.loadVocalChops (file);
+            ok = n > 0;
+            chopMessage = ok ? String (n) + " chops on the keys from C3 up: play them in Play mode"
+                             : String ("couldn't find syllables in it: try a recording with short gaps between words");
+            chopMessageUntil = Time::getMillisecondCounter() + 8000;
+        }
+        else if (r == 2) ok = proc.loadSamplerInstrument (file);
+        else if (r == 3) { proc.samplerOff(); proc.loadSample (file); }
+        if (ok) if (auto* km = proc.params.getParameter ("keymode")) km->setValueNotifyingHost (0.0f); // Play mode, ready to play
+        repaint();
+    });
     repaint();
 }
 
