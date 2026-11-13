@@ -295,6 +295,9 @@ public:
         juce::String title;
         int totalBars = 0;
         juce::String kitKey; // changes when the drum sounds change (swap, pitch)
+        juce::String name, samplePath;
+        int key = 0;
+        bool minor = false;
     };
     PartView partView (int track) const
     {
@@ -306,9 +309,82 @@ public:
         v.sections = current.sections; v.drumSamples = p.kitIn (current);
         v.title = current.title; v.totalBars = current.totalBars();
         v.kitKey << p.variant << "|" << p.pitchSemis;
+        v.name = juce::String (p.name); v.samplePath = p.samplePath; v.key = current.key; v.minor = current.minor;
         for (auto& [n, f] : p.kitIn (current)) v.kitKey << "|" << n << f;
         return v;
     }
+    // a played track's sound on every note from lo to hi, to hear notes in the note editor before the track
+    // is re-recorded: its own sample (an 808, a pluck) moved to each note, or a plain tone for a built-in sound
+    std::map<int, std::shared_ptr<juce::AudioBuffer<float>>> noteSounds (int track, int lo, int hi) const
+    {
+        juce::String path;
+        bool bass = false;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return {};
+            path = current.parts[(size_t) track].samplePath;
+            bass = current.parts[(size_t) track].kind == lp::song::PartKind::Bass;
+        }
+        const double sr = StudioPlayer::fileRate;
+        juce::AudioBuffer<float> src;
+        double root = bass ? 36.0 : 60.0;
+        if (path.isNotEmpty())
+        {
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            if (std::unique_ptr<juce::AudioFormatReader> rd { fm.createReaderFor (juce::File (path)) })
+            {
+                const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 4.0));
+                juce::AudioBuffer<float> raw (2, len);
+                rd->read (&raw, 0, len, 0, true, rd->numChannels > 1);
+                if (rd->numChannels == 1) raw.copyFrom (1, 0, raw, 0, 0, len);
+                root = lp::song::onenote::rootOf (raw, rd->sampleRate, root, path);
+                // to the song's rate
+                const double ratio = rd->sampleRate / sr;
+                src.setSize (2, (int) (len / ratio));
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < src.getNumSamples(); ++i)
+                    {
+                        const double at = i * ratio; const int i0 = (int) at;
+                        const float f = (float) (at - i0);
+                        src.setSample (ch, i, i0 + 1 < len ? raw.getSample (ch, i0) + (raw.getSample (ch, i0 + 1) - raw.getSample (ch, i0)) * f : 0.0f);
+                    }
+            }
+        }
+        if (src.getNumSamples() == 0)
+        {
+            // a plain, soft tone (a bass a little fuller)
+            src.setSize (2, (int) (sr * 1.5));
+            const double hz = 440.0 * std::pow (2.0, (root - 69.0) / 12.0);
+            for (int i = 0; i < src.getNumSamples(); ++i)
+            {
+                const double t = i / sr, ph = 2.0 * juce::MathConstants<double>::pi * hz * t;
+                const float v = (float) ((std::sin (ph) + (bass ? 0.3 : 0.15) * std::sin (2 * ph)) * std::exp (-t * (bass ? 1.5 : 3.0)) * 0.5);
+                src.setSample (0, i, v); src.setSample (1, i, v);
+            }
+        }
+        std::map<int, std::shared_ptr<juce::AudioBuffer<float>>> kit;
+        for (int note = lo; note <= hi; ++note)
+        {
+            const double step = std::pow (2.0, (note - root) / 12.0);
+            const int n = std::min ((int) (src.getNumSamples() / step) - 2, (int) (sr * 3.0));
+            if (n <= 64) continue;
+            auto b = std::make_shared<juce::AudioBuffer<float>> (2, n);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float* x = src.getReadPointer (ch);
+                float* y = b->getWritePointer (ch);
+                for (int i = 0; i < n; ++i)
+                {
+                    const double at = i * step; const int i0 = (int) at;
+                    y[i] = (x[i0] + (x[i0 + 1] - x[i0]) * (float) (at - i0)) * 0.85f;
+                }
+            }
+            kit[note] = std::move (b);
+        }
+        return kit;
+    }
+
     // every drum sound of a track's kit, one hit each, at the level they have in the track's file
     // (any thread; reads the track's file once, so not on the audio thread)
     std::map<int, std::shared_ptr<juce::AudioBuffer<float>>> drumHits (int track) const

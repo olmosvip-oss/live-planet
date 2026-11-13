@@ -7,7 +7,7 @@ using lp::ui::font;
 // a row of dials for its own mix and effects, and the remix tools.
 
 TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
-    : proc (p), th (theme), drumGrid (p, theme),
+    : proc (p), th (theme), drumGrid (p, theme), noteGrid (p, theme),
       dragTrack ("drag track", [this] { auto st = proc.songJob.getStatus();
                                         return st.haveSong && track < (int) st.tracks.size() ? StringArray (st.tracks[(size_t) track].stem.getFullPathName()) : StringArray(); })
 {
@@ -29,6 +29,9 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     };
     addAndMakeVisible (dragTrack);
     addChildComponent (drumGrid);
+    addChildComponent (noteGrid);
+    noteGrid.onToggleBig = [this] { noteBig = ! noteBig; noteGrid.setBig (noteBig); resized(); repaint(); };
+    noteGrid.setBig (noteBig);
     sliceBtn.setTooltip ("Turn this drum loop into hits you can edit on the drum grid: kick, snare, hats, each with its own sound from the loop");
     sliceBtn.onClick = [this] { proc.songJob.editTrack (track, SongJob::EditOp::SliceDrums); };
     sliceBtn.setWantsKeyboardFocus (false);
@@ -126,7 +129,7 @@ TrackEditor::Dial& TrackEditor::addDial (const char* name, double lo, double hi,
 
 void TrackEditor::select (int t)
 {
-    if (t != track) drumGrid.stopLoop(); // another track: the drum loop stops
+    if (t != track) { drumGrid.stopLoop(); noteGrid.stopLoop(); drumGrid.forgetKit(); noteGrid.forgetSound(); } // another track: the loop stops, its sounds load again
     const int n = (int) proc.songJob.getStatus().tracks.size();
     track = n > 0 ? jlimit (0, n - 1, t) : 0;
     const auto st = proc.songJob.getStatus();
@@ -134,7 +137,14 @@ void TrackEditor::select (int t)
     for (auto& d : dials)
         d->s.setValue (d->local != nullptr ? (double) *d->local : (double) d->value (track).load(), dontSendNotification);
     dragFrom = dragTo = -1;
-    drumGrid.load (track);
+    {
+        const auto pv = proc.songJob.partView (track);
+        using PK = lp::song::PartKind;
+        notesTrack = pv.valid && (pv.kind == PK::Bass || pv.kind == PK::Melody) && ! pv.notes.empty() && ! pv.name.startsWith ("vocal (");
+    }
+    // (the two editors share the live player: only the one showing loads its sounds)
+    if (showingDrums()) drumGrid.load (track);
+    if (notesTrack) noteGrid.load (track);
     repaint();
 }
 
@@ -148,7 +158,8 @@ void TrackEditor::refresh()
 {
     const auto st = proc.songJob.getStatus();
     if (st.version != version) { version = st.version; select (track); }
-    drumGrid.refresh();
+    if (showingDrums()) drumGrid.refresh();
+    if (notesTrack) noteGrid.refresh();
     {
         const auto& m = proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, track)];
         const int rated = proc.songJob.ratingOf (track);
@@ -255,6 +266,7 @@ void TrackEditor::resized()
 
     // the drum editor: in the screen, or (bigger) down to the bottom of the page
     drumGrid.setBounds (drumBig ? screen().withBottom ((float) getHeight() - 70.0f).toNearestInt() : screen().toNearestInt());
+    noteGrid.setBounds (noteBig ? screen().withBottom ((float) getHeight() - 70.0f).toNearestInt() : screen().toNearestInt());
     sliceBtn.setBounds ((int) screen().getRight() - 150, (int) screen().getY() + 10, 138, 28);
     // two rows of dials: the track's sound and space, then its grains
     auto rows = getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
@@ -286,11 +298,12 @@ void TrackEditor::paint (Graphics& g)
     }
     const juce::String tr0name = track < (int) st.tracks.size() ? st.tracks[(size_t) track].name : juce::String();
     // the drum editor made bigger covers the dials: they hide until it's made smaller again
-    const bool big = drumBig && showingDrums();
+    const bool big = (showingDrums() || notesTrack) && bigNow();
     for (auto* c : getChildren())
     {
         bool want = true;
         if (c == &drumGrid) want = showingDrums();
+        else if (c == &noteGrid) want = notesTrack && ! showingDrums();
         else if (c == &sliceBtn)
         {
             // drum loops and percussion loops can be sliced

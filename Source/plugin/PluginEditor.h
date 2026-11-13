@@ -1,4 +1,5 @@
 #pragma once
+#include <set>
 #include "Meter.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
@@ -308,6 +309,7 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     void mouseMagnify (const juce::MouseEvent&, float scale) override;
     void stopLoop();          // leaving the drum editor
+    void forgetKit() { kitKey.clear(); } // another editor used the live player: load the kit again next time
     std::function<void()> onToggleBig; // the "bigger" button: the grid takes the whole editor
     void setBig (bool b) { bigBtn.setToggleState (b, juce::dontSendNotification); }
 
@@ -362,6 +364,77 @@ private:
     void updateFeelText();
 };
 
+// EDIT > a played part (an 808, a hook, a bass line): its notes on a piano roll, to move, stretch, add and erase
+class NoteGrid : public juce::Component
+{
+public:
+    NoteGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme);
+    void load (int track);
+    void forgetSound() { soundKey.clear(); }
+    void refresh();
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseMagnify (const juce::MouseEvent&, float scale) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    void stopLoop();
+    std::function<void()> onToggleBig;
+    void setBig (bool b) { bigBtn.setButtonText (b ? "smaller" : "bigger"); }
+
+private:
+    double totalBeats() const { return totalBars * 4.0; }
+    juce::Rectangle<float> overviewArea() const;
+    juce::Rectangle<float> sectionLane() const;
+    juce::Rectangle<float> rulerArea() const;
+    juce::Rectangle<float> gridArea() const;
+    float xOf (double beat) const;
+    double beatAt (float x) const;
+    float yOf (int pitch) const;       // the top of a note's row
+    int pitchAt (float y) const;
+    float rowH() const { return juce::jlimit (8.0f, 16.0f, gridArea().getHeight() / 15.0f); } // at least 15 notes in view
+    int rowsShown() const;
+    void setView (double start, double len);
+    void zoomAround (double factor, float x);
+    void setPitchView (int low);
+    void loopRange (double& a, double& b) const;
+    double snap (double beat) const;
+    double gridLen() const { return 1.0 / stepsPerBeat; }
+    bool inKey (int pitch) const;
+    int toKey (int pitch, int dir) const;  // the nearest note of the key (dir: which way to look first)
+    int noteAt (juce::Point<float> p, bool& onEdge) const;
+    void loadSound();
+    void sendLoop();
+    void pushUndo();
+    void changed();
+    void copyAcross (bool everySectionOfKind);
+    void hear (int pitch, double beats);
+
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    int track = -1, totalBars = 1, stepsPerBeat = 4, key = 0, lowPitch = 36;
+    bool minor = false, bass = false, keySnap = true;
+    double viewStart = 0.0, viewLen = 16.0, selA = -1.0, selB = -1.0;
+    enum class Drag { None, Move, Resize, Draw, Box, Overview, Ruler } drag = Drag::None;
+    juce::Point<float> downAt, boxTo;
+    double grabBeat = 0.0, rulerFrom = 0.0, overviewGrab = 0.0, lastLen = 0.5;
+    int grabPitch = 0, drawn = -1, lastHeard = -1;
+    std::vector<lp::song::Note> notes, before;  // before: the notes as they were when a drag started
+    std::set<size_t> picked;
+    bool dirty = false, waitingForRender = false, moved = false;
+    juce::uint32 lastChange = 0, lastViewChange = 0;
+    juce::String songTitle, partName, soundKey;
+    std::vector<lp::song::Section> sections;
+    std::vector<std::vector<lp::song::Note>> undo;
+    juce::TextButton playBtn { "play" }, zoomOut { "-" }, zoomIn { "+" }, fitBtn { "whole song" }, resBtn { "1/16" },
+                     keyBtn { "in key" }, fillSection { "copy to section" }, fillAll { "every chorus" }, clearBtn { "clear" },
+                     undoBtn { "undo" }, bigBtn { "bigger" };
+};
+
 class TrackEditor : public juce::Component
 {
 public:
@@ -400,6 +473,10 @@ private:
     FilePill dragTrack;
     juce::TextButton love { "Love it" }, notThis { "Not this" }; // your taste: remembered for every later song
     DrumGrid drumGrid;
+    NoteGrid noteGrid;
+    bool notesTrack = false;
+    bool noteBig = true;      // the note editor opens big (notes need the room); "bigger" toggles it
+    bool bigNow() const { return notesTrack && ! showingDrums() ? noteBig : drumBig; }  // a played part (808, hook, bass line): its notes can be edited
     juce::TextButton sliceBtn { "Slice into hits" }; // a drum loop -> a drum track you can edit
     bool drumBig = false;
     bool showingDrums() const;
