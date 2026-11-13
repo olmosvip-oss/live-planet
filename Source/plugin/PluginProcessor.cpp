@@ -94,7 +94,9 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
 }
 
 LivePlanetProcessor::LivePlanetProcessor()
-    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)
+                                       // your mic (the standalone app's audio input, or a DAW's sidechain), for recording vocals
+                                       .withInput ("Mic in", juce::AudioChannelSet::stereo(), true)),
       params (*this, nullptr, "LivePlanet", createLayout())
 {
     engine.setCitySeed (citySeed.load());
@@ -125,7 +127,9 @@ LivePlanetProcessor::~LivePlanetProcessor()
 
 bool LivePlanetProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
-    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+    const auto in = layouts.getMainInputChannelSet();
+    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo()
+        && (in.isDisabled() || in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo());
 }
 
 void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -137,6 +141,9 @@ void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     sampleFx.prepare (sampleRate, maxBlock);
     samplerFx.prepare (sampleRate, maxBlock);
     for (auto* v : { &smpL, &smpR, &smpSendL, &smpSendR }) v->assign ((size_t) maxBlock, 0.0f);
+    // room for 60 seconds of your voice (made here, so recording never allocates)
+    if (recBuf.getNumSamples() < (int) (sampleRate * 60.0)) recBuf.setSize (2, (int) (sampleRate * 60.0));
+    recRate = sampleRate;
     masterLimiter.prepare (sampleRate, -1.0f);
     {
         int count = 0;
@@ -196,6 +203,24 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buffer.getNumSamples();
+    // your mic: recorded while you record, and metered (it isn't played out, so no feedback)
+    {
+        const int ins = getTotalNumInputChannels();
+        float pk = 0.0f;
+        for (int ch = 0; ch < ins; ++ch) pk = std::max (pk, buffer.getMagnitude (ch, 0, n));
+        lp::ui::notePeak (inPeak, pk);
+        if (recording.load() && ins > 0)
+        {
+            const int at = recPos.load(), room = recBuf.getNumSamples() - at, k = std::min (n, room);
+            if (k > 0)
+            {
+                recBuf.copyFrom (0, at, buffer, 0, 0, k);
+                recBuf.copyFrom (1, at, buffer, std::min (1, ins - 1), 0, k);
+                recPos = at + k;
+            }
+            if (k < n) recording = false; // a minute is the most: stop there
+        }
+    }
     buffer.clear();
 
     // Your keyboard: either play notes directly, or hold keys to set the chord
@@ -783,6 +808,41 @@ void LivePlanetProcessor::setSamplerPeaks (const std::vector<std::shared_ptr<juc
     const juce::SpinLock::ScopedLockType sl (samplerInfoLock);
     samplerPeaks = pk;
     ++samplerVersion;
+}
+
+void LivePlanetProcessor::startRecording()
+{
+    recPos = 0;
+    recording = true;
+}
+
+// stops, saves the take (Music/Loopwright/Recordings) and chops it. Returns the number of chops
+// (0 = nothing usable came in: the message says why)
+int LivePlanetProcessor::stopRecording (juce::String& message)
+{
+    recording = false;
+    const int len = recPos.load();
+    if (len < (int) (recRate * 0.3)) { message = "too short: record at least a second"; return 0; }
+    const float pk = std::max (recBuf.getMagnitude (0, 0, len), recBuf.getMagnitude (1, 0, len));
+    if (pk < 0.003f)
+    {
+        message = wrapperType == wrapperType_Standalone ? "no sound came in: Options > Audio settings, pick your mic and untick Mute audio input"
+                                                         : "no sound came in: set Loopwright's sidechain (audio from) to your mic's track";
+        return 0;
+    }
+    const auto folder = lp::appFolder().getChildFile ("Recordings");
+    folder.createDirectory();
+    const auto file = folder.getChildFile ("vocal " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H.%M.%S") + ".wav");
+    juce::AudioBuffer<float> take (2, len);
+    for (int ch = 0; ch < 2; ++ch) take.copyFrom (ch, 0, recBuf, ch, 0, len);
+    take.applyGain (0.9f / pk); // a good level, however loud you sang
+    juce::WavAudioFormat wav;
+    if (std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), recRate, 2, 24, {}, 0)); w != nullptr)
+        w->writeFromAudioSampleBuffer (take, 0, len);
+    const int chops = loadVocalChops (file);
+    message = chops > 0 ? juce::String (chops) + " chops from your recording (saved in Music > Loopwright > Recordings)"
+                        : juce::String ("couldn't find syllables in it: try singing with short gaps");
+    return chops;
 }
 
 void LivePlanetProcessor::samplerOff()

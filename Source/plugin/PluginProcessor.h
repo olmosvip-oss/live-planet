@@ -53,6 +53,14 @@ public:
     bool loadSamplerInstrument (const juce::File& file);
     // your own recording cut into its syllables, one on each key from C3 up (Play mode)
     int loadVocalChops (const juce::File& file);
+    // record your voice straight in (the mic input), then it's chopped like a file
+    void startRecording();
+    int stopRecording (juce::String& message);
+    std::atomic<bool> recording { false };
+    std::atomic<int> recPos { 0 };
+    std::atomic<float> inPeak { 0.0f };
+    juce::AudioBuffer<float> recBuf;
+    double recRate = 48000.0;
     void samplerOff();
     lp::Sampler sampler;
     std::atomic<bool> samplerOn { false };

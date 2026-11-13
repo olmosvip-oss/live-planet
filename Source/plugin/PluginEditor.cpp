@@ -1468,16 +1468,31 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     chopButton.setTooltip ("Pick a recording of your voice: it's cut into its syllables, one on each key from C3 up. Keyboard: Play.");
     chopButton.onClick = [this]
     {
-        chooser = std::make_unique<FileChooser> ("Choose a recording of your voice to chop", File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
-        chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+        // recording: this click stops it, saves it and chops it
+        if (proc.recording.load())
         {
-            if (! fc.getResult().existsAsFile()) return;
-            if (proc.loadVocalChops (fc.getResult()) > 0)
-                if (auto* km = proc.params.getParameter ("keymode")) km->setValueNotifyingHost (0.0f); // Play mode, ready to play
+            String msg;
+            if (proc.stopRecording (msg) > 0)
+                if (auto* km = proc.params.getParameter ("keymode")) km->setValueNotifyingHost (0.0f);
+            chopMessage = msg;
+            chopMessageUntil = Time::getMillisecondCounter() + 8000;
+            chopButton.setButtonText ("Chop my vocal");
             repaint();
+            return;
+        }
+        PopupMenu m;
+        m.addItem (1, "Record now (from your mic)");
+        m.addItem (2, "From a file...");
+        m.showMenuAsync (PopupMenu::Options().withTargetComponent (&chopButton), [this] (int r)
+        {
+            if (r == 1) { proc.startRecording(); chopMessage = {}; }
+            if (r == 2) chopFromFile();
         });
     };
     addChildComponent (chopButton);
+    chopButton.getProperties().set ("warn", true); // red-orange while recording
+    inMeter.setInterceptsMouseClicks (false, false);
+    addChildComponent (inMeter);
 
     addKnob ("pad", "chords", 0.86f, 52);
     addKnob ("drops", "melody", 0.78f, 52);
@@ -1606,6 +1621,7 @@ void LivePlanetEditor::setPage (int p)
     loadButton.setVisible (sound);
     oneShotButton.setVisible (sound);
     chopButton.setVisible (sound);
+    inMeter.setVisible (sound);
     keyStepper->setVisible (sound);
     scaleStepper->setVisible (sound);
     keySwitch.setVisible (sound);
@@ -1636,6 +1652,18 @@ void LivePlanetEditor::runSearch()
 }
 
 //==============================================================================
+
+void LivePlanetEditor::chopFromFile()
+{
+    chooser = std::make_unique<FileChooser> ("Choose a recording of your voice to chop", File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
+    chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+    {
+        if (! fc.getResult().existsAsFile()) return;
+        if (proc.loadVocalChops (fc.getResult()) > 0)
+            if (auto* km = proc.params.getParameter ("keymode")) km->setValueNotifyingHost (0.0f); // Play mode, ready to play
+        repaint();
+    });
+}
 
 void LivePlanetEditor::showMixTakes()
 {
@@ -1701,6 +1729,23 @@ void LivePlanetEditor::showOneShotMenu()
 
 void LivePlanetEditor::timerCallback()
 {
+    if (page == Sound)
+    {
+        const float in = proc.inPeak.exchange (0.0f);
+        inMeter.l.update (in); inMeter.r.update (in);
+        inMeter.repaint();
+        if (proc.recording.load())
+        {
+            const int secs = (int) (proc.recPos.load() / std::max (1.0, proc.recRate));
+            chopButton.setButtonText (String::fromUTF8 ("\xe2\x97\x8f Stop  ") + String (secs / 60) + ":" + String (secs % 60).paddedLeft ('0', 2));
+            chopButton.setToggleState (true, dontSendNotification);
+        }
+        else
+        {
+            if (chopButton.getButtonText() != "Chop my vocal") chopButton.setButtonText ("Chop my vocal"); // (a minute is the most)
+            chopButton.setToggleState (false, dontSendNotification);
+        }
+    }
     {
         // the takes bar: shown on the write page when there are takes to compare
         const auto st = proc.songJob.getStatus();
@@ -1928,6 +1973,8 @@ void LivePlanetEditor::paint (Graphics& g)
             const SpinLock::ScopedLockType sl (proc.samplerInfoLock);
             line = proc.samplerName + String (CharPointer_UTF8 ("  \xc2\xb7  ")) + proc.samplerInfo;
         }
+        if (proc.recording.load()) line = "recording your voice: sing with short gaps between words, then click Stop";
+        else if (chopMessage.isNotEmpty() && Time::getMillisecondCounter() < chopMessageUntil) line = chopMessage;
         g.drawText (line, Rectangle<int> (cardInstrument.getX() + 22, oneShotButton.getBottom() + 4, cardInstrument.getWidth() - 44, 20),
                     Justification::centredLeft, true);
         label (g, "key", keyStepper->getBounds().translated (0, -20).withHeight (16).toFloat(), th);
@@ -2067,6 +2114,7 @@ void LivePlanetEditor::resized()
             oneShotButton.setBounds (lr.removeFromLeft (156));
             lr.removeFromLeft (8);
             chopButton.setBounds (lr.removeFromLeft (136));
+            inMeter.setBounds (chopButton.getRight() + 6, chopButton.getY() + 2, 9, chopButton.getHeight() - 4);
         }
         r.removeFromTop (46); // (room for what's loaded)
         auto row = r.removeFromTop (32);

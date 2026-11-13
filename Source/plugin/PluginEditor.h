@@ -522,6 +522,14 @@ private:
     juce::TextButton loadButton { "Load sample" };
     juce::TextButton oneShotButton { "One-shot instrument" }; // a library one-shot across the keyboard (Play mode)
     juce::TextButton chopButton { "Chop my vocal" };          // your recording cut into syllables, one per key
+    void chopFromFile();
+    juce::String chopMessage;
+    juce::uint32 chopMessageUntil = 0;
+    struct InMeter : juce::Component
+    {
+        lp::ui::MeterBallistics l, r;
+        void paint (juce::Graphics& g) override { lp::ui::drawStereoMeter (g, getLocalBounds().toFloat(), l, r); }
+    } inMeter;                                                // your mic, while recording
     void showOneShotMenu();
     juce::ToggleButton dayToggle { "daylight" }, thunderToggle { "thunder" };
 
