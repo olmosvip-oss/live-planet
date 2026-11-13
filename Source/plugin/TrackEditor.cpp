@@ -14,19 +14,23 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     // drags the dry track, or with Print FX on, the track with its own effects recorded into it
     dragTrack.filesToDrag = [this] { const auto f = proc.fileToDrag (track); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
     printFx.setClickingTogglesState (false);
-    printFx.setTooltip ("On: dragging this track gives you it with its reverb, echo, warmth, nostalgia, chorus, volume and pan recorded in. Off: the dry track.");
+    printFx.setTooltip ("On: dragging this track gives it to you as you hear it, with its reverb, echo, warmth, nostalgia, chorus, tone, volume and pan recorded in (on by itself when you use any effect). Off: the dry track.");
     printFx.onClick = [this]
     {
         auto& m = proc.studio.mix[(size_t) track];
-        m.printFx = ! m.printFx.load();
-        // start recording it now, so it's ready by the time you drag
-        if (m.printFx.load())
-        {
-            ++proc.printsRunning;
-            juce::Thread::launch ([&pr = proc, t = track] { pr.fileToDrag (t); --pr.printsRunning; });
-        }
+        const bool on = m.printsFx();
+        m.dragDry = on;          // on -> you want it dry
+        m.printFx = ! on;        // off -> print it, even with no effects (volume and pan)
         repaint();
     };
+    bypassFx.setTooltip ("Switch this track's effects off for now (reverb, echo, warmth, nostalgia, chorus, tone), to hear it with and without them. Your settings stay; click again to bring them back.");
+    bypassFx.onClick = [this]
+    {
+        auto& m = proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, track)];
+        m.fxBypass = ! m.fxBypass.load();
+        repaint();
+    };
+    addAndMakeVisible (bypassFx);
     addAndMakeVisible (dragTrack);
     addChildComponent (drumGrid);
     addChildComponent (noteGrid);
@@ -69,7 +73,7 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     notThis.setTooltip ("Not this: swaps it now, and it won't be picked again");
     love.onClick = [this] { proc.songJob.rateTrack (track, 1); };
     notThis.onClick = [this] { proc.songJob.rateTrack (track, -1); };
-    for (auto* b : { &prev, &next, &swap, &rev, &pitchDown, &pitchUp, &mute, &solo, &printFx, &love, &notThis })
+    for (auto* b : { &prev, &next, &swap, &rev, &pitchDown, &pitchUp, &mute, &solo, &printFx, &bypassFx, &love, &notThis })
     {
         b->setWantsKeyboardFocus (false);
         b->setMouseClickGrabsKeyboardFocus (false);
@@ -165,7 +169,23 @@ void TrackEditor::refresh()
         const int rated = proc.songJob.ratingOf (track);
         mute.setToggleState (m.mute.load(), dontSendNotification);
         solo.setToggleState (m.solo.load(), dontSendNotification);
-        printFx.setToggleState (m.printFx.load(), dontSendNotification);
+        bypassFx.setToggleState (m.fxBypass.load(), dontSendNotification);
+        if (bypassFx.getButtonText() != (m.fxBypass.load() ? "Bypassed" : "Bypass")) bypassFx.setButtonText (m.fxBypass.load() ? "Bypassed" : "Bypass");
+        const bool prints = m.printsFx();
+        printFx.setToggleState (prints, dontSendNotification);
+        if (printFx.getButtonText() != (prints ? "FX: printed" : "FX: dry")) printFx.setButtonText (prints ? "FX: printed" : "FX: dry");
+        // record it with its effects in the background a moment after you stop turning knobs, so it's ready when you drag
+        String key;
+        for (float v : { m.gainDb.load(), m.pan.load(), m.tone.load(), m.space.load(), m.echo.load(), m.warmth.load(), m.nostalgia.load(), m.chorus.load() })
+            key << String (v, 3) << ",";
+        key << track << "," << version << "," << (int) prints;
+        if (key != fxKey) { fxKey = key; fxKeyAt = Time::getMillisecondCounter(); fxPrinted = false; }
+        if (prints && ! fxPrinted && Time::getMillisecondCounter() - fxKeyAt > 1200 && proc.printsRunning.load() == 0)
+        {
+            fxPrinted = true;
+            ++proc.printsRunning;
+            juce::Thread::launch ([&pr = proc, t = track] { pr.fileToDrag (t); --pr.printsRunning; });
+        }
         love.setToggleState (rated > 0, dontSendNotification);
         notThis.setToggleState (rated < 0, dontSendNotification);
     }
@@ -272,8 +292,9 @@ void TrackEditor::resized()
     auto rows = getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
     const int h = rows.getHeight() / 2;
     // left of the effects: print them into the dragged track, and the track to drag
-    printFx.setBounds (0, rows.getY() + 6, 100, 30);
-    dragTrack.setBounds (0, rows.getY() + 42, 100, 30);
+    bypassFx.setBounds (0, rows.getY() + 6, 100, 30);
+    printFx.setBounds (0, rows.getY() + 42, 100, 30);
+    dragTrack.setBounds (0, rows.getY() + 78, 100, 30);
     for (int r = 0; r < 2; ++r)
     {
         std::vector<Dial*> inRow;
@@ -310,7 +331,7 @@ void TrackEditor::paint (Graphics& g)
             const auto nm = String (tr0name).toLowerCase();
             want = ! showingDrums() && (nm.contains ("drum") || nm.contains ("perc"));
         }
-        else if (big && (c == &printFx || c == &dragTrack || std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s; })))
+        else if (big && (c == &printFx || c == &bypassFx || c == &dragTrack || std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s; })))
             want = false;
         if (c->isVisible() != want) c->setVisible (want);
     }

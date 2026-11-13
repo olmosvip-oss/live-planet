@@ -448,7 +448,7 @@ juce::String LivePlanetProcessor::masterKeyNow (int preset)
     {
         const auto& m = studio.mix[t];
         for (float v : { m.gainDb.load(), m.pan.load(), m.tone.load(), m.space.load(), m.echo.load(), m.warmth.load(),
-                         m.nostalgia.load(), m.chorus.load(), m.mute.load() ? 1.0f : 0.0f, m.solo.load() ? 1.0f : 0.0f })
+                         m.nostalgia.load(), m.chorus.load(), m.mute.load() ? 1.0f : 0.0f, m.solo.load() ? 1.0f : 0.0f, m.fxBypass.load() ? 1.0f : 0.0f })
             k << "|" << juce::String (v, 3);
     }
     k << "|pump " << studio.pumpDepth.load();
@@ -595,12 +595,12 @@ void LivePlanetProcessor::timerCallback()
                     m.gainDb = (float) t["gain"]; m.pan = (float) t["pan"]; m.tone = (float) t["tone"];
                     m.mute = (bool) t["mute"]; m.solo = (bool) t["solo"]; m.space = (float) t["space"];
                     m.echo = (float) t["echo"]; m.warmth = (float) t["warmth"]; m.nostalgia = (float) t["nostalgia"];
-                    m.chorus = (float) t["chorus"]; m.printFx = (bool) t["printFx"];
+                    m.chorus = (float) t["chorus"]; m.printFx = (bool) t["printFx"]; m.dragDry = (bool) t["dragDry"]; m.fxBypass = (bool) t["fxBypass"];
                 }
                 else if (newSong)
                 {
                     m.space = tr.space; m.echo = tr.echo; m.warmth = tr.warmth; m.nostalgia = tr.nostalgia;
-                    m.gainDb = 0.0f; m.pan = 0.0f; m.tone = 0.0f; m.mute = false; m.solo = false; m.printFx = false;
+                    m.gainDb = 0.0f; m.pan = 0.0f; m.tone = 0.0f; m.mute = false; m.solo = false; m.printFx = false; m.dragDry = false; m.fxBypass = false;
                 }
             }
             if (newSong) { masterPreset = -1; ++masterResets; } // a new song needs its own master
@@ -953,7 +953,7 @@ juce::File LivePlanetProcessor::fileToDrag (int t)
     const auto st = songJob.getStatus();
     if (! st.haveSong || t < 0 || t >= (int) st.tracks.size()) return {};
     const auto stem = st.tracks[(size_t) t].stem;
-    if (t >= StudioPlayer::maxTracks || ! studio.mix[(size_t) t].printFx.load()) return stem;
+    if (t >= StudioPlayer::maxTracks || ! studio.mix[(size_t) t].printsFx()) return stem;
     const std::lock_guard<std::mutex> lk (printLock);
     const auto& m = studio.mix[(size_t) t];
     // one file per sound of the track: the same settings drag the same file without recording again
@@ -1007,6 +1007,8 @@ void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
                 t.setProperty ("echo", m.echo.load(), nullptr); t.setProperty ("warmth", m.warmth.load(), nullptr);
                 t.setProperty ("nostalgia", m.nostalgia.load(), nullptr); t.setProperty ("chorus", m.chorus.load(), nullptr);
                 t.setProperty ("printFx", m.printFx.load(), nullptr);
+                t.setProperty ("dragDry", m.dragDry.load(), nullptr);
+                t.setProperty ("fxBypass", m.fxBypass.load(), nullptr);
                 mixTree.appendChild (t, nullptr);
             }
             state.removeChild (state.getChildWithName ("studioMix"), nullptr);

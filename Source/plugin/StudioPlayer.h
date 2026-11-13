@@ -22,6 +22,17 @@ public:
         std::atomic<float> space { 0.0f }, echo { 0.0f }, warmth { 0.0f }, nostalgia { 0.0f }, chorus { 0.0f };
         // drag this track with its effects recorded into it ("print"), instead of the dry file
         std::atomic<bool> printFx { false };
+        // you asked for the dry track, even with effects on
+        std::atomic<bool> dragDry { false };
+        // the track's effects switched off for now (their settings kept), to compare with and without
+        std::atomic<bool> fxBypass { false };
+        bool hasFx() const
+        {
+            return space.load() > 0.001f || echo.load() > 0.001f || warmth.load() > 0.001f || nostalgia.load() > 0.001f
+                || chorus.load() > 0.001f || std::abs (tone.load()) > 0.01f;
+        }
+        // what you drag is what you hear: the effects are recorded in whenever the track has any (unless you chose dry)
+        bool printsFx() const { return ! dragDry.load() && ! fxBypass.load() && (printFx.load() || hasFx()); }
     };
 
     // the mix knobs (chords / melody / bass) as gains for each group; [0] unused
@@ -42,12 +53,12 @@ public:
                 const auto& s = mix[(size_t) i + 1];
                 d.gainDb = s.gainDb.load(); d.pan = s.pan.load(); d.tone = s.tone.load(); d.mute = s.mute.load(); d.solo = s.solo.load();
                 d.sample = s.sample.load(); d.group = s.group.load(); d.space = s.space.load(); d.echo = s.echo.load();
-                d.warmth = s.warmth.load(); d.nostalgia = s.nostalgia.load(); d.chorus = s.chorus.load(); d.printFx = s.printFx.load();
+                d.warmth = s.warmth.load(); d.nostalgia = s.nostalgia.load(); d.chorus = s.chorus.load(); d.printFx = s.printFx.load(); d.dragDry = s.dragDry.load(); d.fxBypass = s.fxBypass.load();
             }
             else
             {
                 d.gainDb = 0.0f; d.pan = 0.0f; d.tone = 0.0f; d.mute = false; d.solo = false; d.sample = false; d.group = 0;
-                d.space = 0.0f; d.echo = 0.0f; d.warmth = 0.0f; d.nostalgia = 0.0f; d.chorus = 0.0f; d.printFx = false;
+                d.space = 0.0f; d.echo = 0.0f; d.warmth = 0.0f; d.nostalgia = 0.0f; d.chorus = 0.0f; d.printFx = false; d.dragDry = false; d.fxBypass = false;
             }
         }
     }
@@ -128,7 +139,7 @@ public:
             auto& d = p.mix[t]; const auto& m = mixes[t];
             d.gainDb = m.gainDb.load(); d.pan = m.pan.load(); d.tone = m.tone.load(); d.mute = m.mute.load(); d.solo = m.solo.load();
             d.space = m.space.load(); d.echo = m.echo.load(); d.warmth = m.warmth.load(); d.nostalgia = m.nostalgia.load(); d.chorus = m.chorus.load();
-            d.group = m.group.load();
+            d.group = m.group.load(); d.fxBypass = m.fxBypass.load();
         }
         constexpr int block = 1024;
         p.prepare (block);
@@ -160,7 +171,7 @@ public:
         d.gainDb = m.gainDb.load(); d.pan = m.pan.load(); d.tone = m.tone.load();
         d.space = m.space.load(); d.echo = m.echo.load(); d.warmth = m.warmth.load();
         d.nostalgia = m.nostalgia.load(); d.chorus = m.chorus.load();
-        d.group = m.group.load();
+        d.group = m.group.load(); d.fxBypass = m.fxBypass.load();
         constexpr int block = 1024;
         p.prepare (block);
         const auto total = len + (juce::int64) (fileRate * 6.0); // room for the echo and reverb tails
@@ -221,7 +232,8 @@ public:
             const float p = m.pan.load();
             const float gl = g * std::min (1.0f, 1.0f - p), gr = g * std::min (1.0f, 1.0f + p);
             // tone: a gentle low-pass going down, a high-pass going up
-            const float tone = m.tone.load();
+            const bool byp = m.fxBypass.load(); // bypassed: heard dry (volume and pan stay)
+            const float tone = byp ? 0.0f : m.tone.load();
             auto& f = filters[t];
             if (std::abs (tone - f.lastTone) > 0.001f)
             {
@@ -235,8 +247,8 @@ public:
             double ph = pos - (double) start;
             // this track's inserts and sends
             auto& tf = trackFx[t];
-            const float warm = m.warmth.load(), nost = m.nostalgia.load();
-            const float sp = m.space.load(), ec = m.echo.load();
+            const float warm = byp ? 0.0f : m.warmth.load(), nost = byp ? 0.0f : m.nostalgia.load();
+            const float sp = byp ? 0.0f : m.space.load(), ec = byp ? 0.0f : m.echo.load();
             anySends = anySends || sp > 0.001f || ec > 0.001f;
             if (std::abs (warm - tf.lastWarm) > 0.002f || std::abs (nost - tf.lastNost) > 0.002f)
             {
@@ -247,7 +259,7 @@ public:
             }
             const float drive = 1.0f + 2.2f * warm + 1.2f * nost;
             const float wobDepth = nost * 0.0028f * (float) sampleRate;
-            const float cho = m.chorus.load();
+            const float cho = byp ? 0.0f : m.chorus.load();
             const bool inserts = warm > 0.002f || nost > 0.002f || cho > 0.002f;
             float pkL = 0.0f, pkR = 0.0f;
             const bool pumped = grp != 4 && pumpDepth.load() > 0.001f && ! kicks.empty();

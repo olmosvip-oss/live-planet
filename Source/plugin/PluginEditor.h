@@ -469,7 +469,10 @@ private:
                      mute { "M" }, solo { "S" };
     std::map<juce::String, std::vector<float>> peakCache;
     int dragFrom = -1, dragTo = -1;
-    juce::TextButton printFx { "Print FX" };
+    juce::TextButton printFx { "FX: dry" }, bypassFx { "Bypass" };
+    juce::String fxKey;                 // the track's effect settings last seen (to record them once you stop turning)
+    juce::uint32 fxKeyAt = 0;
+    bool fxPrinted = false;
     FilePill dragTrack;
     juce::TextButton love { "Love it" }, notThis { "Not this" }; // your taste: remembered for every later song
     DrumGrid drumGrid;
