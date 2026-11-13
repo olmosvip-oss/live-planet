@@ -34,8 +34,20 @@ public:
     }
     int numLayers() const { const juce::SpinLock::ScopedLockType sl (lock); return (int) layers.size(); }
 
+    // the Texture knobs, for a sample instrument: where in the sound it starts, a little drift,
+    // a soft octave-up ghost (sparkle), and how long it rings after you let go
+    std::atomic<float> startFrac { 0.0f }, driftCents { 0.0f }, sparkle { 0.0f }, releaseSec { 0.18f };
+
     // ---- audio thread
     void noteOn (int note, float vel, int offset)
+    {
+        startVoice (note, vel, offset, 1.0f, false);
+        const float sp = sparkle.load();
+        if (sp > 0.01f) startVoice (note + 12, vel, offset, sp, true);
+    }
+
+private:
+    void startVoice (int note, float vel, int offset, float gainMul, bool ghost)
     {
         if (layers.empty()) return;
         const Layer* l = nullptr;
@@ -43,7 +55,7 @@ public:
         if (l == nullptr) for (auto& c : layers) if (note >= c.keyLo && note <= c.keyHi) l = &c;
         if (l == nullptr) return; // no sound on this key
         Voice* slot = nullptr;
-        for (auto& v : voices) if (v.active && v.note == note && ! v.releasing) { v.releasing = true; } // a restrike lets the old one go
+        for (auto& v : voices) if (v.active && v.note == note && ! v.releasing && v.ghost == ghost) { v.releasing = true; } // a restrike lets the old one go
         if (l->fixedPitch) for (auto& v : voices) if (v.active && v.layer == l) v.releasing = true;   // a chop cuts itself off, like a pad on an MPC
         for (auto& v : voices) if (! v.active) { slot = &v; break; }
         if (slot == nullptr) { slot = &voices[0]; for (auto& v : voices) if (v.env < slot->env) slot = &v; }
@@ -52,14 +64,18 @@ public:
         *slot = {};
         slot->active = true;
         slot->layer = l;
-        slot->note = note;
-        slot->step = (l->fixedPitch ? 1.0 : std::pow (2.0, (note - l->rootNote) / 12.0)) * l->rate / hostRate;
-        slot->gain = (0.25f + 0.75f * std::pow (juce::jlimit (0.0f, 1.0f, vel), 1.5f)) * 0.9f; // soft about 10 dB under hard
+        slot->note = ghost ? note - 12 : note;
+        slot->ghost = ghost;
+        const double drift = (rng.nextDouble() * 2.0 - 1.0) * driftCents.load();
+        slot->step = (l->fixedPitch ? (ghost ? 2.0 : 1.0) : std::pow (2.0, (note - l->rootNote) / 12.0)) * std::pow (2.0, drift / 1200.0) * l->rate / hostRate;
+        slot->pos = l->fixedPitch ? 0.0 : startFrac.load() * 0.8 * l->buf->getNumSamples();
+        slot->gain = (0.25f + 0.75f * std::pow (juce::jlimit (0.0f, 1.0f, vel), 1.5f)) * 0.9f * gainMul; // soft about 10 dB under hard
         // softer is darker: a one-pole low-pass from ~2.5 kHz (soft) to wide open (hard)
         const float cutoff = 2500.0f * std::pow (8.0f, (layers.size() > 1 ? 0.5f + 0.5f * within : vel));
         slot->lpA = 1.0f - std::exp (-2.0f * juce::MathConstants<float>::pi * std::min (cutoff, 20000.0f) / (float) hostRate);
         slot->delay = offset;
     }
+public:
     void noteOff (int note)
     {
         for (auto& v : voices) if (v.active && v.note == note) v.releasing = true;
@@ -72,7 +88,7 @@ public:
         const juce::SpinLock::ScopedTryLockType tl (lock);
         if (! tl.isLocked()) return;
         hostRate = sampleRate;
-        const float rel = std::exp (-1.0f / (0.18f * (float) sampleRate));  // let go: a 180 ms fade
+        const float rel = std::exp (-1.0f / (juce::jlimit (0.02f, 4.0f, releaseSec.load()) * (float) sampleRate)); // let go: a fade
         const float atk = 1.0f / (0.002f * (float) sampleRate);             // 2 ms, so nothing clicks
         for (auto& v : voices)
         {
@@ -108,7 +124,7 @@ public:
 private:
     struct Voice
     {
-        bool active = false, releasing = false;
+        bool active = false, releasing = false, ghost = false;
         const Layer* layer = nullptr;
         int note = 0, delay = 0;
         double pos = 0.0, step = 1.0;
@@ -118,6 +134,7 @@ private:
     std::vector<Layer> layers;
     std::array<Voice, 32> voices {};
     double hostRate = 48000.0;
+    juce::Random rng;
 };
 
 // Cuts a recording (a vocal, a phrase) into its syllables: where the loudness jumps up.

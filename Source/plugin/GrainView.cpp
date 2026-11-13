@@ -11,7 +11,15 @@ void GrainView::paint (Graphics& g)
     auto w = r.reduced (16.0f, 14.0f);
 
     // the sound's shape (worked out once per sound)
-    const int id = proc.engine.uiSound.load();
+    // a sample instrument (a one-shot, or your chops): its own waveform
+    const bool smp = proc.samplerOn.load();
+    const int id = smp ? 100000 + proc.samplerVersion.load() : proc.engine.uiSound.load();
+    if (id != peaksFor && smp)
+    {
+        peaksFor = id;
+        const SpinLock::ScopedLockType sl (proc.samplerInfoLock);
+        peaks = proc.samplerPeaks;
+    }
     if (id != peaksFor)
     {
         peaksFor = id;

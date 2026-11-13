@@ -59,6 +59,11 @@ public:
     juce::SpinLock samplerInfoLock;
     juce::String samplerName, samplerInfo;     // e.g. "CK Keys 01" / "3 velocity layers, recorded at C3"
     juce::StringArray samplerPaths;
+    std::vector<float> samplerPeaks;           // its waveform, for the Texture screen (under samplerInfoLock)
+    std::atomic<int> samplerVersion { 0 };
+    lp::SampleFx samplerFx;                    // the Space knobs, on the sample instrument
+    std::vector<float> smpL, smpR, smpSendL, smpSendR;
+    void setSamplerPeaks (const std::vector<std::shared_ptr<juce::AudioBuffer<float>>>& bufs);
     std::vector<float> getSamplePeaks() const { const juce::SpinLock::ScopedLockType sl (peaksLock); return samplePeaks; }
 
     // The notes Live Planet played since you pressed play, written to a MIDI file
@@ -105,6 +110,10 @@ public:
     // mastering: a platform preset, worked out on your mix (in the background), then heard live
     // (after) or not (before), and exported as a mastered file
     void startMaster (int preset);              // -1 = off
+    bool masterNow (int preset);
+    juce::String masterKeyNow (int preset);
+    juce::File masteredFile();                  // up to date with your mix (re-mastered first if it changed)
+    juce::String masterKey;
     std::atomic<int> masterPreset { -1 };       // the one that's ready and playing
     std::atomic<bool> masterAfter { true };     // A/B: hear the master (true) or the plain mix
     std::atomic<bool> mastering { false };      // working it out right now

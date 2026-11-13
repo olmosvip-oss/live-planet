@@ -271,6 +271,7 @@ public:
     FilePill (juce::String text, std::function<juce::StringArray()> files) : label (std::move (text)), getFiles (std::move (files)) {}
     // optional: the files actually handed over when dragged (e.g. recorded with effects), if not getFiles
     std::function<juce::StringArray()> filesToDrag;
+    void setLabel (const juce::String& t) { if (label != t) { label = t; repaint(); } }
     void paint (juce::Graphics&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;

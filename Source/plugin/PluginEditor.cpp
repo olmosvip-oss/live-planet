@@ -1358,14 +1358,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
                                           const auto f = st.files.folder.getChildFile (st.song.title + " - chords and bass.mid");
                                           return StringArray (f.existsAsFile() ? f.getFullPathName() : st.files.folder.getFullPathName()); }),
       pillStems ("drag stems", [&p] { auto st = p.songJob.getStatus(); StringArray a; if (st.haveSong) for (auto& t : st.tracks) a.add (t.stem.getFullPathName()); return a; }),
-      pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); if (! st.haveSong) return StringArray();
-                                  // mastered (and listening to the master): the mastered file
-                                  if (p.masterPreset.load() >= 0 && p.masterAfter.load())
-                                  {
-                                      const SpinLock::ScopedLockType sl (p.masterLock);
-                                      if (p.masterFile.existsAsFile()) return StringArray (p.masterFile.getFullPathName());
-                                  }
-                                  return StringArray (st.files.mixFile.getFullPathName()); }),
+      pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray(); }),
       pillHelper ("locators", [&p] { auto st = p.songJob.getStatus(); return st.abletonSet.existsAsFile() ? StringArray (st.abletonSet.getFullPathName()) : StringArray(); }),
       pillFolder ("folder", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.folder.getFullPathName()) : StringArray(); }),
       themeDots (p, [this] { applyTheme(); })
@@ -1444,6 +1437,14 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
                                    for (int t = 0; t < (int) st.tracks.size(); ++t) if (auto f = p.fileToDrag (t); f.existsAsFile()) a.add (f.getFullPathName());
                                    return a; };
     // the chords: read from the song's tracks when you drag (or click) it
+    // the mix: with a master on, the mastered song as you hear it now (re-mastered if you changed anything)
+    pillMix.filesToDrag = [&p]
+    {
+        if (p.masterPreset.load() >= 0 && p.masterAfter.load())
+            if (const auto f = p.masteredFile(); f.existsAsFile()) return StringArray (f.getFullPathName());
+        auto st = p.songJob.getStatus();
+        return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray();
+    };
     pillChords.filesToDrag = [&p] { const auto f = p.songJob.chordsMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
     for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
         addChildComponent (pill);
@@ -1671,19 +1672,18 @@ void LivePlanetEditor::showOneShotMenu()
     PopupMenu menu;
     menu.addSectionHeader ("Play a one-shot across the keyboard");
     if (proc.samplerOn.load()) menu.addItem (1, "Off: back to the built-in instrument");
+    // every pack (none left empty), up to 300 sounds in each
     std::vector<String> paths { String(), String() };
-    int total = 0;
     for (auto& [pack, files] : shots)
     {
         PopupMenu sub;
-        for (auto& f : files)
+        for (int k = 0; k < files.size() && k < 300; ++k)
         {
-            if (total >= 600) break;
-            paths.push_back (f);
-            sub.addItem ((int) paths.size() - 1, SongJob::niceName (File (f).getFileNameWithoutExtension()));
-            ++total;
+            paths.push_back (files[k]);
+            sub.addItem ((int) paths.size() - 1, SongJob::niceName (File (files[k]).getFileNameWithoutExtension()));
         }
-        menu.addSubMenu (SongJob::niceName (pack), sub);
+        if (files.size() > 300) sub.addItem (-1, "(" + String (files.size() - 300) + " more in this pack)", false);
+        menu.addSubMenu (SongJob::niceName (pack) + "   (" + String (files.size()) + ")", sub);
     }
     if (shots.empty()) menu.addItem (-1, "No melodic one-shots found in your sample folders", false);
     menu.showMenuAsync (PopupMenu::Options().withTargetComponent (&oneShotButton), [this, paths] (int id)
@@ -1723,6 +1723,7 @@ void LivePlanetEditor::timerCallback()
             info = proc.masterReport.toUpperCase();
         }
         if (masterInfo.getText() != info) masterInfo.setText (info, dontSendNotification);
+        pillMix.setLabel (proc.masterPreset.load() >= 0 && proc.masterAfter.load() ? "drag master" : "drag mix");
         masterMeter.l.update (proc.outPeakL.exchange (0.0f));
         masterMeter.r.update (proc.outPeakR.exchange (0.0f));
         masterMeter.repaint();
