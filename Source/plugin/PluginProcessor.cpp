@@ -263,8 +263,10 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const bool playSong = haveSong && ! preview && t.hostPlaying && params.getRawParameterValue ("songplay")->load() > 0.5f;
     songPlaying = playSong || preview;
     if (playSong || preview) t.shouldPlay = false; // the weather music steps aside while your song plays
-    t.keys = keyEvents.data();
-    t.numKeys = (int) keyEvents.size();
+    // your keys play the sample instrument (Play mode), or the built-in instrument
+    const bool toSampler = samplerOn.load() && ! chordMode;
+    t.keys = toSampler ? nullptr : keyEvents.data();
+    t.numKeys = toSampler ? 0 : (int) keyEvents.size();
     static const std::bitset<128> none;
 
     midiOut.clear();
@@ -359,6 +361,15 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             if (next >= (double) studio.length()) { previewPlaying = false; previewPos = 0.0; }
             else previewPos = next;
         }
+    }
+
+    // the sample instrument
+    if (samplerOn.load())
+    {
+        if (! chordMode)
+            for (auto& k : keyEvents)
+                k.on ? sampler.noteOn (k.note, k.velocity, k.offset) : sampler.noteOff (k.note);
+        sampler.process (L, R, n, getSampleRate());
     }
 
     // a drum you clicked in the editor (when the loop isn't playing it already)
@@ -567,6 +578,97 @@ LivePlanetProcessor::SkyStatus LivePlanetProcessor::getSkyStatus() const
     return s;
 }
 
+// ---- sample instruments
+namespace
+{
+    // the words sample makers use for how hard a recording was played
+    int velocityWord (const juce::String& token)
+    {
+        const auto t = token.toLowerCase();
+        if (t == "soft" || t == "pp" || t == "p" || t == "quiet" || t == "light" || t == "v1" || t == "vel1") return 1;
+        if (t == "med" || t == "medium" || t == "mp" || t == "mf" || t == "mid" || t == "v2" || t == "vel2") return 2;
+        if (t == "hard" || t == "f" || t == "ff" || t == "loud" || t == "heavy" || t == "v3" || t == "vel3") return 3;
+        if (t == "v4" || t == "vel4") return 4;
+        return 0;
+    }
+    juce::String withoutVelocityWords (const juce::String& name)
+    {
+        auto t = juce::StringArray::fromTokens (name.replaceCharacters ("-. ", "___"), "_", "");
+        t.removeEmptyStrings();
+        juce::StringArray keep;
+        for (auto& w : t) if (velocityWord (w) == 0) keep.add (w.toLowerCase());
+        return keep.joinIntoString ("_");
+    }
+}
+
+bool LivePlanetProcessor::loadSamplerInstrument (const juce::File& file)
+{
+    if (! file.existsAsFile()) return false;
+    // the same sound recorded softer / harder, next to it (e.g. Keys_C3_soft / Keys_C3_hard)
+    juce::Array<juce::File> group { file };
+    const auto base = withoutVelocityWords (file.getFileNameWithoutExtension());
+    for (auto& f : file.getParentDirectory().findChildFiles (juce::File::findFiles, false, "*.wav;*.aif;*.aiff;*.flac"))
+        if (f != file && withoutVelocityWords (f.getFileNameWithoutExtension()) == base) group.add (f);
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    struct Loaded { lp::Sampler::Layer layer; float rms; };
+    std::vector<Loaded> loaded;
+    double root = 0.0;
+    for (auto& f : group)
+    {
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (f));
+        if (rd == nullptr) continue;
+        const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 20.0));
+        if (len < 256) continue;
+        auto buf = std::make_shared<juce::AudioBuffer<float>> (2, len);
+        rd->read (buf.get(), 0, len, 0, true, rd->numChannels > 1);
+        if (rd->numChannels == 1) buf->copyFrom (1, 0, *buf, 0, 0, len);
+        // its pitch: from the loudest part of the first (main) recording
+        if (root <= 0.0)
+        {
+            std::vector<float> mono ((size_t) len);
+            for (int i = 0; i < len; ++i) mono[(size_t) i] = 0.5f * (buf->getSample (0, i) + buf->getSample (1, i));
+            const double hz = lp::sources::detectPitch (mono, rd->sampleRate);
+            root = hz > 0.0 ? 69.0 + 12.0 * std::log2 (hz / 440.0) : 60.0;
+        }
+        const float rms = 0.5f * (buf->getRMSLevel (0, 0, len) + buf->getRMSLevel (1, 0, len));
+        loaded.push_back ({ { buf, rd->sampleRate, root, 0.0f, 1.0f }, rms });
+    }
+    if (loaded.empty()) return false;
+    // quiet to loud, each taking an equal share of how hard you can play; all at the same level
+    // (the velocity sets the loudness; the layers give the character)
+    std::sort (loaded.begin(), loaded.end(), [] (const Loaded& a, const Loaded& b) { return a.rms < b.rms; });
+    std::vector<lp::Sampler::Layer> layers;
+    float peakAll = 0.0f;
+    for (auto& l : loaded) peakAll = std::max (peakAll, l.layer.buf->getMagnitude (0, l.layer.buf->getNumSamples()));
+    for (size_t i = 0; i < loaded.size(); ++i)
+    {
+        auto l = loaded[i].layer;
+        l.velLo = (float) i / (float) loaded.size();
+        l.velHi = (float) (i + 1) / (float) loaded.size();
+        const float pk = l.buf->getMagnitude (0, l.buf->getNumSamples());
+        if (pk > 0.0f) l.buf->applyGain (0.8f / pk);
+        layers.push_back (l);
+    }
+    const int n = (int) layers.size();
+    sampler.setLayers (std::move (layers));
+    samplerOn = true;
+    const juce::SpinLock::ScopedLockType sl (samplerInfoLock);
+    samplerName = SongJob::niceName (file.getFileNameWithoutExtension());
+    samplerInfo = (n > 1 ? juce::String (n) + " velocity layers" : juce::String ("1 layer, softer plays darker")) + ", recorded at "
+                + lp::noteName (((int) std::round (root)) % 12) + juce::String ((int) std::round (root) / 12 - 1);
+    samplerPaths = juce::StringArray (file.getFullPathName());
+    return true;
+}
+
+void LivePlanetProcessor::samplerOff()
+{
+    samplerOn = false;
+    sampler.allOff();
+    const juce::SpinLock::ScopedLockType sl (samplerInfoLock);
+    samplerName = {}; samplerInfo = {}; samplerPaths.clear();
+}
+
 bool LivePlanetProcessor::loadSample (const juce::File& file)
 {
     juce::AudioFormatManager fm;
@@ -689,6 +791,10 @@ void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
         state.setProperty ("lon", lon, nullptr);
     }
     state.setProperty ("samplePath", samplePath, nullptr);
+    {
+        const juce::SpinLock::ScopedLockType sl (samplerInfoLock);
+        state.setProperty ("samplerPath", samplerOn.load() && ! samplerPaths.isEmpty() ? samplerPaths[0] : juce::String(), nullptr);
+    }
     state.setProperty ("theme", themeIndex.load(), nullptr);
     state.setProperty ("preset", currentPreset.load(), nullptr);
     // the song you made in this project, and each track's mixer, so reopening the project brings it back
@@ -737,6 +843,9 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
         citySeed = lp::hashString (city);
     }
     weatherService.requestCoordinates (city, lat, lon);
+
+    if (const juce::File sp (state.getProperty ("samplerPath", "").toString()); sp.existsAsFile())
+        loadSamplerInstrument (sp);
 
     // the song this project was using: open it again, with its mixer as you left it
     const juce::File songFolder (state.getProperty ("songFolder", "").toString());

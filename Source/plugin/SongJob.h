@@ -106,7 +106,7 @@ public:
 
     static juce::File libraryCache()
     {
-        return lp::appFolder().getChildFile ("library-v3.json");
+        return lp::appFolder().getChildFile ("library-v4.json"); // v4: melodic one-shots too
     }
 
     void makeSong (const lp::song::Options& o, const lp::song::RenderSettings& rs, const lp::Weather& sky, bool useLibrary, bool onlySamples = false)
@@ -398,6 +398,25 @@ public:
         chordsVersion = version;
         if (summary) *summary = chordsSummary;
         return file;
+    }
+
+    // melodic one-shots in your library (keys, bass, 808s, synth hits, vocal shots), by pack: for sample instruments
+    std::map<juce::String, juce::StringArray> oneShots() const
+    {
+        const juce::ScopedLock sl (lock);
+        std::map<juce::String, juce::StringArray> out;
+        using SK = lp::song::SampleKind;
+        for (auto& e : library.all())
+        {
+            if (! (e.kind == SK::OneShot || e.kind == SK::Bass808)) continue;
+            if (! packOn ((int) lp::song::Library::sourceOf (e.path), e.pack)) continue; // only packs you've switched on
+            if (e.bpm > 0.0 || e.loop != lp::song::LoopKind::None) continue; // loops are for songs
+            const auto lower = e.path.toLowerCase();
+            if (lower.contains ("loop") || lower.contains ("fill") || lower.contains ("drum")) continue;
+            out[e.pack].add (e.path);
+        }
+        for (auto& [k, v] : out) v.sort (true);
+        return out;
     }
 
     lp::song::PartKind kindOf (int track) const

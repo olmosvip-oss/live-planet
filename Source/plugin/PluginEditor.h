@@ -488,6 +488,8 @@ private:
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;
     juce::TextButton loadButton { "Load sample" };
+    juce::TextButton oneShotButton { "One-shot instrument" }; // a library one-shot across the keyboard (Play mode)
+    void showOneShotMenu();
     juce::ToggleButton dayToggle { "daylight" }, thunderToggle { "thunder" };
 
     std::vector<std::unique_ptr<Knob>> knobs;

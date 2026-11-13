@@ -1239,6 +1239,9 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
                               [this] (const FileChooser& fc) { if (fc.getResult().existsAsFile()) proc.loadSample (fc.getResult()); });
     };
     addChildComponent (loadButton);
+    oneShotButton.onClick = [this] { showOneShotMenu(); };
+    oneShotButton.setTooltip ("Play a one-shot from your library across the keyboard (keyboard: Play)");
+    addChildComponent (oneShotButton);
 
     addKnob ("pad", "chords", 0.86f, 52);
     addKnob ("drops", "melody", 0.78f, 52);
@@ -1364,6 +1367,7 @@ void LivePlanetEditor::setPage (int p)
     keys.setVisible (sound);
     presetBrowser.setVisible (sound);
     loadButton.setVisible (sound);
+    oneShotButton.setVisible (sound);
     keyStepper->setVisible (sound);
     scaleStepper->setVisible (sound);
     keySwitch.setVisible (sound);
@@ -1394,6 +1398,40 @@ void LivePlanetEditor::runSearch()
 }
 
 //==============================================================================
+
+void LivePlanetEditor::showOneShotMenu()
+{
+    const auto shots = proc.songJob.oneShots();
+    PopupMenu menu;
+    menu.addSectionHeader ("Play a one-shot across the keyboard");
+    if (proc.samplerOn.load()) menu.addItem (1, "Off: back to the built-in instrument");
+    std::vector<String> paths { String(), String() };
+    int total = 0;
+    for (auto& [pack, files] : shots)
+    {
+        PopupMenu sub;
+        for (auto& f : files)
+        {
+            if (total >= 600) break;
+            paths.push_back (f);
+            sub.addItem ((int) paths.size() - 1, SongJob::niceName (File (f).getFileNameWithoutExtension()));
+            ++total;
+        }
+        menu.addSubMenu (SongJob::niceName (pack), sub);
+    }
+    if (shots.empty()) menu.addItem (-1, "No melodic one-shots found in your sample folders", false);
+    menu.showMenuAsync (PopupMenu::Options().withTargetComponent (&oneShotButton), [this, paths] (int id)
+    {
+        if (id == 1) { proc.samplerOff(); repaint(); return; }
+        if (id >= 2 && id < (int) paths.size())
+        {
+            proc.loadSamplerInstrument (File (paths[(size_t) id]));
+            // the keyboard plays notes (not chords) so you can play it straight away
+            if (auto* km = proc.params.getParameter ("keymode")) km->setValueNotifyingHost (0.0f);
+            repaint();
+        }
+    });
+}
 
 void LivePlanetEditor::timerCallback()
 {
@@ -1602,8 +1640,14 @@ void LivePlanetEditor::paint (Graphics& g)
         const auto smp = proc.getSampleName();
         g.setFont (font (12.5f));
         g.setColour (th.inkDim);
-        g.drawText (smp.isEmpty() ? "or drop a sound anywhere" : smp + String (CharPointer_UTF8 ("  \xc2\xb7  ")) + proc.getSampleInfo(),
-                    loadButton.getBounds().translated (loadButton.getWidth() + 12, 0).withWidth (300), Justification::centredLeft, true);
+        String line = smp.isEmpty() ? String ("or drop a sound anywhere") : smp + String (CharPointer_UTF8 ("  \xc2\xb7  ")) + proc.getSampleInfo();
+        if (proc.samplerOn.load())
+        {
+            const SpinLock::ScopedLockType sl (proc.samplerInfoLock);
+            line = proc.samplerName + String (CharPointer_UTF8 ("  \xc2\xb7  ")) + proc.samplerInfo;
+        }
+        g.drawText (line, Rectangle<int> (cardInstrument.getX() + 22, oneShotButton.getBottom() + 4, cardInstrument.getWidth() - 44, 20),
+                    Justification::centredLeft, true);
         label (g, "key", keyStepper->getBounds().translated (0, -20).withHeight (16).toFloat(), th);
         label (g, "scale", scaleStepper->getBounds().translated (0, -20).withHeight (16).toFloat(), th);
         label (g, "keyboard", keySwitch.getBounds().translated (0, -20).withHeight (16).toFloat(), th);
@@ -1727,8 +1771,13 @@ void LivePlanetEditor::resized()
         r.removeFromTop (14);
         keys.setBounds (r.removeFromTop (190));
         r.removeFromTop (12);
-        loadButton.setBounds (r.removeFromTop (34).withWidth (130));
-        r.removeFromTop (32);
+        {
+            auto lr = r.removeFromTop (34);
+            loadButton.setBounds (lr.removeFromLeft (130));
+            lr.removeFromLeft (8);
+            oneShotButton.setBounds (lr.removeFromLeft (170));
+        }
+        r.removeFromTop (46); // (room for what's loaded)
         auto row = r.removeFromTop (32);
         const int sw = (row.getWidth() - 20) / 3;
         keyStepper->setBounds (row.removeFromLeft (sw)); row.removeFromLeft (10);

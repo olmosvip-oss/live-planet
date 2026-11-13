@@ -10,6 +10,7 @@
 #include "LiveDrums.h"
 #include "../engine/SampleFx.h"
 #include "../engine/Master.h"
+#include "../engine/Sampler.h"
 #include "../engine/Limiter.h"
 
 class LivePlanetProcessor : public juce::AudioProcessor, private juce::Timer
@@ -48,6 +49,14 @@ public:
 
     void searchCity (const juce::String& name);
     bool loadSample (const juce::File& file);
+    // a one-shot from your library played across the keyboard (Play mode), with its velocity layers
+    bool loadSamplerInstrument (const juce::File& file);
+    void samplerOff();
+    lp::Sampler sampler;
+    std::atomic<bool> samplerOn { false };
+    juce::SpinLock samplerInfoLock;
+    juce::String samplerName, samplerInfo;     // e.g. "CK Keys 01" / "3 velocity layers, recorded at C3"
+    juce::StringArray samplerPaths;
     std::vector<float> getSamplePeaks() const { const juce::SpinLock::ScopedLockType sl (peaksLock); return samplePeaks; }
 
     // The notes Live Planet played since you pressed play, written to a MIDI file

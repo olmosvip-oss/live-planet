@@ -410,6 +410,50 @@ static int masterTest (const juce::File& outDir)
     return 0;
 }
 
+#include "../Source/engine/Sampler.h"
+#include "../Source/engine/Sources.h"
+// a one-shot across the keyboard: right pitch on every key, and velocity picks the layer
+static int samplerTest (const juce::File& dir)
+{
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    std::vector<lp::Sampler::Layer> layers;
+    const char* names[] = { "CK_Keys_OneShot_C3_soft", "CK_Keys_OneShot_C3_medium", "CK_Keys_OneShot_C3_hard" };
+    for (int i = 0; i < 3; ++i)
+    {
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (dir.getChildFile (juce::String (names[i]) + ".wav")));
+        auto b = std::make_shared<juce::AudioBuffer<float>> (2, (int) rd->lengthInSamples);
+        rd->read (b.get(), 0, b->getNumSamples(), 0, true, true);
+        std::vector<float> mono ((size_t) b->getNumSamples());
+        for (int k = 0; k < b->getNumSamples(); ++k) mono[(size_t) k] = b->getSample (0, k);
+        const double hz = lp::sources::detectPitch (mono, rd->sampleRate);
+        const double root = 69.0 + 12.0 * std::log2 (hz / 440.0);
+        if (i == 0) std::printf ("recorded pitch: %.1f Hz = note %.2f (want 48, C3)\n", hz, root);
+        b->applyGain (0.8f / b->getMagnitude (0, b->getNumSamples()));
+        layers.push_back ({ b, rd->sampleRate, root, i / 3.0f, (i + 1) / 3.0f });
+    }
+    lp::Sampler s;
+    s.setLayers (layers);
+    const double sr = 44100.0;
+    for (int note : { 36, 48, 57, 69, 76 })
+        for (float vel : { 0.2f, 0.95f })
+        {
+            std::vector<float> L (44100, 0.0f), R (44100, 0.0f);
+            s.noteOn (note, vel, 0);
+            for (int pos = 0; pos < 44100; pos += 512) s.process (L.data() + pos, R.data() + pos, std::min (512, 44100 - pos), sr);
+            s.noteOff (note);
+            std::vector<float> R2 (44100, 0.0f), L2 (44100, 0.0f);
+            for (int pos = 0; pos < 44100; pos += 512) s.process (L2.data() + pos, R2.data() + pos, std::min (512, 44100 - pos), sr); // let it ring out
+            const double hz = lp::sources::detectPitch (L, sr);
+            const double want = 440.0 * std::pow (2.0, (note - 69) / 12.0);
+            double q = 0; for (int i = 2000; i < 12000; ++i) q += L[(size_t) i] * L[(size_t) i];
+            // brightness: how much of it is above 1 kHz (a crude high-pass)
+            double hiq = 0; for (int i = 2001; i < 12000; ++i) { const double d = L[(size_t) i] - L[(size_t) i - 1]; hiq += d * d; }
+            std::printf ("  note %d vel %.2f: %7.1f Hz (want %7.1f, %+.0f cents)  level %5.1f dB  brightness %.3f\n", note, vel, hz, want,
+                         1200.0 * std::log2 (std::max (1.0, hz) / want), 10.0 * std::log10 (q / 10000.0 + 1e-12), hiq / std::max (1e-9, q));
+        }
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1120,6 +1164,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 2 && juce::String (argv[1]) == "--sampler")
+        return samplerTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--master")
         return masterTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--groove")

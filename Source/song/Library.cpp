@@ -52,6 +52,13 @@ void Library::classify (LibraryEntry& e, const juce::String& fileName, const juc
         classifyKind (byPath, pathTokens);
         if (e.kind == SampleKind::Other || byPath.loop != LoopKind::Other) { e.kind = byPath.kind; e.loop = byPath.loop; }
     }
+    // a one-shot that isn't a drum (a keys note, a synth stab, a vocal shot): playable as an instrument
+    if (e.kind == SampleKind::Other && e.bpm <= 0.0)
+    {
+        const auto p = path.toLowerCase().removeCharacters (" _-");
+        if (p.contains ("oneshot") || p.contains ("/shots/") || hasToken (pathTokens, { "stab", "stabs", "hit", "hits", "shot", "shots" }))
+            e.kind = SampleKind::OneShot;
+    }
     const auto& tokens = pathTokens;
     e.styles = 0;
     // which grooves it seems made for (the pack and folder names help here)

@@ -11,7 +11,9 @@ namespace lp::song
 
 enum class SampleKind { Kick, Snare, Clap, Hat, OpenHat, Perc, Bass808, Loop, Other,
                         // transition FX (one-shots): risers, impacts, downlifters, reverse swells, crashes, sub drops
-                        Riser, Impact, Downlifter, ReverseFx, Crash, SubDrop };
+                        Riser, Impact, Downlifter, ReverseFx, Crash, SubDrop,
+                        // a melodic one-shot (a keys note, a synth stab, a vocal shot): for sample instruments
+                        OneShot };
 enum class LoopKind { None, Drums, Bass, Keys, Guitar, Synth, Vocal, Strings, Other,
                       Pad, Lead, Pluck, Brass, Woodwind, Mallet, Perc, FX };
 constexpr int kNumLoopKinds = 17;

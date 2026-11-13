@@ -1,0 +1,117 @@
+#pragma once
+#include <juce_audio_basics/juce_audio_basics.h>
+#include <array>
+#include <memory>
+#include <vector>
+
+// A one-shot played across the keyboard, like a sampler: each key plays the sound at its pitch.
+// Several recordings of the same sound (soft / medium / hard) become velocity layers: how hard you
+// play picks the layer, and within it, softer is also darker and quieter, like a real instrument.
+namespace lp
+{
+
+class Sampler
+{
+public:
+    struct Layer
+    {
+        std::shared_ptr<juce::AudioBuffer<float>> buf;
+        double rate = 48000.0;
+        double rootNote = 60.0;   // the MIDI note the recording plays (fractional: it can be a little sharp or flat)
+        float velLo = 0.0f, velHi = 1.0f;
+    };
+
+    // ---- message thread
+    void setLayers (std::vector<Layer> l)
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        std::swap (layers, l);
+        for (auto& v : voices) v.active = false;
+        // `l` (the old sounds) is freed here, after the lock
+    }
+    int numLayers() const { const juce::SpinLock::ScopedLockType sl (lock); return (int) layers.size(); }
+
+    // ---- audio thread
+    void noteOn (int note, float vel, int offset)
+    {
+        if (layers.empty()) return;
+        const Layer* l = &layers.front();
+        for (auto& c : layers) if (vel >= c.velLo && vel <= c.velHi) l = &c;
+        Voice* slot = nullptr;
+        for (auto& v : voices) if (v.active && v.note == note && ! v.releasing) { v.releasing = true; } // a restrike lets the old one go
+        for (auto& v : voices) if (! v.active) { slot = &v; break; }
+        if (slot == nullptr) { slot = &voices[0]; for (auto& v : voices) if (v.env < slot->env) slot = &v; }
+        const float span = std::max (0.05f, l->velHi - l->velLo);
+        const float within = juce::jlimit (0.0f, 1.0f, (vel - l->velLo) / span);
+        *slot = {};
+        slot->active = true;
+        slot->layer = l;
+        slot->note = note;
+        slot->step = std::pow (2.0, (note - l->rootNote) / 12.0) * l->rate / hostRate;
+        slot->gain = (0.25f + 0.75f * std::pow (juce::jlimit (0.0f, 1.0f, vel), 1.5f)) * 0.9f; // soft about 10 dB under hard
+        // softer is darker: a one-pole low-pass from ~2.5 kHz (soft) to wide open (hard)
+        const float cutoff = 2500.0f * std::pow (8.0f, (layers.size() > 1 ? 0.5f + 0.5f * within : vel));
+        slot->lpA = 1.0f - std::exp (-2.0f * juce::MathConstants<float>::pi * std::min (cutoff, 20000.0f) / (float) hostRate);
+        slot->delay = offset;
+    }
+    void noteOff (int note)
+    {
+        for (auto& v : voices) if (v.active && v.note == note) v.releasing = true;
+    }
+    void allOff() { for (auto& v : voices) v.releasing = true; }
+
+    // adds into L / R
+    void process (float* L, float* R, int n, double sampleRate)
+    {
+        const juce::SpinLock::ScopedTryLockType tl (lock);
+        if (! tl.isLocked()) return;
+        hostRate = sampleRate;
+        const float rel = std::exp (-1.0f / (0.18f * (float) sampleRate));  // let go: a 180 ms fade
+        const float atk = 1.0f / (0.002f * (float) sampleRate);             // 2 ms, so nothing clicks
+        for (auto& v : voices)
+        {
+            if (! v.active || v.layer == nullptr) continue;
+            const auto& b = *v.layer->buf;
+            const int len = b.getNumSamples();
+            const float* a = b.getReadPointer (0);
+            const float* c = b.getReadPointer (std::min (1, b.getNumChannels() - 1));
+            for (int i = std::max (0, v.delay); i < n; ++i)
+            {
+                const int i0 = (int) v.pos;
+                if (i0 + 2 >= len) { v.active = false; break; }
+                const float f = (float) (v.pos - i0);
+                // 4-point Hermite: clean when a note is played far from where it was recorded
+                auto herm = [f] (const float* x, int k)
+                {
+                    const float y0 = x[std::max (0, k - 1)], y1 = x[k], y2 = x[k + 1], y3 = x[k + 2];
+                    const float c1 = 0.5f * (y2 - y0), c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3, c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+                    return ((c3 * f + c2) * f + c1) * f + y1;
+                };
+                float l = herm (a, i0), r = herm (c, i0);
+                v.zl += (l - v.zl) * v.lpA; v.zr += (r - v.zr) * v.lpA;
+                if (v.releasing) { v.env *= rel; if (v.env < 0.0005f) { v.active = false; break; } }
+                else v.env = std::min (1.0f, v.env + atk);
+                L[i] += v.zl * v.gain * v.env;
+                R[i] += v.zr * v.gain * v.env;
+                v.pos += v.step;
+            }
+            v.delay = 0;
+        }
+    }
+
+private:
+    struct Voice
+    {
+        bool active = false, releasing = false;
+        const Layer* layer = nullptr;
+        int note = 0, delay = 0;
+        double pos = 0.0, step = 1.0;
+        float gain = 1.0f, env = 0.0f, lpA = 1.0f, zl = 0.0f, zr = 0.0f;
+    };
+    mutable juce::SpinLock lock;
+    std::vector<Layer> layers;
+    std::array<Voice, 32> voices {};
+    double hostRate = 48000.0;
+};
+
+} // namespace lp
