@@ -265,6 +265,7 @@ struct Note
     double length;   // in quarter notes
     int pitch;       // MIDI note (drums: 36 kick, 38 snare, 42 closed hat, 46 open hat, 39 clap, 45 tom)
     float velocity;  // 0..1
+    bool glide = false; // slides into this note from the one before (808s)
 };
 
 struct Part

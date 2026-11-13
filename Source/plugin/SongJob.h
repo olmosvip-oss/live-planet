@@ -17,7 +17,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808 }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -1746,6 +1746,48 @@ private:
         saveSession();
     }
 
+    void add808()
+    {
+        lp::song::Song song;
+        std::vector<TrackInfo> tracks;
+        {
+            const juce::ScopedLock sl (lock);
+            if (current.parts.empty() || (int) current.parts.size() >= 12) return;
+            song = current; tracks = status.tracks;
+        }
+        lp::song::Part part;
+        part.kind = lp::song::PartKind::Bass;
+        part.name = "808";
+        part.variant = 1;
+        const auto seed = currentSeed * 17u + (juce::uint32) song.parts.size();
+        part.notes = write808 (song, songChords (song, tracks), seed);
+        if (part.notes.empty()) { const juce::ScopedLock sl (lock); status.message = "no beat to follow yet: add drums first"; return; }
+        part.candidates = oneShotsFor (song, true, seed);
+        if (! part.candidates.isEmpty())
+        {
+            part.samplePath = part.candidates[0];
+            part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
+        }
+        else part.source = "loopwright: 808";
+        int glides = 0;
+        for (auto& n : part.notes) glides += n.glide ? 1 : 0;
+        part.remix = "follows your chords and kick, with " + juce::String (glides) + " slides. swap: another 808";
+        song.parts.push_back (part);
+        juce::AudioBuffer<float> buf;
+        if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
+        const int tr = (int) song.parts.size() - 1;
+        const auto stem = currentFolder.getChildFile ("stems").getChildFile (
+            juce::String (tr + 1).paddedLeft ('0', 2) + " 808 (added " + juce::String (++editCounter) + ").wav");
+        if (! writeStem (stem, buf, currentRs.sampleRate)) return;
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks.push_back (info (part, stem, song));
+        status.message = "808 added: it follows your chords and kick (mute the bass loop if you like it better)";
+        ++status.version;
+        saveSession();
+    }
+
     void applyFromTake (int dst)
     {
         std::pair<int, int> req;
@@ -1808,6 +1850,105 @@ private:
         return out;
     }
 
+    // sounds from your library for written parts: melodic one-shots (plucks, keys, bells, leads...) for a hook,
+    // 808s for a bass line. The song's own packs first; only sounds with a clear note (or a note in their name).
+    juce::StringArray oneShotsFor (const lp::song::Song& song, bool bass, juce::uint32 seed)
+    {
+        refreshUsable();
+        juce::StringArray packsInSong;
+        for (auto& p : song.parts) if (const auto* e = library.find (p.samplePath)) packsInSong.addIfNotAlreadyThere (e->pack);
+        for (auto& [nn, f] : song.drumSamples) if (const auto* e = library.find (f)) packsInSong.addIfNotAlreadyThere (e->pack);
+        std::vector<std::pair<float, juce::String>> pool;
+        juce::Random rng ((juce::int64) seed);
+        const juce::StringArray melodicWords { "pluck", "bell", "keys", "key", "piano", "lead", "synth", "flute", "guitar", "marimba", "mallet", "stab", "chord", "rhodes", "organ", "string", "brass", "kalimba", "harp" };
+        const juce::StringArray notWords { "vocal", "vox", "fx", "foley", "asmr", "riser", "impact", "noise", "kick", "snare", "hat", "perc", "crash", "sweep", "drum" };
+        for (auto& e : usableLib.all())
+        {
+            const auto lower = juce::File (e.path).getFileNameWithoutExtension().toLowerCase();
+            bool skip = false;
+            for (auto& w : notWords) skip = skip || lower.contains (w);
+            if (skip) continue;
+            float score = rng.nextFloat();
+            if (bass)
+            {
+                if (! (e.kind == lp::song::SampleKind::Bass808 || (e.kind == lp::song::SampleKind::OneShot && (lower.contains ("808") || lower.contains ("bass"))))) continue;
+            }
+            else
+            {
+                if (e.kind != lp::song::SampleKind::OneShot) continue;
+                for (auto& w : melodicWords) if (lower.contains (w)) { score += 1.5f; break; }
+            }
+            if (packsInSong.contains (e.pack)) score += 2.0f;
+            pool.push_back ({ score, e.path });
+        }
+        std::sort (pool.begin(), pool.end(), [] (auto& x, auto& y) { return x.first > y.first; });
+        juce::StringArray out;
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        for (size_t i = 0; i < pool.size() && out.size() < 8 && i < 40; ++i)
+        {
+            // a melodic sound needs a note: listen for one (808s pass: their note is often too deep to hear, and in the name)
+            if (! bass)
+            {
+                std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (pool[i].second)));
+                if (rd == nullptr) continue;
+                const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) rd->sampleRate);
+                juce::AudioBuffer<float> b (2, len);
+                rd->read (&b, 0, len, 0, true, true);
+                std::vector<float> mono ((size_t) len);
+                for (int k = 0; k < len; ++k) mono[(size_t) k] = 0.5f * (b.getSample (0, k) + b.getSample (1, k));
+                if (lp::sources::detectPitch (mono, rd->sampleRate) <= 0.0) continue;
+            }
+            out.add (pool[i].second);
+        }
+        return out;
+    }
+
+    // an 808 line that follows the chords: it plays with the kick, on each chord's bass note, sliding when
+    // the chord moves on quickly (and the odd octave slide at the end of a phrase, like a trap 808)
+    static std::vector<lp::song::Note> write808 (const lp::song::Song& song, const std::vector<lp::song::chords::Chord>& chordList, juce::uint32 seed)
+    {
+        std::vector<double> kicks;
+        for (auto& p : song.parts)
+            if (p.kind == lp::song::PartKind::Drums)
+                for (auto& n : p.notes) if (n.pitch == 36) kicks.push_back (n.beat);
+        std::sort (kicks.begin(), kicks.end());
+        kicks.erase (std::unique (kicks.begin(), kicks.end(), [] (double a, double b) { return std::abs (a - b) < 0.05; }), kicks.end());
+        if (kicks.empty()) // no drawn kick: the downbeats and the "and" of 3, where the music plays
+            for (auto& sec : song.sections)
+                if (sec.energy >= 0.35f)
+                    for (int b = sec.startBar; b < sec.startBar + sec.bars; ++b) { kicks.push_back (b * 4.0); kicks.push_back (b * 4.0 + 2.5); }
+        auto chordAt = [&] (double beat) -> const lp::song::chords::Chord*
+        {
+            for (auto& c : chordList) if (c.valid && beat >= c.beat - 1e-6 && beat < c.beat + c.length) return &c;
+            return nullptr;
+        };
+        juce::Random rng ((juce::int64) seed);
+        std::vector<lp::song::Note> out;
+        int prevPitch = -1;
+        for (size_t i = 0; i < kicks.size(); ++i)
+        {
+            const double t = kicks[i];
+            const auto* c = chordAt (t + 0.01);
+            const int pc = c != nullptr ? c->bass : song.key;
+            int pitch = 24 + pc;                 // C1..B1 ...
+            if (pitch < 28) pitch += 12;         // ...kept between E1 and D#2, where 808s sit
+            const double next = i + 1 < kicks.size() ? kicks[i + 1] : t + 2.0;
+            const double len = std::min (next - t, 2.0);
+            const bool glide = prevPitch >= 0 && pitch != prevPitch && ! out.empty() && out.back().beat + out.back().length >= t - 0.05 && rng.nextFloat() < 0.6f;
+            out.push_back ({ t, std::max (0.25, len), pitch, 0.9f, glide });
+            // the end of every 4 bars: a slide up an octave on the last eighth (if there's room)
+            const double barEnd = std::floor (t / 16.0) * 16.0 + 16.0;
+            if (next >= barEnd && t < barEnd - 0.5 && rng.nextFloat() < 0.5f)
+            {
+                out.back().length = std::max (0.25, barEnd - 0.5 - t);
+                out.push_back ({ barEnd - 0.5, 0.45, pitch + 12, 0.85f, true });
+            }
+            prevPitch = pitch;
+        }
+        return out;
+    }
+
     // the instrument a written hook is played on, by style (Swap changes the melody, not the sound)
     static lp::SoundId hookSound (lp::song::Style st)
     {
@@ -1857,10 +1998,20 @@ private:
         }
         else
         {
-            part.sound = hookSound (song.style);
-            part.source = juce::String ("loopwright: written hook, ") + lp::profileFor (part.sound).name;
+            // played by a sound from your library (so it sounds like the rest of the record), or a built-in one
+            part.candidates = oneShotsFor (song, false, seed);
+            if (! part.candidates.isEmpty())
+            {
+                part.samplePath = part.candidates[0];
+                part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
+            }
+            else
+            {
+                part.sound = hookSound (song.style);
+                part.source = juce::String ("loopwright: written hook, ") + lp::profileFor (part.sound).name;
+            }
         }
-        part.remix = "an original hook over your chords, in the " + where + ". swap: another hook";
+        part.remix = "an original hook over your chords, in the " + where + (part.samplePath.isNotEmpty() && ! chops ? ". swap: another sound, then another hook" : ". swap: another hook");
         song.parts.push_back (part);
         juce::AudioBuffer<float> buf;
         if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
@@ -1882,6 +2033,7 @@ private:
         if (op == EditOp::Add) { addInstrument ((lp::song::LoopKind) tr); return; }
         if (op == EditOp::AddHook || op == EditOp::AddChops) { addHook (op == EditOp::AddChops); return; }
         if (op == EditOp::FromTake) { applyFromTake (tr); return; }
+        if (op == EditOp::Add808) { add808(); return; }
         if (op == EditOp::Arrange) { applyArrange(); return; }
         if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
@@ -1970,7 +2122,16 @@ private:
         }
         if (op == EditOp::PitchUp) part.pitchSemis = std::min (12, part.pitchSemis + 1);
         if (op == EditOp::PitchDown) part.pitchSemis = std::max (-12, part.pitchSemis - 1);
-        if (op == EditOp::Swap && part.kind == PK::Melody && (part.name == "hook" || part.name == "vocal chops"))
+        if (op == EditOp::Swap && ((part.kind == PK::Melody && part.name == "hook" && part.candidates.size() > 1 && part.variant % 2 == 1)
+                                   || (part.kind == PK::Bass && part.name == "808" && part.candidates.size() > 1)))
+        {
+            // another sound playing the same notes
+            ++part.variant;
+            part.candidate = (part.candidate + 1) % std::max (1, part.candidates.size());
+            part.samplePath = part.candidates[part.candidate];
+            part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
+        }
+        else if (op == EditOp::Swap && part.kind == PK::Melody && (part.name == "hook" || part.name == "vocal chops"))
         {
             // another hook: a new melody over the same chords (chops: every other time, another vocal too)
             std::vector<TrackInfo> tracks;

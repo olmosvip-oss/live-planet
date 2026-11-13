@@ -470,6 +470,35 @@ namespace
             std::reverse (b.getWritePointer (ch), b.getWritePointer (ch) + b.getNumSamples());
     }
 
+    // the pitch a one-shot plays (as a MIDI note): heard, or from its name ("808_F", "Pluck_C#3") if it has no
+    // clear pitch (a deep 808 can be hard to hear); `fallback` when neither says
+    double rootNoteOf (const juce::AudioBuffer<float>& b, double sr, double fallback, const juce::String& path)
+    {
+        const int n = std::min (b.getNumSamples(), (int) (sr * 1.0));
+        std::vector<float> mono ((size_t) n);
+        for (int i = 0; i < n; ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+        const double hz = lp::sources::detectPitch (mono, sr);
+        if (hz > 0.0) return 69.0 + 12.0 * std::log2 (hz / 440.0);
+        // a note name at the end of the file name
+        auto words = juce::StringArray::fromTokens (juce::File (path).getFileNameWithoutExtension().replaceCharacters ("-. ", "___"), "_", "");
+        for (int i = words.size() - 1; i >= 0; --i)
+        {
+            const auto w = words[i];
+            const int letter = juce::String ("C D EF G A B").indexOfChar (juce::CharacterFunctions::toUpperCase (w[0]));
+            if (w.isEmpty() || letter < 0 || w[0] == ' ') continue;
+            juce::String rest = w.substring (1).toLowerCase();
+            int pc = letter;
+            if (rest.startsWith ("#") || (rest.startsWith ("s") && ! rest.startsWith ("sh"))) { ++pc; rest = rest.substring (1); }
+            else if (rest.startsWith ("b") && rest.length() <= 4) { --pc; rest = rest.substring (1); }
+            if (rest.startsWith ("maj") || rest.startsWith ("min")) rest = rest.substring (3);
+            else if (rest.startsWith ("m")) rest = rest.substring (1);
+            if (! (rest.isEmpty() || rest.containsOnly ("0123456789"))) continue;
+            const int oct = rest.isEmpty() ? (int) std::floor ((fallback - 12.0) / 12.0) : rest.getIntValue();
+            return (oct + 1) * 12.0 + ((pc % 12) + 12) % 12;
+        }
+        return fallback;
+    }
+
     struct Event { long sample; int note; float vel; bool on; };
 
     std::vector<Event> eventsFor (const Part& part, double samplesPerBeat)
@@ -954,6 +983,53 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
                     const float fi = firstUsed > 0 ? std::min (1.0f, (float) (i - firstUsed) / (float) fadeIn) : 1.0f;
                     dst[o] += src[i] * g * fi;
                 }
+            }
+        }
+    }
+    else if (part.samplePath.isNotEmpty() && (part.kind == PartKind::Bass || (part.kind == PartKind::Melody && part.name == "hook")))
+    {
+        // a sound from your library played as notes (an 808, a pluck, keys): each note re-pitches it
+        // from its own pitch; a glide note slides there from the note before, without starting again
+        auto src = loadAudio (part.samplePath, sr);
+        const int n = src.getNumSamples();
+        if (n > 64)
+        {
+            double root = rootNoteOf (src, sr, part.kind == PartKind::Bass ? 36.0 : 60.0, part.samplePath);
+            const float* a = src.getReadPointer (0);
+            const float* b = src.getReadPointer (1);
+            double pos = 0.0, ratio = 1.0;
+            long voiceEnd = -1;
+            const int rel = (int) ((part.kind == PartKind::Bass ? 0.03 : 0.12) * sr), glideLen = (int) (0.07 * sr);
+            auto notes = part.notes;
+            std::sort (notes.begin(), notes.end(), [] (const Note& x, const Note& y) { return x.beat < y.beat; });
+            for (size_t k = 0; k < notes.size(); ++k)
+            {
+                const auto& note = notes[k];
+                const long s0 = (long) (note.beat * spb);
+                const long nextStart = k + 1 < notes.size() ? (long) (notes[k + 1].beat * spb) : (long) total;
+                const long s1 = std::min ((long) ((note.beat + note.length) * spb), nextStart);
+                const double target = std::pow (2.0, (note.pitch - root) / 12.0);
+                const bool slide = note.glide && voiceEnd >= s0 - (long) (0.02 * sr);
+                const double from = slide ? ratio : target;
+                if (! slide) pos = 0.0;
+                const float g = 0.85f * note.velocity;
+                const bool legato = k + 1 < notes.size() && notes[k + 1].glide && s1 >= nextStart - (long) (0.02 * sr);
+                const long end = legato ? nextStart : s1 + rel;
+                for (long i = s0; i < end && i < total; ++i)
+                {
+                    const long d = i - s0;
+                    ratio = slide && d < glideLen ? from + (target - from) * (double) d / glideLen : target;
+                    const int i0 = (int) pos;
+                    if (i0 + 1 >= n) break;
+                    const float f = (float) (pos - i0);
+                    float env = std::min (1.0f, (float) d / (float) std::max (1, (int) (0.002 * sr)));
+                    if (slide) env = 1.0f;
+                    if (! legato && i >= s1) env *= 1.0f - (float) (i - s1) / (float) rel;
+                    L[i] += (a[i0] + (a[i0 + 1] - a[i0]) * f) * g * env;
+                    R[i] += (b[i0] + (b[i0 + 1] - b[i0]) * f) * g * env;
+                    pos += ratio;
+                }
+                voiceEnd = legato ? nextStart : s1;
             }
         }
     }

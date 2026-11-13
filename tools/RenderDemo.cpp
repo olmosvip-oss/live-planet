@@ -632,6 +632,39 @@ static int ownChopTest (const juce::File& dir)
     return 0;
 }
 
+// a one-shot played as notes: each note at its pitch, glides sliding
+static int pitchedTest (const juce::File& dir)
+{
+    using namespace lp::song;
+    Song song;
+    song.bpm = 120;
+    song.sections.push_back ({ "verse", 0, 4, 0.6f });
+    const double spb = 48000.0 * 60.0 / song.bpm;
+    auto check = [&] (const char* what, Part part)
+    {
+        juce::AudioBuffer<float> out;
+        if (! renderPart (song, part, {}, out)) { std::printf ("render FAILED\n"); return; }
+        std::printf ("%s\n", what);
+        for (auto& n : part.notes)
+        {
+            // the middle of the note (after a glide has arrived)
+            const int a = (int) ((n.beat + n.length * 0.45) * spb), len = std::min ((int) (n.length * 0.4 * spb), 24000);
+            std::vector<float> seg ((size_t) len);
+            for (int i = 0; i < len; ++i) seg[(size_t) i] = out.getSample (0, a + i);
+            const double hz = lp::sources::detectPitch (seg, 48000.0), want = 440.0 * std::pow (2.0, (n.pitch - 69) / 12.0);
+            std::printf ("  note %d%s: %7.1f Hz (want %7.1f, %+.0f cents)\n", n.pitch, n.glide ? " (slides in)" : "", hz, want,
+                         hz > 0 ? 1200.0 * std::log2 (hz / want) : 0.0);
+        }
+    };
+    Part bass; bass.kind = PartKind::Bass; bass.name = "808"; bass.samplePath = dir.getChildFile ("CK_808_OneShot_F.wav").getFullPathName();
+    bass.notes = { { 0.0, 2.0, 41, 0.9f }, { 2.0, 1.5, 43, 0.9f, true }, { 4.0, 2.0, 36, 0.9f }, { 6.0, 1.5, 48, 0.9f, true } };
+    check ("808 (recorded at F2, named _F)", bass);
+    Part hook; hook.kind = PartKind::Melody; hook.name = "hook"; hook.samplePath = dir.getChildFile ("CK_Keys_OneShot_C3_hard.wav").getFullPathName();
+    hook.notes = { { 0.0, 1.0, 60, 0.8f }, { 1.0, 1.0, 64, 0.8f }, { 2.0, 1.0, 67, 0.8f }, { 3.0, 1.0, 72, 0.8f } };
+    check ("hook on a keys one-shot (recorded at C3)", hook);
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1342,6 +1375,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 2 && juce::String (argv[1]) == "--pitched")
+        return pitchedTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--ownchops")
         return ownChopTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--chop")

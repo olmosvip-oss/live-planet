@@ -38,7 +38,8 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("name", juce::String (p.name)); o->setProperty ("kind", (int) p.kind); o->setProperty ("sound", (int) p.sound);
     o->setProperty ("gainDb", p.gainDb); o->setProperty ("variant", p.variant);
     juce::Array<juce::var> notes;
-    for (auto& n : p.notes) notes.add (juce::Array<juce::var> { n.beat, n.length, n.pitch, n.velocity });
+    for (auto& n : p.notes)
+        notes.add (n.glide ? juce::Array<juce::var> { n.beat, n.length, n.pitch, n.velocity, 1 } : juce::Array<juce::var> { n.beat, n.length, n.pitch, n.velocity });
     o->setProperty ("notes", notes);
     o->setProperty ("samplePath", p.samplePath); o->setProperty ("loopBars", p.loopBars); o->setProperty ("loopStartBars", ints (p.loopStartBars));
     o->setProperty ("source", p.source); o->setProperty ("remix", p.remix); o->setProperty ("candidates", strings (p.candidates));
@@ -66,7 +67,7 @@ inline Part partFromVar (const juce::var& v)
     p.name = v["name"].toString().toStdString(); p.kind = (PartKind) (int) v["kind"]; p.sound = (lp::SoundId) (int) v["sound"];
     p.gainDb = v["gainDb"]; p.variant = v["variant"];
     if (auto* a = v["notes"].getArray())
-        for (auto& n : *a) p.notes.push_back ({ (double) n[0], (double) n[1], (int) n[2], (float) n[3] });
+        for (auto& n : *a) p.notes.push_back ({ (double) n[0], (double) n[1], (int) n[2], (float) n[3], n.size() > 4 && (int) n[4] != 0 });
     p.samplePath = v["samplePath"].toString(); p.loopBars = v["loopBars"]; p.loopStartBars = readInts (v["loopStartBars"]);
     p.source = v["source"].toString(); p.remix = v["remix"].toString(); p.candidates = readStrings (v["candidates"]);
     p.candidate = v["candidate"]; p.pitchSemis = v["pitchSemis"]; p.reversed = v["reversed"]; p.autoTune = v["autoTune"];
