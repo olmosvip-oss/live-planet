@@ -714,6 +714,46 @@ static int sliceTest (const juce::File& f)
     return 0;
 }
 
+#include "../Source/song/Tune.h"
+// auto-tune: a slightly out-of-tune "voice" (with vibrato) pulled onto the notes of C major
+static int tuneTest()
+{
+    const double sr = 48000.0;
+    const double sung[] = { 61.3, 64.4, 66.6, 69.3 }; // between notes: C#+30c, E+40c, F#+60c, A+30c
+    juce::AudioBuffer<float> v (2, (int) (sr * 2.4));
+    v.clear();
+    for (int k = 0; k < 4; ++k)
+    {
+        const int a = (int) (k * 0.6 * sr), n = (int) (0.5 * sr);
+        double ph = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double hz = 440.0 * std::pow (2.0, (sung[k] - 69.0 + 0.1 * std::sin (2 * juce::MathConstants<double>::pi * 5.5 * i / sr)) / 12.0);
+            ph += 2 * juce::MathConstants<double>::pi * hz / sr;
+            const double env = std::min (1.0, i / (0.02 * sr)) * std::min (1.0, (n - i) / (0.05 * sr));
+            const float x = (float) (0.4 * env * (std::sin (ph) + 0.5 * std::sin (2 * ph) + 0.25 * std::sin (3 * ph)));
+            v.setSample (0, a + i, x); v.setSample (1, a + i, x);
+        }
+    }
+    for (auto [label, strength, speed] : { std::tuple { "natural", 0.7f, 60.0f }, { "hard", 1.0f, 0.0f } })
+    {
+        const auto out = lp::song::tune::apply (v, sr, 0, false, strength, speed);
+        std::printf ("%s:", label);
+        for (int k = 0; k < 4; ++k)
+        {
+            const int a = (int) ((k * 0.6 + 0.2) * sr), n = (int) (0.2 * sr);
+            std::vector<float> seg ((size_t) n), orig ((size_t) n);
+            for (int i = 0; i < n; ++i) { seg[(size_t) i] = out.getSample (0, a + i); orig[(size_t) i] = v.getSample (0, a + i); }
+            const double before = 69 + 12 * std::log2 (lp::sources::detectPitch (orig, sr) / 440.0);
+            const double after = 69 + 12 * std::log2 (lp::sources::detectPitch (seg, sr) / 440.0);
+            const double target = lp::song::tune::nearestInKey (before, 0, false);
+            std::printf ("  %+4.0fc off -> %+4.0fc off", (before - target) * 100, (after - target) * 100);
+        }
+        std::printf ("\n");
+    }
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1424,6 +1464,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 1 && juce::String (argv[1]) == "--tune")
+        return tuneTest();
     if (argc > 2 && juce::String (argv[1]) == "--slice")
         return sliceTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--pump")

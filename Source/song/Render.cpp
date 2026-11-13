@@ -987,6 +987,13 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
             }
         }
     }
+    else if (part.kind == PartKind::Melody && part.samplePath.isNotEmpty() && juce::String (part.name).startsWith ("vocal ("))
+    {
+        // your (tuned) vocal, from the start of the song, as you recorded it
+        auto v = loadAudio (part.samplePath, sr);
+        const int n = std::min (v.getNumSamples(), total);
+        for (int i = 0; i < n; ++i) { L[i] += v.getSample (0, i); R[i] += v.getSample (1, i); }
+    }
     else if (part.samplePath.isNotEmpty() && (part.kind == PartKind::Bass || (part.kind == PartKind::Melody && part.name == "hook")))
     {
         // a sound from your library played as notes (an 808, a pluck, keys): each note re-pitches it

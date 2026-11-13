@@ -762,6 +762,12 @@ int LivePlanetProcessor::loadVocalChops (const juce::File& file)
     juce::AudioBuffer<float> all (2, len);
     rd->read (&all, 0, len, 0, true, rd->numChannels > 1);
     if (rd->numChannels == 1) all.copyFrom (1, 0, all, 0, 0, len);
+    // with a song: the recording is tuned to its key first, so every chop is in tune
+    if (songJob.hasSong())
+    {
+        const auto [key, minor] = songJob.songKey();
+        all = lp::song::tune::apply (all, rd->sampleRate, key, minor, 1.0f, 25.0f);
+    }
     const auto slices = lp::sliceByOnsets (all, rd->sampleRate, 24);
     if (slices.empty()) return 0;
     std::vector<lp::Sampler::Layer> layers;

@@ -2191,6 +2191,8 @@ void LivePlanetEditor::filesDropped (const StringArray& files, int, int)
     PopupMenu m;
     m.addSectionHeader (file.getFileNameWithoutExtension());
     m.addItem (4, "Make a catchy chop hook for my song (a new track)", proc.songJob.hasSong());
+    m.addItem (5, "Auto-tune it to my song: natural (a new track)", proc.songJob.hasSong());
+    m.addItem (6, "Auto-tune it to my song: hard (a new track)", proc.songJob.hasSong());
     m.addItem (1, "Chop it: one syllable on each key (for vocals)");
     m.addItem (2, "Play it across the keyboard (a one-shot)");
     m.addItem (3, "Make it the instrument's sound (grains)");
@@ -2209,6 +2211,12 @@ void LivePlanetEditor::filesDropped (const StringArray& files, int, int)
         {
             proc.songJob.addChopHookFrom (file);
             chopMessage = "writing a vocal-chop hook from your vocal: it's added to your song (Studio) in a few seconds";
+            chopMessageUntil = Time::getMillisecondCounter() + 8000;
+        }
+        else if (r == 5 || r == 6)
+        {
+            proc.songJob.addTunedVocal (file, r == 6);
+            chopMessage = "tuning your vocal to the song's key: it's added as a track (Studio) in a few seconds";
             chopMessageUntil = Time::getMillisecondCounter() + 8000;
         }
         else if (r == 2) ok = proc.loadSamplerInstrument (file);

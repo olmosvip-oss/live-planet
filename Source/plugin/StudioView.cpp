@@ -67,12 +67,23 @@ void StudioView::showAddMenu()
     m.addItem (1002, "Hook: vocal chops (vocals from your sample folders, sung to a new melody)");
     m.addItem (1003, "Hook: vocal chops from my own vocal...");
     m.addItem (1004, "808: follows your chords and kick, with slides");
+    m.addItem (1005, "Your vocal, auto-tuned to the song: natural...");
+    m.addItem (1006, "Your vocal, auto-tuned to the song: hard...");
     m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (addBounds ((int) st.tracks.size()).toNearestInt())),
                      [this] (int r)
                      {
                          if (r == 1001) proc.songJob.editTrack (0, SongJob::EditOp::AddHook);
                          else if (r == 1002) proc.songJob.editTrack (0, SongJob::EditOp::AddChops);
                          else if (r == 1004) proc.songJob.editTrack (0, SongJob::EditOp::Add808);
+                         else if (r == 1005 || r == 1006)
+                         {
+                             const bool hard = r == 1006;
+                             chooser = std::make_unique<FileChooser> ("Choose your vocal: it's tuned to the song's key", File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
+                             chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this, hard] (const FileChooser& fc)
+                             {
+                                 if (fc.getResult().existsAsFile()) proc.songJob.addTunedVocal (fc.getResult(), hard);
+                             });
+                         }
                          else if (r == 1003)
                          {
                              chooser = std::make_unique<FileChooser> ("Choose your vocal: it becomes a catchy chop hook for this song", File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");

@@ -8,6 +8,7 @@
 #include "../song/Hook.h"
 #include "../song/Arrange.h"
 #include "../song/Slice.h"
+#include "../song/Tune.h"
 #include "../song/Library.h"
 #include "../engine/Limiter.h"
 
@@ -18,7 +19,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -748,6 +749,20 @@ public:
         startIfNeeded();
     }
     bool hasSong() const { const juce::ScopedLock sl (lock); return status.haveSong; }
+    std::pair<int, bool> songKey() const { const juce::ScopedLock sl (lock); return { current.key, current.minor }; }
+
+    // your vocal, auto-tuned to the song's key, as a new track (natural or hard)
+    void addTunedVocal (const juce::File& vocal, bool hard)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingOwnVocal = vocal;
+            pendingTuneHard = hard;
+            edits.push_back ({ 0, EditOp::AddTuned });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
 
     // where the kicks are (in beats), for the pump: the drum track's kicks, or every beat where the music plays
     std::vector<double> kickBeats() const
@@ -1850,6 +1865,55 @@ private:
         saveSession();
     }
 
+    void addTuned()
+    {
+        lp::song::Song song;
+        juce::File vocal;
+        bool hard;
+        {
+            const juce::ScopedLock sl (lock);
+            if (current.parts.empty() || (int) current.parts.size() >= 12) return;
+            song = current; vocal = pendingOwnVocal; hard = pendingTuneHard;
+            pendingOwnVocal = juce::File();
+        }
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (vocal));
+        if (rd == nullptr) return;
+        setStage (Stage::Done, 1.0f, "tuning your vocal to " + juce::String (lp::noteName (song.key)) + (song.minor ? " minor..." : " major..."));
+        const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 600.0));
+        juce::AudioBuffer<float> in (2, len);
+        rd->read (&in, 0, len, 0, true, rd->numChannels > 1);
+        if (rd->numChannels == 1) in.copyFrom (1, 0, in, 0, 0, len);
+        double avg = 0.0;
+        auto out = lp::song::tune::apply (in, rd->sampleRate, song.key, song.minor, hard ? 1.0f : 0.7f, hard ? 0.0f : 60.0f, &avg);
+        const auto dir = currentFolder.getChildFile ("vocals");
+        dir.createDirectory();
+        const auto tuned = dir.getChildFile (vocal.getFileNameWithoutExtension() + (hard ? " (tuned hard).wav" : " (tuned).wav"));
+        if (! writeStem (tuned, out, rd->sampleRate)) return;
+        lp::song::Part part;
+        part.kind = lp::song::PartKind::Melody;
+        part.name = hard ? "vocal (tuned hard)" : "vocal (tuned)";
+        part.samplePath = tuned.getFullPathName();
+        part.source = "your vocal: " + vocal.getFileNameWithoutExtension();
+        part.remix = juce::String ("auto-tuned to ") + lp::noteName (song.key) + (song.minor ? " minor" : " major") + (hard ? ", hard" : ", natural")
+                   + ": it was off by " + juce::String (juce::roundToInt (avg * 100.0)) + " cents on average. starts at bar 1";
+        song.parts.push_back (part);
+        juce::AudioBuffer<float> buf;
+        if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
+        const int tr = (int) song.parts.size() - 1;
+        const auto stem = currentFolder.getChildFile ("stems").getChildFile (
+            juce::String (tr + 1).paddedLeft ('0', 2) + " " + part.name + " (added " + juce::String (++editCounter) + ").wav");
+        if (! writeStem (stem, buf, currentRs.sampleRate)) return;
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks.push_back (info (part, stem, song));
+        status.message = "your vocal, tuned to the song, is a new track (" + part.remix + ")";
+        ++status.version;
+        saveSession();
+    }
+
     void add808()
     {
         lp::song::Song song;
@@ -2139,6 +2203,7 @@ private:
         if (op == EditOp::FromTake) { applyFromTake (tr); return; }
         if (op == EditOp::Add808) { add808(); return; }
         if (op == EditOp::SliceDrums) { sliceDrums (tr); return; }
+        if (op == EditOp::AddTuned) { addTuned(); return; }
         if (op == EditOp::Arrange) { applyArrange(); return; }
         if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
@@ -2779,6 +2844,7 @@ private:
     std::vector<lp::song::arrange::Item> pendingPlan;
     float pendingFeel = 1.0f;
     juce::File pendingOwnVocal;
+    bool pendingTuneHard = false;
     juce::String chordsSummary;
     juce::String drumSwapName; // the drum sound just swapped in (for the editor to show)
     int drumSwapCount = 0;
