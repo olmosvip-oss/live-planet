@@ -975,10 +975,11 @@ juce::File LivePlanetProcessor::exportRecentNotes (int bars)
 //==============================================================================
 // Song mode
 
-void LivePlanetProcessor::makeSong (bool full, bool newKey)
+void LivePlanetProcessor::makeSong (bool full, bool newKey, int takes)
 {
     lp::song::Options o;
     o.full = full;
+    o.takes = takes;
     o.shiftKey = newKey;
     o.seed = (uint32_t) juce::Random::getSystemRandom().nextInt (1 << 30);
     o.style = (int) params.getRawParameterValue ("songstyle")->load() - 1;

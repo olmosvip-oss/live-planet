@@ -83,7 +83,7 @@ public:
 
     // song mode
     SongJob songJob;
-    void makeSong (bool full, bool newKey);
+    void makeSong (bool full, bool newKey, int takes = 1);
     juce::Array<juce::File> libraryFolders() const;
     void addLibraryFolder (const juce::File& f);
     void rescanLibrary() { songJob.scanLibrary (libraryFolders()); }

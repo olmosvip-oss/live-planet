@@ -16,7 +16,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -58,6 +58,8 @@ public:
         int version = 0;          // goes up whenever a track's audio file changes
         std::vector<int> kindCounts; // loops of each LoopKind that fit this song's tempo (for "add instrument")
         bool editing = false;
+        juce::Array<juce::File> takes;  // the takes written together (empty = just this one)
+        int take = -1;                  // which of them is open
     };
 
     SongJob() : juce::Thread ("Live Planet song mode", 16 * 1024 * 1024) { startThread (juce::Thread::Priority::low); } // loads your sample library right away
@@ -445,6 +447,8 @@ public:
         s.tracks = status.tracks;
         s.version = status.version;
         s.editing = status.editing;
+        s.takes = status.takes;
+        s.take = status.take;
         s.stage = status.stage;
         s.progress = status.progress;
         s.message = status.message;
@@ -586,7 +590,7 @@ private:
             try
             {
                 if (t == Task::Listen) listen (ref);
-                else if (t == Task::Write) write (o, rs, sky);
+                else if (t == Task::Write) writeTakes (o, rs, sky);
                 else if (t == Task::Open) openSaved (ref);
                 else wait (-1);
             }
@@ -655,6 +659,103 @@ private:
         status.message = {};
     }
 
+    // one song, or (takes = 3) three versions of it to pick from: the same sections, tempo and key, so
+    // any track of one fits into another; only the sounds differ
+    void writeTakes (const lp::song::Options& o, const lp::song::RenderSettings& rs, const lp::Weather& sky)
+    {
+        { const juce::ScopedLock sl (lock); status.takes.clear(); }
+        write (o, rs, sky);
+        if (o.takes <= 1) return;
+        juce::File first;
+        lp::song::Song song1;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong || status.stage != Stage::Done) return;
+            first = currentFolder; song1 = current;
+        }
+        juce::Array<juce::File> takes { first };
+        juce::StringArray used; // what the takes so far used: the next take reaches for other sounds
+        auto noteUsed = [&]
+        {
+            const juce::ScopedLock sl (lock);
+            for (auto& p : current.parts) if (p.samplePath.isNotEmpty()) used.addIfNotAlreadyThere (p.samplePath);
+            for (auto& [n, f] : current.drumSamples) if (const auto* e = library.find (f)) used.addIfNotAlreadyThere ("pack:" + e->pack);
+        };
+        noteUsed();
+        for (int k = 2; k <= o.takes && ! threadShouldExit(); ++k)
+        {
+            auto o2 = o;
+            o2.avoid = used;
+            o2.pickSeed = o.seed + 7919u * (juce::uint32) k;
+            o2.titleSuffix = " (take " + juce::String (k) + ")";
+            o2.dawBpm = song1.bpm;                       // the same tempo...
+            o2.promptKey = song1.key; o2.promptMinor = song1.minor; o2.shiftKey = false; // ...and key
+            o2.style = (int) song1.style;
+            setStage (Stage::Writing, 0.02f, "writing take " + juce::String (k) + " of " + juce::String (o.takes) + "...");
+            write (o2, rs, sky);
+            noteUsed();
+            const juce::ScopedLock sl (lock);
+            if (status.haveSong && currentFolder != first && ! takes.contains (currentFolder)) takes.add (currentFolder);
+        }
+        // every take knows the others (saved in each, so they come back with the project)
+        for (auto& f : takes)
+        {
+            auto v = juce::JSON::parse (f.getChildFile ("song.json"));
+            if (auto* obj = v.getDynamicObject())
+            {
+                juce::StringArray paths;
+                for (auto& t : takes) paths.add (t.getFullPathName());
+                obj->setProperty ("takes", lp::song::file::strings (paths));
+                f.getChildFile ("song.json").replaceWithText (juce::JSON::toString (v));
+            }
+        }
+        openSaved (first);
+        const juce::ScopedLock sl (lock);
+        status.message = juce::String (takes.size()) + " takes written: click Take 1, 2, 3 to compare, and mix takes to combine them";
+    }
+
+public:
+    // switch to take i (A/B while it plays: the studio reloads the tracks, the position stays)
+    void openTake (int i)
+    {
+        juce::File f;
+        {
+            const juce::ScopedLock sl (lock);
+            if (i < 0 || i >= status.takes.size()) return;
+            f = status.takes[i];
+        }
+        openSong (f);
+    }
+
+    // the tracks of another take (for "mix takes")
+    std::vector<std::pair<juce::String, juce::String>> takeTracks (int i) const
+    {
+        juce::File f;
+        {
+            const juce::ScopedLock sl (lock);
+            if (i < 0 || i >= status.takes.size()) return {};
+            f = status.takes[i];
+        }
+        std::vector<std::pair<juce::String, juce::String>> out;
+        const auto v = juce::JSON::parse (f.getChildFile ("song.json"));
+        if (auto* parts = v["song"]["parts"].getArray())
+            for (auto& p : *parts) out.push_back ({ p["name"].toString(), niceSource (p["source"].toString()) });
+        return out;
+    }
+
+    // put track `src` of take `take` in place of track `dst` here (dst = -1: add it)
+    void useFromTake (int dst, int take, int src)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingFromTake = { take, src };
+            edits.push_back ({ dst, EditOp::FromTake });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+private:
+
     void write (const lp::song::Options& o, const lp::song::RenderSettings& rs, const lp::Weather& sky)
     {
         setStage (Stage::Writing, 0.02f, "writing a new song...");
@@ -674,13 +775,28 @@ private:
         lp::song::LibraryPicks picks;
         juce::String used;
         const auto target = lp::song::chooseTarget (ref, sky, o);
+        const juce::uint32 pickSeed = o.pickSeed != 0 ? o.pickSeed : o.seed; // takes: same song, other sounds
         if (useLib || onlySamples)
         {
             setStage (Stage::Writing, 0.03f, "looking through your samples...");
             refreshUsable();
-            picks = lp::song::pickFromLibrary (usableLib, target, o.seed, [] (const juce::String& path, double bpm) { return loopBars (path, bpm); },
+            picks = lp::song::pickFromLibrary (usableLib, target, pickSeed, [] (const juce::String& path, double bpm) { return loopBars (path, bpm); },
                                                {}, [this, &target] (const juce::String& path) { return tuneFor (path, target.key, target.minor); },
                                                [this, &ref, &target] (const juce::String& path) { return soundsLike (path, ref, target.wish); });
+            // a take: other sounds than the takes before it (they come first among the good matches)
+            if (! o.avoid.isEmpty())
+            {
+                for (auto& c : picks.loopSet)
+                    std::stable_partition (c.options.begin(), c.options.end(), [&] (const lp::song::LoopOption& op) { return ! o.avoid.contains (op.entry->path); });
+                for (auto& pk : picks.drumPacks)
+                    if (! o.avoid.contains ("pack:" + pk) && pk != picks.drumPack)
+                    {
+                        const auto other = lp::song::pickFromLibrary (usableLib, target, pickSeed, [] (const juce::String& path, double bpm) { return loopBars (path, bpm); },
+                                                                     pk, {}, {});
+                        if (! other.drums.empty()) { picks.drums = other.drums; picks.drumPack = other.drumPack; }
+                        break;
+                    }
+            }
             if (picks.loop != nullptr)
             {
                 const bool tempoSet = o.dawBpm > 0.0 || o.promptBpm > 0.0 || o.genreBpm > 0.0;
@@ -695,6 +811,7 @@ private:
             return;
         }
         auto song = lp::song::generate (ref, sky, opts);
+        song.title += o.titleSuffix;
         // the drums' feel: the reference's own swing and timing, or one that suits the style
         song.groove = ref.valid && ref.groove.valid ? ref.groove : lp::song::styleGroove (song.style);
         song.groove.valid = true;
@@ -798,7 +915,7 @@ private:
                     default:        melodic.push_back (&c); break;
                 }
             // the main loop's instrument leads; the others are shuffled by the song's seed
-            juce::Random mix ((juce::int64) o.seed * 13 + 5);
+            juce::Random mix ((juce::int64) pickSeed * 13 + 5);
             for (size_t i = melodic.size(); i > 2; --i) std::swap (melodic[i - 1], melodic[1 + (size_t) mix.nextInt ((int) i - 1)]);
             // instruments you asked for go first (and all of them play)
             size_t wanted = 0;
@@ -834,7 +951,7 @@ private:
                         const int bars = songBars (opt.entry->path, opt.entry->bpm, song.bpm);
                         const float agree = lp::song::chordAgreement (leadCh, lead.tune, leadBars, chordsOf (opt.entry->path), opt.tune, bars);
                         best = std::max (best, agree);
-                        scored.push_back ({ agree * 2.0f + opt.like - (float) std::abs (opt.tune) * 0.05f, opt });
+                        scored.push_back ({ agree * 2.0f + opt.like - (float) std::abs (opt.tune) * 0.05f - (o.avoid.contains (opt.entry->path) ? 1.5f : 0.0f), opt });
                     }
                     std::stable_sort (scored.begin(), scored.end(), [] (auto& a, auto& b) { return a.first > b.first; });
                     c->options.clear();
@@ -899,7 +1016,7 @@ private:
             packs.add (picks.drumPack);
             for (auto& part : song.parts)
                 if (const auto* e = library.find (part.samplePath)) packs.addIfNotAlreadyThere (e->pack);
-            auto tr = makeTransitions (song, o.seed, packs, target.genreWords);
+            auto tr = makeTransitions (song, pickSeed, packs, target.genreWords);
             if (! tr.fxHits.empty())
             {
                 // a crash sample takes over from the kit's stand-in crash on the chorus "one"
@@ -964,6 +1081,7 @@ private:
         finishedBpm = song.bpm;
         files.mixAudio.reset();
         status.files = files;  // (without the audio itself)
+        status.take = status.takes.indexOf (folder);
         status.abletonSet = als;
         status.kindCounts.assign (lp::song::kNumLoopKinds, 0);
         for (int k = 1; k < lp::song::kNumLoopKinds; ++k)
@@ -1562,6 +1680,47 @@ private:
         saveSession();
     }
 
+    void applyFromTake (int dst)
+    {
+        std::pair<int, int> req;
+        juce::File f;
+        lp::song::Song song;
+        {
+            const juce::ScopedLock sl (lock);
+            req = pendingFromTake;
+            if (req.first < 0 || req.first >= status.takes.size()) return;
+            f = status.takes[req.first];
+            song = current;
+        }
+        const auto v = juce::JSON::parse (f.getChildFile ("song.json"));
+        lp::song::Song other;
+        if (! lp::song::file::songFromVar (v["song"], other)) return;
+        const auto stems = lp::song::file::readStrings (v["stems"]);
+        if (req.second < 0 || req.second >= (int) other.parts.size() || req.second >= stems.size()) return;
+        auto part = other.parts[(size_t) req.second];
+        const juce::File stem (stems[req.second]);
+        if (! stem.existsAsFile()) return;
+        if (part.kind == lp::song::PartKind::Drums) song.drumSamples = other.drumSamples; // its kit comes with it
+        part.remix = "from " + other.title.fromFirstOccurrenceOf ("(", false, false).upToFirstOccurrenceOf (")", false, false)
+                   + (other.title.contains ("(take") ? "" : "take 1") + ". " + part.remix;
+        const juce::ScopedLock sl (lock);
+        if (dst >= 0 && dst < (int) song.parts.size())
+        {
+            song.parts[(size_t) dst] = part;
+            status.tracks[(size_t) dst] = info (part, stem, song);
+        }
+        else if ((int) song.parts.size() < 12)
+        {
+            song.parts.push_back (part);
+            status.tracks.push_back (info (part, stem, song));
+        }
+        current = song;
+        status.song = song;
+        status.message = juce::String (part.name) + " is now from another take";
+        ++status.version;
+        saveSession();
+    }
+
     // vocals to chop: vocal loops and vocal one-shots in your library (the song's own packs first)
     juce::StringArray vocalsToChop (const lp::song::Song& song, juce::uint32 seed)
     {
@@ -1653,6 +1812,7 @@ private:
     {
         if (op == EditOp::Add) { addInstrument ((lp::song::LoopKind) tr); return; }
         if (op == EditOp::AddHook || op == EditOp::AddChops) { addHook (op == EditOp::AddChops); return; }
+        if (op == EditOp::FromTake) { applyFromTake (tr); return; }
         if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
         lp::song::Song song;
@@ -1871,6 +2031,11 @@ private:
         o->setProperty ("plan", status.files.planFile.getFullPathName());
         o->setProperty ("ableton", status.abletonSet.getFullPathName());
         o->setProperty ("used", status.usedSamples);
+        {
+            juce::StringArray tk;
+            for (auto& t : status.takes) tk.add (t.getFullPathName());
+            o->setProperty ("takes", F::strings (tk));
+        }
         currentFolder.getChildFile ("song.json").replaceWithText (juce::JSON::toString (juce::var (o)));
     }
 
@@ -1917,6 +2082,9 @@ private:
         ++status.version;
         status.song = song;
         status.usedSamples = v["used"].toString();
+        status.takes.clear();
+        for (auto& t : F::readStrings (v["takes"])) if (juce::File (t).isDirectory()) status.takes.add (juce::File (t));
+        status.take = status.takes.indexOf (folder);
         status.files = files;
         status.abletonSet = juce::File (v["ableton"].toString());
         status.kindCounts.assign (lp::song::kNumLoopKinds, 0);
@@ -2271,6 +2439,7 @@ private:
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
     std::map<int, std::pair<int, int>> pendingDrumSwap;
     int chordsVersion = -1;
+    std::pair<int, int> pendingFromTake { -1, -1 };
     float pendingFeel = 1.0f;
     juce::String chordsSummary;
     juce::String drumSwapName; // the drum sound just swapped in (for the editor to show)

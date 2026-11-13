@@ -644,7 +644,8 @@ static void setUpKeyBoxes (LivePlanetProcessor& p, ComboBox& key, ComboBox& mode
 
 SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     : proc (p), th (theme),
-      length ({ "Full song", "Sketch" }, [this] { return full ? 0 : 1; }, [this] (int i) { full = i == 0; }, theme)
+      length ({ "Full song", "Sketch", "3 takes" }, [this] { return takes3 ? 2 : (full ? 0 : 1); },
+              [this] (int i) { full = i != 1; takes3 = i == 2; }, theme)
 {
     newKey.setToggleState (false, dontSendNotification); // stay in your song's key unless you ask
     addAndMakeVisible (newKey);
@@ -675,7 +676,7 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
         if (! lp::license::canWrite()) { showActivate ("Your trial has ended. Paste your license code to keep writing songs."); return; }
         proc.songPrompt = promptBox.getText();
         proc.songPromptIsAuto = autoDescription.isNotEmpty() && promptBox.getText().trim() == autoDescription;
-        proc.makeSong (full, newKey.getToggleState());
+        proc.makeSong (full, newKey.getToggleState(), takes3 ? 3 : 1);
         repaint();
     };
     addAndMakeVisible (write);
@@ -1190,6 +1191,18 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     setUpKeyBoxes (p, studioKey, studioMode, studioKeyAtt, studioModeAtt);
     addChildComponent (studioKey);
     addChildComponent (studioMode);
+    // takes
+    for (int i = 0; i < 3; ++i)
+    {
+        takeBtn[i].onClick = [this, i] { proc.songJob.openTake (i); };
+        takeBtn[i].setTooltip ("listen to take " + String (i + 1) + " (switch while it plays to compare)");
+        takeBtn[i].setWantsKeyboardFocus (false);
+        addChildComponent (takeBtn[i]);
+    }
+    mixTakes.onClick = [this] { showMixTakes(); };
+    mixTakes.setTooltip ("use a track from another take in this one (the drums from take 2, the keys from take 3...)");
+    mixTakes.setWantsKeyboardFocus (false);
+    addChildComponent (mixTakes);
     // mastering
     {
         masterBox.addItem ("Master: off", 1);
@@ -1399,6 +1412,35 @@ void LivePlanetEditor::runSearch()
 
 //==============================================================================
 
+void LivePlanetEditor::showMixTakes()
+{
+    const auto st = proc.songJob.getStatus();
+    if (st.takes.size() < 2) return;
+    PopupMenu menu;
+    menu.addSectionHeader ("use a track from another take");
+    struct Pick { int dst, take, src; };
+    std::vector<Pick> picks { {} };
+    for (int k = 0; k < st.takes.size(); ++k)
+    {
+        if (k == st.take) continue;
+        PopupMenu sub;
+        const auto other = proc.songJob.takeTracks (k);
+        for (int j = 0; j < (int) other.size(); ++j)
+        {
+            // in place of the track with the same name here, or added
+            int dst = -1;
+            for (int t = 0; t < (int) st.tracks.size(); ++t) if (st.tracks[(size_t) t].name == other[(size_t) j].first) dst = t;
+            picks.push_back ({ dst, k, j });
+            sub.addItem ((int) picks.size() - 1, other[(size_t) j].first + (dst >= 0 ? "  (replaces this take's)" : "  (adds it)") + "   " + other[(size_t) j].second);
+        }
+        menu.addSubMenu ("from take " + String (k + 1), sub);
+    }
+    menu.showMenuAsync (PopupMenu::Options().withTargetComponent (&mixTakes), [this, picks] (int id)
+    {
+        if (id > 0 && id < (int) picks.size()) proc.songJob.useFromTake (picks[(size_t) id].dst, picks[(size_t) id].take, picks[(size_t) id].src);
+    });
+}
+
 void LivePlanetEditor::showOneShotMenu()
 {
     const auto shots = proc.songJob.oneShots();
@@ -1435,6 +1477,18 @@ void LivePlanetEditor::showOneShotMenu()
 
 void LivePlanetEditor::timerCallback()
 {
+    {
+        // the takes bar: shown on the write page when there are takes to compare
+        const auto st = proc.songJob.getStatus();
+        const bool show = page == Write && st.takes.size() > 1;
+        for (int i = 0; i < 3; ++i)
+        {
+            const bool v = show && i < st.takes.size();
+            if (takeBtn[i].isVisible() != v) takeBtn[i].setVisible (v);
+            takeBtn[i].setToggleState (st.take == i, dontSendNotification);
+        }
+        if (mixTakes.isVisible() != show) mixTakes.setVisible (show);
+    }
     if (page == Studio)
     {
         String info;
@@ -1757,6 +1811,12 @@ void LivePlanetEditor::resized()
     studioMode.setBounds (cardTimeline.getRight() - 18 - 92, cardTimeline.getY() + 12, 92, 26);
     studioKey.setBounds (cardTimeline.getRight() - 18 - 92 - 8 - 128, cardTimeline.getY() + 12, 128, 26);
     masterAB.setBounds (studioKey.getX() - 24 - 72, cardTimeline.getY() + 12, 72, 26);
+    {
+        // takes, top right of the song on the write page
+        int x = cardTimeline.getRight() - 18 - 104;
+        mixTakes.setBounds (x, cardTimeline.getY() + 12, 104, 26);
+        for (int i = 2; i >= 0; --i) { x -= 8 + 78; takeBtn[i].setBounds (x, cardTimeline.getY() + 12, 78, 26); }
+    }
     masterBox.setBounds (masterAB.getX() - 8 - 236, cardTimeline.getY() + 12, 236, 26);
     masterInfo.setBounds (masterBox.getX() - 8 - 240, cardTimeline.getY() + 12, 240, 26);
     trackEditor.setBounds (M + 24, 84 + 18, W - 2 * M - 48, 644 - 36);

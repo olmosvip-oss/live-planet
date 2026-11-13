@@ -336,6 +336,10 @@ struct SoundWish { int dark = 0, plucky = 0, punchy = 0, lofi = 0, warm = 0, air
 
 struct Options
 {
+    int takes = 1;                // 3: write two more versions (same structure, tempo and key; other sounds)
+    uint32_t pickSeed = 0;        // which sounds are picked (0 = from `seed`); takes change only this
+    juce::String titleSuffix;     // e.g. " (take 2)"
+    juce::StringArray avoid;      // takes: samples (and drum packs) earlier takes used, so this one sounds different
     bool shiftKey = true;         // move to a nearby key so it doesn't sit on top of the reference
     bool full = true;             // full length, or a short ~1 minute sketch
     lp::SoundId mainSound = lp::SoundId::Auto; // the plugin's chosen instrument (Auto = let the weather pick)

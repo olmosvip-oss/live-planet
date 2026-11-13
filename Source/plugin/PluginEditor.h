@@ -188,7 +188,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> keyAtt, modeAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> useSamplesAtt, playWithAtt, samplesOnlyAtt, dawTempoAtt;
     juce::TextButton write { "write a song" };
-    bool full = true;
+    bool full = true, takes3 = false; // full song / sketch / three takes of a full song
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Rectangle<float> scanLink, folderLink, sourcesLink;
     juce::Rectangle<float> licenseLink;
@@ -480,6 +480,10 @@ private:
     juce::ComboBox masterBox;               // mastering: off, or a platform's loudness
     juce::TextButton masterAB { "after" };  // hear the master, or the mix before it
     juce::Label masterInfo;                 // what the master came out at
+    // takes: switch between them (A/B), and mix tracks from one into another
+    juce::TextButton takeBtn[3] { juce::TextButton ("Take 1"), juce::TextButton ("Take 2"), juce::TextButton ("Take 3") };
+    juce::TextButton mixTakes { "mix takes" };
+    void showMixTakes();
     int seenMasterResets = 0;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> studioKeyAtt, studioModeAtt;
     GrainView grainView;
