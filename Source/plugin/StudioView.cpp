@@ -36,10 +36,11 @@ Rectangle<float> StudioView::colBounds (int row, Col c) const
         case Volume:    return { x + w * 0.42f, y + 8, w * 0.18f, 9 };
         case Pan:       return { x + w * 0.63f, y + 8, w * 0.08f, 9 };
         case Tone:      return { x + w * 0.74f, y + 8, w * 0.08f, 9 };
-        case Swap:      return { r.getRight() - 150, y + 2, 44, h - 4 };
-        case Reverse:   return { r.getRight() - 102, y + 2, 38, h - 4 };
-        case PitchDown: return { r.getRight() - 58, y + 2, 24, h - 4 };
-        case PitchUp:   return { r.getRight() - 28, y + 2, 24, h - 4 };
+        case Swap:      return { r.getRight() - 178, y + 2, 44, h - 4 };
+        case Reverse:   return { r.getRight() - 130, y + 2, 38, h - 4 };
+        case PitchDown: return { r.getRight() - 86, y + 2, 24, h - 4 };
+        case PitchUp:   return { r.getRight() - 56, y + 2, 24, h - 4 };
+        case Remove:    return { r.getRight() - 24, y + 2, 22, h - 4 };
         default:        return {};
     }
 }
@@ -66,7 +67,7 @@ void StudioView::showAddMenu()
     m.addItem (1001, "Hook: a melody (original, written for this song)");
     m.addItem (1002, "Hook: vocal chops (vocals from your sample folders, sung to a new melody)");
     m.addItem (1003, "Hook: vocal chops from my own vocal...");
-    m.addItem (1004, "808: follows your chords and kick, with slides");
+    m.addItem (1004, "808: plays your bass loop's notes (or your chords) on your kick, with slides");
     m.addItem (1005, "Your vocal, auto-tuned to the song: natural...");
     m.addItem (1006, "Your vocal, auto-tuned to the song: hard...");
     m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (addBounds ((int) st.tracks.size()).toNearestInt())),
@@ -99,7 +100,7 @@ void StudioView::showAddMenu()
 
 StudioView::Col StudioView::colAt (int row, Point<float> p) const
 {
-    for (Col c : { Mute, Solo, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp })
+    for (Col c : { Mute, Solo, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove })
         if (colBounds (row, c).expanded (2.0f, 4.0f).contains (p)) return c;
     return None;
 }
@@ -230,6 +231,17 @@ void StudioView::paint (Graphics& g)
         button (colBounds (i, Reverse), "rev", t.canReverse, t.reversed);
         button (colBounds (i, PitchDown), "-", true, false);
         button (colBounds (i, PitchUp), "+", true, false);
+        {
+            // take the track out of the song
+            const auto rb = colBounds (i, Remove);
+            const bool hot = i == hoverRow && rb.expanded (2.0f, 4.0f).contains (lastMouse);
+            g.setColour (hot ? Colour (0xffe5484d) : Colours::white.withAlpha (0.06f));
+            g.fillRoundedRectangle (rb, 5.0f);
+            g.setColour (Colours::white.withAlpha (hot ? 1.0f : 0.55f));
+            const auto c = rb.getCentre();
+            g.drawLine (c.x - 3.5f, c.y - 3.5f, c.x + 3.5f, c.y + 3.5f, 1.4f);
+            g.drawLine (c.x - 3.5f, c.y + 3.5f, c.x + 3.5f, c.y - 3.5f, 1.4f);
+        }
     }
 
     // add another instrument from your library
@@ -291,6 +303,13 @@ void StudioView::mouseDown (const MouseEvent& e)
     for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
     {
         if (! rowShown (i) || ! rowBounds (i).expanded (0.0f, 1.0f).contains (e.position)) continue;
+        if (e.mods.isPopupMenu())
+        {
+            PopupMenu m;
+            m.addItem (1, "Remove \"" + st.tracks[(size_t) i].name + "\" from the song", st.tracks.size() > 1);
+            m.showMenuAsync (PopupMenu::Options(), [this, i] (int r) { if (r == 1) askRemove (i); });
+            return;
+        }
         const auto c = colAt (i, e.position);
         if (c == None && e.position.x > rowBounds (i).getX() + 50.0f && e.position.x < colBounds (i, Volume).getX() - 10.0f)
         {
@@ -314,6 +333,7 @@ void StudioView::mouseDown (const MouseEvent& e)
             case Reverse:   if (st.tracks[(size_t) i].canReverse) proc.songJob.editTrack (i, SongJob::EditOp::Reverse); break;
             case PitchDown: proc.songJob.editTrack (i, SongJob::EditOp::PitchDown); break;
             case PitchUp:   proc.songJob.editTrack (i, SongJob::EditOp::PitchUp); break;
+            case Remove:    askRemove (i); return;
             default: break;
         }
         if (onMixChanged) onMixChanged();
@@ -328,12 +348,35 @@ void StudioView::mouseDrag (const MouseEvent& e)
     if (dragRow >= 0) { setFromX (dragRow, dragCol, e.position.x); repaint(); }
 }
 
+void StudioView::askRemove (int track)
+{
+    const auto st = proc.songJob.getStatus();
+    if (track < 0 || track >= (int) st.tracks.size() || st.tracks.size() <= 1) return;
+    const auto name = st.tracks[(size_t) track].name;
+    AlertWindow::showOkCancelBox (MessageBoxIconType::QuestionIcon, "Remove " + name + "?",
+        "\"" + name + "\" comes out of the song, and the tracks below it move up. (Its file stays in the song folder.)",
+        "Remove", "Keep it", this,
+        ModalCallbackFunction::create ([this, track, name] (int ok)
+        {
+            const auto now = proc.songJob.getStatus();
+            if (ok == 0 || track >= (int) now.tracks.size() || now.tracks[(size_t) track].name != name) return;
+            proc.studio.removeTrackMix (track);
+            proc.songJob.editTrack (track, SongJob::EditOp::Remove);
+            hoverRow = -1;
+            mixDirty = true;
+            if (onMixChanged) onMixChanged();
+            repaint();
+        }));
+}
+
 void StudioView::mouseMove (const MouseEvent& e)
 {
+    lastMouse = e.position;
     int h = -1;
     for (int i = 0; i < StudioPlayer::maxTracks; ++i)
         if (rowShown (i) && rowBounds (i).contains (e.position)) h = i;
     const auto n = (int) proc.songJob.getStatus().tracks.size();
     const bool ha = n > 0 && rowShown (n) && addBounds (n).contains (e.position);
-    if (h != hoverRow || ha != hoverAdd) { hoverRow = h; hoverAdd = ha; repaint(); }
+    const bool hx = h >= 0 && colBounds (h, Remove).expanded (2.0f, 4.0f).contains (e.position);
+    if (h != hoverRow || ha != hoverAdd || hx != hoverRemove) { hoverRow = h; hoverAdd = ha; hoverRemove = hx; repaint(); }
 }

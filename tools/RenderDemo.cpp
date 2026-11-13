@@ -1446,6 +1446,71 @@ static int chordTest()
     return wins == n ? 0 : 1;
 }
 
+
+#include "../Source/song/OneNote.h"
+static int rootNoteTest()
+{
+    const double sr = 44100.0;
+    auto make = [&] (std::function<float (double)> f, double secs)
+    {
+        juce::AudioBuffer<float> b (2, (int) (secs * sr));
+        for (int i = 0; i < b.getNumSamples(); ++i) { const float v = f (i / sr); b.setSample (0, i, v); b.setSample (1, i, v); }
+        return b;
+    };
+    const double tau = juce::MathConstants<double>::twoPi;
+    // a distorted 808 on G1 (49 Hz) with a pitch drop at the start
+    double ph = 0;
+    auto b808 = make ([&] (double t) { const double hz = 49.0 + 40.0 * std::exp (-t * 30.0); ph += tau * hz / sr; return (float) (0.8 * std::tanh (2.5 * std::sin (ph)) * std::exp (-t * 1.2)); }, 2.0);
+    // a bright detuned saw on C4
+    auto saw = [] (double x) { return 2.0 * (x - std::floor (x)) - 1.0; };
+    auto synth = make ([&] (double t) { return (float) (0.3 * (saw (t * 261.63) + saw (t * 261.63 * 1.004) + 0.5 * saw (t * 523.25)) * std::exp (-t * 1.5)); }, 1.5);
+    // a phrase: C4 E4 G4
+    auto phrase = make ([&] (double t) { const double hz = t < 0.5 ? 261.63 : (t < 1.0 ? 329.63 : 392.0); return (float) (0.4 * std::sin (tau * hz * t)); }, 1.5);
+    // a chord: C E G
+    auto chord = make ([&] (double t) { return (float) (0.2 * (saw (t * 261.63) + saw (t * 329.63) + saw (t * 392.0))); }, 1.5);
+    struct T { const char* what; juce::AudioBuffer<float>* b; const char* name; double fallback; };
+    for (auto& t : { T { "808 named G", &b808, "Bass_808_G.wav", 36.0 }, T { "808 nameless", &b808, "Bass_808_Heavy.wav", 36.0 },
+                     T { "808 named G minor", &b808, "SO_CTB_bass_808_squad_G_minor.wav", 36.0 },
+                     T { "synth named C", &synth, "melodic_dark_vintage_synth_C.wav", 60.0 }, T { "synth nameless", &synth, "dark_synth.wav", 60.0 },
+                     T { "phrase", &phrase, "pluck.wav", 60.0 }, T { "chord", &chord, "stab.wav", 60.0 } })
+    {
+        const auto r = lp::song::onenote::read (*t.b, sr);
+        std::vector<float> mono ((size_t) t.b->getNumSamples());
+        for (int i = 0; i < t.b->getNumSamples(); ++i) mono[(size_t) i] = t.b->getSample (0, i);
+        const double old = lp::sources::detectPitch (mono, sr);
+        const double root = lp::song::onenote::rootOf (*t.b, sr, t.fallback, t.name);
+        std::printf ("%-20s body %.2f heard %6.2f steady %.2f voiced %.2f -> root %6.2f (%s)   old detector %6.2f (%s)\n", t.what, r.body, r.midi, r.steady, r.voiced, root,
+                     lp::noteName (((int) std::round (root)) % 12), old > 0 ? 69 + 12 * std::log2 (old / 440.0) : 0.0,
+                     old > 0 ? lp::noteName (((int) std::round (69 + 12 * std::log2 (old / 440.0))) % 12) : "-");
+    }
+    // a bass line, read an eighth at a time like the 808 does: G1 Bb1 D2 F1 (two eighths each)
+    {
+        const double bpm = 130, eighth = 30.0 / bpm;
+        const double notes[] = { 43, 46, 50, 41 };
+        double p2 = 0;
+        auto line = make ([&] (double t) { const int k = (int) (t / eighth) / 2 % 4; const double hz = 440.0 * std::pow (2.0, (notes[k] - 69) / 12.0);
+                                          p2 += tau * hz / sr; return (float) (0.5 * std::tanh (2.0 * std::sin (p2))); }, eighth * 16);
+        // the same low-pass as the 808 writer
+        const float a = 1.0f - std::exp (-2.0f * juce::MathConstants<float>::pi * 350.0f / (float) sr);
+        for (int ch = 0; ch < 2; ++ch) { auto* d = line.getWritePointer (ch); float z1 = 0, z2 = 0; for (int i = 0; i < line.getNumSamples(); ++i) { z1 += (d[i] - z1) * a; z2 += (z1 - z2) * a; d[i] = z2; } }
+        double rate = 0;
+        const auto x = lp::song::onenote::prepare (line, sr, line.getNumSamples(), rate);
+        const int win = (int) (0.05 * rate);
+        std::printf ("bass line read: ");
+        int right = 0, total = 0;
+        for (int k = 0; k < 16; ++k)
+        {
+            const int s0 = (int) ((k + 0.45) * eighth * rate) - win / 2;
+            const double p = lp::song::onenote::yinAt (x, s0, win, rate, 28.0);
+            const int pc = p > 0 ? ((int) std::round (p)) % 12 : -1;
+            std::printf ("%s ", pc >= 0 ? lp::noteName (pc) : "-");
+            ++total; right += pc == ((int) notes[k / 2 % 4]) % 12;
+        }
+        std::printf ("  (%d of %d right)\n", right, total);
+    }
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -1488,6 +1553,8 @@ int main (int argc, char** argv)
         return chordTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--livedrums")
         return liveDrumsTest();
+    if (argc > 1 && juce::String (argv[1]) == "--rootnote")
+        return rootNoteTest();
     if (argc > 1 && juce::String (argv[1]) == "--onenote")
         return oneNoteTest();
     if (argc > 1 && juce::String (argv[1]) == "--chords")

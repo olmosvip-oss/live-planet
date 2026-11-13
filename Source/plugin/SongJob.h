@@ -1,6 +1,7 @@
 #pragma once
 #include "AppFolder.h"
 #include "StudioPlayer.h"
+#include "../song/OneNote.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../song/Song.h"
 #include "../song/SongFile.h"
@@ -19,7 +20,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -1660,7 +1661,7 @@ private:
         lp::song::Song song;
         {
             const juce::ScopedLock sl (lock);
-            if (current.parts.empty() || (int) current.parts.size() >= 12) return;
+            if (current.parts.empty() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
             song = current;
         }
         // favour packs already in the song (same vibe), then the genre, shuffled so adding twice gives something new
@@ -1872,7 +1873,7 @@ private:
         bool hard;
         {
             const juce::ScopedLock sl (lock);
-            if (current.parts.empty() || (int) current.parts.size() >= 12) return;
+            if (current.parts.empty() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
             song = current; vocal = pendingOwnVocal; hard = pendingTuneHard;
             pendingOwnVocal = juce::File();
         }
@@ -1920,7 +1921,7 @@ private:
         std::vector<TrackInfo> tracks;
         {
             const juce::ScopedLock sl (lock);
-            if (current.parts.empty() || (int) current.parts.size() >= 12) return;
+            if (current.parts.empty() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
             song = current; tracks = status.tracks;
         }
         lp::song::Part part;
@@ -1928,7 +1929,9 @@ private:
         part.name = "808";
         part.variant = 1;
         const auto seed = currentSeed * 17u + (juce::uint32) song.parts.size();
-        part.notes = write808 (song, songChords (song, tracks), seed);
+        const auto bassLine = bassNotes (song, tracks);
+        const bool followsLoop = std::count_if (bassLine.begin(), bassLine.end(), [] (int v) { return v >= 0; }) > 8;
+        part.notes = write808 (song, songChords (song, tracks), seed, bassLine);
         if (part.notes.empty()) { const juce::ScopedLock sl (lock); status.message = "no beat to follow yet: add drums first"; return; }
         part.candidates = oneShotsFor (song, true, seed);
         if (! part.candidates.isEmpty())
@@ -1939,7 +1942,7 @@ private:
         else part.source = "loopwright: 808";
         int glides = 0;
         for (auto& n : part.notes) glides += n.glide ? 1 : 0;
-        part.remix = "follows your chords and kick, with " + juce::String (glides) + " slides. swap: another 808";
+        part.remix = juce::String (followsLoop ? "plays your bass loop's notes, on your kick" : "follows your chords and kick") + ", with " + juce::String (glides) + " slides. swap: another 808";
         song.parts.push_back (part);
         juce::AudioBuffer<float> buf;
         if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
@@ -1951,7 +1954,31 @@ private:
         current = song;
         status.song = song;
         status.tracks.push_back (info (part, stem, song));
-        status.message = "808 added: it follows your chords and kick (mute the bass loop if you like it better)";
+        status.message = followsLoop ? "808 added: it plays your bass loop's notes on your kick (try muting the bass loop)"
+                                     : "808 added: it follows your chords and kick";
+        ++status.version;
+        saveSession();
+    }
+
+    // a track taken out of the song (its file stays in the song folder, in case you drag it later)
+    void removeTrack (int tr)
+    {
+        lp::song::Song song;
+        std::vector<TrackInfo> tracks;
+        {
+            const juce::ScopedLock sl (lock);
+            if (tr < 0 || tr >= (int) current.parts.size() || tr >= (int) status.tracks.size() || current.parts.size() <= 1) return;
+            song = current; tracks = status.tracks;
+        }
+        const juce::String name (song.parts[(size_t) tr].name);
+        song.parts.erase (song.parts.begin() + tr);
+        tracks.erase (tracks.begin() + tr);
+        rebuildMix (song, tracks); // the full mix without it
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks = tracks;
+        status.message = "\"" + name + "\" removed";
         ++status.version;
         saveSession();
     }
@@ -1985,7 +2012,7 @@ private:
             song.parts[(size_t) dst] = part;
             status.tracks[(size_t) dst] = info (part, stem, song);
         }
-        else if ((int) song.parts.size() < 12)
+        else if ((int) song.parts.size() < StudioPlayer::maxTracks)
         {
             song.parts.push_back (part);
             status.tracks.push_back (info (part, stem, song));
@@ -2053,28 +2080,105 @@ private:
         juce::StringArray out;
         juce::AudioFormatManager fm;
         fm.registerBasicFormats();
-        for (size_t i = 0; i < pool.size() && out.size() < 8 && i < 40; ++i)
+        for (size_t i = 0; i < pool.size() && out.size() < 8 && i < 60; ++i)
         {
-            // a melodic sound needs a note: listen for one (808s pass: their note is often too deep to hear, and in the name)
-            if (! bass)
-            {
-                std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (pool[i].second)));
-                if (rd == nullptr) continue;
-                const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) rd->sampleRate);
-                juce::AudioBuffer<float> b (2, len);
-                rd->read (&b, 0, len, 0, true, true);
-                std::vector<float> mono ((size_t) len);
-                for (int k = 0; k < len; ++k) mono[(size_t) k] = 0.5f * (b.getSample (0, k) + b.getSample (1, k));
-                if (lp::sources::detectPitch (mono, rd->sampleRate) <= 0.0) continue;
-            }
+            // it has to play one clear note: a phrase, a chord or a sound that slides around can't be put on the
+            // song's notes. Its note comes from its name if it has one, else from listening.
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (pool[i].second)));
+            if (rd == nullptr || rd->lengthInSamples > (juce::int64) (rd->sampleRate * (bass ? 10.0 : 6.0))) continue;
+            const auto words = juce::StringArray::fromTokens (juce::File (pool[i].second).getFileNameWithoutExtension().toLowerCase()
+                                                                  .replaceCharacters ("-. ()[]", "_______"), "_", "");
+            if (! bass && (words.contains ("chord") || words.contains ("chords") || words.contains ("minor") || words.contains ("major")
+                           || words.contains ("min") || words.contains ("maj") || words.contains ("phrase") || words.contains ("melody"))) continue;
+            const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 1.5));
+            juce::AudioBuffer<float> b (2, len);
+            rd->read (&b, 0, len, 0, true, true);
+            const auto heard = lp::song::onenote::read (b, rd->sampleRate);
+            int oct = 0;
+            const bool named = lp::song::onenote::noteInName (pool[i].second, oct) >= 0;
+            const bool oneNote = heard.voiced > 0.3f && heard.steady > 0.75f && heard.body > 0.2f;
+            const bool moves = heard.voiced > 0.3f && heard.steady < 0.55f; // clearly more than one note
+            if (bass ? (moves || (! named && ! oneNote)) : ! oneNote) continue;
             out.add (pool[i].second);
         }
         return out;
     }
 
+    // the notes the song's bass tracks play, one per eighth note (a pitch class, -1 where none is clear):
+    // heard from their files, so an 808 can play exactly what the bass loop plays
+    static std::vector<int> bassNotes (const lp::song::Song& song, const std::vector<TrackInfo>& tracks)
+    {
+        const double sr = StudioPlayer::fileRate;
+        const double eighth = 0.5 * 60.0 / song.bpm * sr;
+        const int slots = song.totalBars() * 8;
+        const int len = (int) (slots * eighth);
+        juce::AudioBuffer<float> bass (2, len);
+        bass.clear();
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        bool any = false;
+        for (size_t i = 0; i < tracks.size() && i < song.parts.size(); ++i)
+        {
+            const auto& p = song.parts[i];
+            const juce::String n (p.name);
+            if (n == "808" || p.kind == lp::song::PartKind::Drums) continue;               // not itself, not the kick
+            if (! (p.kind == lp::song::PartKind::Bass || n.containsIgnoreCase ("bass"))) continue;
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (tracks[i].stem));
+            if (rd == nullptr) continue;
+            juce::AudioBuffer<float> b (2, len);
+            b.clear();
+            rd->read (&b, 0, (int) std::min<juce::int64> (len, rd->lengthInSamples), 0, true, true);
+            for (int ch = 0; ch < 2; ++ch) bass.addFrom (ch, 0, b, ch, 0, len);
+            any = true;
+        }
+        if (! any) return {};
+        // low-pass (the bass's fundamental, not its buzz), then a pitch per eighth note
+        {
+            const float a = 1.0f - std::exp (-2.0f * juce::MathConstants<float>::pi * 350.0f / (float) sr);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                auto* d = bass.getWritePointer (ch);
+                float z1 = 0, z2 = 0;
+                for (int i = 0; i < len; ++i) { z1 += (d[i] - z1) * a; z2 += (z1 - z2) * a; d[i] = z2; }
+            }
+        }
+        double rate = 0;
+        const auto x = lp::song::onenote::prepare (bass, sr, len, rate);
+        float peak = 0; for (float v : x) peak = std::max (peak, std::abs (v));
+        std::vector<int> out ((size_t) slots, -1);
+        if (peak <= 0) return out;
+        const double eighthX = eighth * rate / sr;
+        const int win = (int) (0.05 * rate);
+        for (int k = 0; k < slots; ++k)
+        {
+            // listen a little after the eighth starts (past the pluck), and on its second half too
+            std::array<int, 12> votes {};
+            int heard = 0;
+            for (double at : { 0.3, 0.6 })
+            {
+                const int s0 = (int) ((k + at) * eighthX) - win / 2;
+                if (s0 < 0 || s0 + win >= (int) x.size()) continue;
+                float m = 0; for (int i = 0; i < win; ++i) m = std::max (m, std::abs (x[(size_t) (s0 + i)]));
+                if (m < peak * 0.08f) continue;
+                if (const double p = lp::song::onenote::yinAt (x, s0, win, rate, 28.0); p > 0.0)
+                {
+                    ++votes[(size_t) (((int) std::round (p) % 12) + 12) % 12];
+                    ++heard;
+                }
+            }
+            if (heard == 0) continue;
+            out[(size_t) k] = (int) (std::max_element (votes.begin(), votes.end()) - votes.begin());
+        }
+        // a lone odd reading between two that agree is a slip of the ear
+        for (size_t k = 1; k + 1 < out.size(); ++k)
+            if (out[k - 1] >= 0 && out[k - 1] == out[k + 1] && out[k] != out[k - 1]) out[k] = out[k - 1];
+        return out;
+    }
+
     // an 808 line that follows the chords: it plays with the kick, on each chord's bass note, sliding when
     // the chord moves on quickly (and the odd octave slide at the end of a phrase, like a trap 808)
-    static std::vector<lp::song::Note> write808 (const lp::song::Song& song, const std::vector<lp::song::chords::Chord>& chordList, juce::uint32 seed)
+    static std::vector<lp::song::Note> write808 (const lp::song::Song& song, const std::vector<lp::song::chords::Chord>& chordList, juce::uint32 seed,
+                                                 const std::vector<int>& bassPcs = {})
     {
         std::vector<double> kicks;
         for (auto& p : song.parts)
@@ -2098,7 +2202,24 @@ private:
         {
             const double t = kicks[i];
             const auto* c = chordAt (t + 0.01);
-            const int pc = c != nullptr ? c->bass : song.key;
+            int pc = c != nullptr ? c->bass : song.key;
+            // a bass loop playing here: the 808 plays its notes (the note under the kick, or the next one it plays)
+            if (! bassPcs.empty())
+            {
+                const int slot = (int) std::floor (t * 2.0 + 0.01);
+                for (int k = slot; k < (int) bassPcs.size() && k <= slot + 1; ++k)
+                    if (k >= 0 && bassPcs[(size_t) k] >= 0)
+                    {
+                        // (a reading outside the key is a slip of the ear, unless the chord has it)
+                        const int b = bassPcs[(size_t) k], deg = ((b - song.key) % 12 + 12) % 12;
+                        static const int majS[7] = { 0, 2, 4, 5, 7, 9, 11 }, minS[7] = { 0, 2, 3, 5, 7, 8, 10 };
+                        bool ok = false;
+                        for (int d : (song.minor ? minS : majS)) ok = ok || d == deg;
+                        if (c != nullptr) for (int tn : lp::song::chords::tones (*c)) ok = ok || tn == b;
+                        if (ok) pc = b;
+                        break;
+                    }
+            }
             int pitch = 24 + pc;                 // C1..B1 ...
             if (pitch < 28) pitch += 12;         // ...kept between E1 and D#2, where 808s sit
             const double next = i + 1 < kicks.size() ? kicks[i + 1] : t + 2.0;
@@ -2137,7 +2258,7 @@ private:
         std::vector<TrackInfo> tracks;
         {
             const juce::ScopedLock sl (lock);
-            if (current.parts.empty() || (int) current.parts.size() >= 12) return;
+            if (current.parts.empty() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
             song = current; tracks = status.tracks;
         }
         setStage (Stage::Done, 1.0f, chops ? "writing vocal chops over your chords..." : "writing a hook over your chords...");
@@ -2204,6 +2325,7 @@ private:
         if (op == EditOp::Add808) { add808(); return; }
         if (op == EditOp::SliceDrums) { sliceDrums (tr); return; }
         if (op == EditOp::AddTuned) { addTuned(); return; }
+        if (op == EditOp::Remove) { removeTrack (tr); return; }
         if (op == EditOp::Arrange) { applyArrange(); return; }
         if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }

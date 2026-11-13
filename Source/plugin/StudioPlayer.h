@@ -8,7 +8,7 @@
 class StudioPlayer
 {
 public:
-    static constexpr int maxTracks = 12;
+    static constexpr int maxTracks = 16;
     static constexpr double fileRate = 48000.0; // songs are recorded at 48 kHz
 
     struct Mix
@@ -31,6 +31,26 @@ public:
     ~StudioPlayer() { clear(); thread.stopThread (2000); }
 
     std::array<Mix, maxTracks> mix;
+    // a track is taken out: the mixer settings below it move up a row with their tracks
+    void removeTrackMix (int t)
+    {
+        for (int i = t; i >= 0 && i < maxTracks; ++i)
+        {
+            auto& d = mix[(size_t) i];
+            if (i + 1 < maxTracks)
+            {
+                const auto& s = mix[(size_t) i + 1];
+                d.gainDb = s.gainDb.load(); d.pan = s.pan.load(); d.tone = s.tone.load(); d.mute = s.mute.load(); d.solo = s.solo.load();
+                d.sample = s.sample.load(); d.group = s.group.load(); d.space = s.space.load(); d.echo = s.echo.load();
+                d.warmth = s.warmth.load(); d.nostalgia = s.nostalgia.load(); d.chorus = s.chorus.load(); d.printFx = s.printFx.load();
+            }
+            else
+            {
+                d.gainDb = 0.0f; d.pan = 0.0f; d.tone = 0.0f; d.mute = false; d.solo = false; d.sample = false; d.group = 0;
+                d.space = 0.0f; d.echo = 0.0f; d.warmth = 0.0f; d.nostalgia = 0.0f; d.chorus = 0.0f; d.printFx = false;
+            }
+        }
+    }
     std::atomic<int> skipTrack { -1 }; // a track played live instead (the drum editor's loop)
     // what each track is playing right now (its loudest sample since the screen last looked), for the meters
     std::array<std::atomic<float>, maxTracks> peakL {}, peakR {};

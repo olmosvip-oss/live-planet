@@ -247,7 +247,10 @@ public:
     bool mixDirty = false;
 
 private:
-    enum Col { None, Mute, Solo, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp };
+    enum Col { None, Mute, Solo, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
+    void askRemove (int track);
+    juce::Point<float> lastMouse;
+    bool hoverRemove = false;
     juce::Rectangle<float> rowBounds (int row) const;
     juce::Rectangle<float> colBounds (int row, Col c) const;
     juce::Rectangle<float> addBounds (int numTracks) const;

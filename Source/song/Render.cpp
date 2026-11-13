@@ -4,6 +4,7 @@
 #include "../engine/Limiter.h"
 #include "../engine/Engine.h"
 #include "../engine/Sources.h"
+#include "OneNote.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <signalsmith-stretch/signalsmith-stretch.h>
 
@@ -474,29 +475,7 @@ namespace
     // clear pitch (a deep 808 can be hard to hear); `fallback` when neither says
     double rootNoteOf (const juce::AudioBuffer<float>& b, double sr, double fallback, const juce::String& path)
     {
-        const int n = std::min (b.getNumSamples(), (int) (sr * 1.0));
-        std::vector<float> mono ((size_t) n);
-        for (int i = 0; i < n; ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
-        const double hz = lp::sources::detectPitch (mono, sr);
-        if (hz > 0.0) return 69.0 + 12.0 * std::log2 (hz / 440.0);
-        // a note name at the end of the file name
-        auto words = juce::StringArray::fromTokens (juce::File (path).getFileNameWithoutExtension().replaceCharacters ("-. ", "___"), "_", "");
-        for (int i = words.size() - 1; i >= 0; --i)
-        {
-            const auto w = words[i];
-            const int letter = juce::String ("C D EF G A B").indexOfChar (juce::CharacterFunctions::toUpperCase (w[0]));
-            if (w.isEmpty() || letter < 0 || w[0] == ' ') continue;
-            juce::String rest = w.substring (1).toLowerCase();
-            int pc = letter;
-            if (rest.startsWith ("#") || (rest.startsWith ("s") && ! rest.startsWith ("sh"))) { ++pc; rest = rest.substring (1); }
-            else if (rest.startsWith ("b") && rest.length() <= 4) { --pc; rest = rest.substring (1); }
-            if (rest.startsWith ("maj") || rest.startsWith ("min")) rest = rest.substring (3);
-            else if (rest.startsWith ("m")) rest = rest.substring (1);
-            if (! (rest.isEmpty() || rest.containsOnly ("0123456789"))) continue;
-            const int oct = rest.isEmpty() ? (int) std::floor ((fallback - 12.0) / 12.0) : rest.getIntValue();
-            return (oct + 1) * 12.0 + ((pc % 12) + 12) % 12;
-        }
-        return fallback;
+        return lp::song::onenote::rootOf (b, sr, fallback, path);
     }
 
     struct Event { long sample; int note; float vel; bool on; };
