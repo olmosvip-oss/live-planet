@@ -1,4 +1,5 @@
 #pragma once
+#include "Meter.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "PluginProcessor.h"
@@ -259,6 +260,7 @@ private:
     void setFromX (int row, Col c, float x);
     LivePlanetProcessor& proc;
     int hoverRow = -1, dragRow = -1;
+    std::array<lp::ui::MeterBallistics, StudioPlayer::maxTracks> meterL {}, meterR {};
     Col dragCol = None;
 };
 
@@ -500,6 +502,11 @@ private:
     juce::ComboBox masterBox;               // mastering: off, or a platform's loudness
     juce::TextButton masterAB { "after" };  // hear the master, or the mix before it
     juce::Label masterInfo;                 // what the master came out at
+    struct MasterMeter : juce::Component
+    {
+        lp::ui::MeterBallistics l, r;
+        void paint (juce::Graphics& g) override { lp::ui::drawStereoMeter (g, getLocalBounds().toFloat(), l, r); }
+    } masterMeter;                          // everything the plugin plays
     // takes: switch between them (A/B), and mix tracks from one into another
     juce::TextButton takeBtn[3] { juce::TextButton ("Take 1"), juce::TextButton ("Take 2"), juce::TextButton ("Take 3") };
     juce::TextButton mixTakes { "mix takes" };
@@ -513,6 +520,7 @@ private:
     ThemeDots themeDots;
     juce::TextButton loadButton { "Load sample" };
     juce::TextButton oneShotButton { "One-shot instrument" }; // a library one-shot across the keyboard (Play mode)
+    juce::TextButton chopButton { "Chop my vocal" };          // your recording cut into syllables, one per key
     void showOneShotMenu();
     juce::ToggleButton dayToggle { "daylight" }, thunderToggle { "thunder" };
 

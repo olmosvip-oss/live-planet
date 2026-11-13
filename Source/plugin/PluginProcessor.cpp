@@ -375,6 +375,15 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     // a drum you clicked in the editor (when the loop isn't playing it already)
     if (! auditioned) liveDrums.process (L, R, n, getSampleRate(), false, 0.0, 0.0, 1.0f);
 
+    // the master meter: what comes out
+    {
+        float pl = 0.0f, pr = 0.0f;
+        for (int i = 0; i < n; ++i) { pl = std::max (pl, std::abs (L[i])); pr = std::max (pr, std::abs (R[i])); }
+        lp::ui::notePeak (outPeakL, pl);
+        lp::ui::notePeak (outPeakR, pr);
+    }
+    studio.meterGain = juce::Decibels::decibelsToGain (songMakeupDb.load());
+
     // Send the notes out so they can play any other instrument too
     for (int i = 0; i < midiOut.count; ++i)
     {
@@ -661,6 +670,45 @@ bool LivePlanetProcessor::loadSamplerInstrument (const juce::File& file)
     return true;
 }
 
+int LivePlanetProcessor::loadVocalChops (const juce::File& file)
+{
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (file));
+    if (rd == nullptr) return 0;
+    const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 120.0));
+    juce::AudioBuffer<float> all (2, len);
+    rd->read (&all, 0, len, 0, true, rd->numChannels > 1);
+    if (rd->numChannels == 1) all.copyFrom (1, 0, all, 0, 0, len);
+    const auto slices = lp::sliceByOnsets (all, rd->sampleRate, 24);
+    if (slices.empty()) return 0;
+    std::vector<lp::Sampler::Layer> layers;
+    float peak = all.getMagnitude (0, len);
+    int key = 48; // C3 and up, one chop per key (black keys too)
+    for (auto [start, n] : slices)
+    {
+        auto buf = std::make_shared<juce::AudioBuffer<float>> (2, n);
+        for (int ch = 0; ch < 2; ++ch) buf->copyFrom (ch, 0, all, ch, start, n);
+        // short fades so nothing clicks
+        const int f = std::min (n / 4, (int) (0.004 * rd->sampleRate)), fo = std::min (n / 3, (int) (0.02 * rd->sampleRate));
+        buf->applyGainRamp (0, f, 0.0f, 1.0f);
+        buf->applyGainRamp (n - fo, fo, 1.0f, 0.0f);
+        if (peak > 0.0f) buf->applyGain (0.85f / peak);
+        lp::Sampler::Layer l { buf, rd->sampleRate, (double) key, 0.0f, 1.0f, key, key, true, juce::String ((int) layers.size() + 1) };
+        layers.push_back (l);
+        ++key;
+    }
+    const int count = (int) layers.size();
+    sampler.setLayers (std::move (layers));
+    samplerOn = true;
+    const juce::SpinLock::ScopedLockType sl (samplerInfoLock);
+    samplerName = "chops of " + file.getFileNameWithoutExtension();
+    samplerInfo = juce::String (count) + " chops on C3 to " + lp::noteName ((48 + count - 1) % 12) + juce::String ((48 + count - 1) / 12 - 1)
+                + ": play them in Play mode";
+    samplerPaths = juce::StringArray ("chops:" + file.getFullPathName());
+    return count;
+}
+
 void LivePlanetProcessor::samplerOff()
 {
     samplerOn = false;
@@ -844,8 +892,12 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
     }
     weatherService.requestCoordinates (city, lat, lon);
 
-    if (const juce::File sp (state.getProperty ("samplerPath", "").toString()); sp.existsAsFile())
-        loadSamplerInstrument (sp);
+    if (const auto sp = state.getProperty ("samplerPath", "").toString(); sp.startsWith ("chops:"))
+    {
+        if (juce::File (sp.substring (6)).existsAsFile()) loadVocalChops (juce::File (sp.substring (6)));
+    }
+    else if (juce::File (sp).existsAsFile())
+        loadSamplerInstrument (juce::File (sp));
 
     // the song this project was using: open it again, with its mixer as you left it
     const juce::File songFolder (state.getProperty ("songFolder", "").toString());

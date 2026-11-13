@@ -503,6 +503,57 @@ static int arrangeTest (const juce::File& outDir)
     return bad == 0 ? 0 : 1;
 }
 
+// a recording cut into its syllables, each on its own key at its own pitch
+static int chopTest()
+{
+    const double sr = 44100.0;
+    const double pitches[] = { 220.0, 247.0, 262.0, 294.0, 330.0, 196.0 };
+    juce::AudioBuffer<float> rec (2, (int) (sr * 3.2));
+    rec.clear();
+    double t = 0.1;
+    for (double hz : pitches)
+    {
+        const int a = (int) (t * sr), n = (int) (0.32 * sr);
+        for (int i = 0; i < n; ++i)
+        {
+            const double env = std::min (1.0, i / (0.01 * sr)) * std::min (1.0, (n - i) / (0.03 * sr));
+            const float v = (float) (0.5 * env * (std::sin (2 * juce::MathConstants<double>::pi * hz * i / sr) + 0.3 * std::sin (4 * juce::MathConstants<double>::pi * hz * i / sr)));
+            rec.setSample (0, a + i, v); rec.setSample (1, a + i, v);
+        }
+        t += 0.32 + 0.15;
+    }
+    const auto slices = lp::sliceByOnsets (rec, sr, 24);
+    std::printf ("syllables found: %d (want 6)\n", (int) slices.size());
+    std::vector<lp::Sampler::Layer> layers;
+    int key = 48;
+    for (auto [a, n] : slices)
+    {
+        auto b = std::make_shared<juce::AudioBuffer<float>> (2, n);
+        for (int ch = 0; ch < 2; ++ch) b->copyFrom (ch, 0, rec, ch, a, n);
+        layers.push_back ({ b, sr, (double) key, 0.0f, 1.0f, key, key, true, {} });
+        ++key;
+    }
+    lp::Sampler s;
+    s.setLayers (layers);
+    for (int k = 0; k < (int) slices.size(); ++k)
+    {
+        std::vector<float> L (22050, 0.0f), R (22050, 0.0f);
+        s.noteOn (48 + k, 1.0f, 0);
+        for (int pos = 0; pos < 22050; pos += 512) s.process (L.data() + pos, R.data() + pos, std::min (512, 22050 - pos), sr);
+        s.allOff();
+        std::vector<float> L2 (44100), R2 (44100);
+        for (int pos = 0; pos < 44100; pos += 512) s.process (L2.data() + pos, R2.data() + pos, std::min (512, 44100 - pos), sr);
+        std::printf ("  key %s: %.0f Hz (sung at %.0f)\n", (juce::String (lp::noteName ((48 + k) % 12)) + juce::String ((48 + k) / 12 - 1)).toRawUTF8(),
+                     lp::sources::detectPitch (L, sr), k < 6 ? pitches[k] : 0.0);
+    }
+    std::vector<float> L (4410, 0.0f), R (4410, 0.0f);
+    s.noteOn (60, 1.0f, 0);
+    s.process (L.data(), R.data(), 4410, sr);
+    float pk = 0; for (float v : L) pk = std::max (pk, std::abs (v));
+    std::printf ("a key with no chop (C4): %s\n", pk < 1e-6f ? "silent, as it should be" : "PLAYS SOMETHING");
+    return 0;
+}
+
 static int songTest (const juce::File& outDir)
 {
     using namespace lp::song;
@@ -1213,6 +1264,8 @@ int main (int argc, char** argv)
         return stretchTest (juce::File (argv[2]), argc > 3 ? juce::String (argv[3]).getIntValue() : 0);
     if (argc > 3 && juce::String (argv[1]) == "--print")
         return printTest (juce::File (argv[2]), juce::File (argv[3]));
+    if (argc > 1 && juce::String (argv[1]) == "--chop")
+        return chopTest();
     if (argc > 2 && juce::String (argv[1]) == "--arrange")
         return arrangeTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--sampler")

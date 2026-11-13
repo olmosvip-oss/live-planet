@@ -19,6 +19,9 @@ public:
         double rate = 48000.0;
         double rootNote = 60.0;   // the MIDI note the recording plays (fractional: it can be a little sharp or flat)
         float velLo = 0.0f, velHi = 1.0f;
+        int keyLo = 0, keyHi = 127;  // the keys it plays on
+        bool fixedPitch = false;     // chops: every key plays its own slice at its own pitch
+        juce::String label;          // e.g. the chop's number, for the screen
     };
 
     // ---- message thread
@@ -35,10 +38,13 @@ public:
     void noteOn (int note, float vel, int offset)
     {
         if (layers.empty()) return;
-        const Layer* l = &layers.front();
-        for (auto& c : layers) if (vel >= c.velLo && vel <= c.velHi) l = &c;
+        const Layer* l = nullptr;
+        for (auto& c : layers) if (note >= c.keyLo && note <= c.keyHi && vel >= c.velLo && vel <= c.velHi) l = &c;
+        if (l == nullptr) for (auto& c : layers) if (note >= c.keyLo && note <= c.keyHi) l = &c;
+        if (l == nullptr) return; // no sound on this key
         Voice* slot = nullptr;
         for (auto& v : voices) if (v.active && v.note == note && ! v.releasing) { v.releasing = true; } // a restrike lets the old one go
+        if (l->fixedPitch) for (auto& v : voices) if (v.active && v.layer == l) v.releasing = true;   // a chop cuts itself off, like a pad on an MPC
         for (auto& v : voices) if (! v.active) { slot = &v; break; }
         if (slot == nullptr) { slot = &voices[0]; for (auto& v : voices) if (v.env < slot->env) slot = &v; }
         const float span = std::max (0.05f, l->velHi - l->velLo);
@@ -47,7 +53,7 @@ public:
         slot->active = true;
         slot->layer = l;
         slot->note = note;
-        slot->step = std::pow (2.0, (note - l->rootNote) / 12.0) * l->rate / hostRate;
+        slot->step = (l->fixedPitch ? 1.0 : std::pow (2.0, (note - l->rootNote) / 12.0)) * l->rate / hostRate;
         slot->gain = (0.25f + 0.75f * std::pow (juce::jlimit (0.0f, 1.0f, vel), 1.5f)) * 0.9f; // soft about 10 dB under hard
         // softer is darker: a one-pole low-pass from ~2.5 kHz (soft) to wide open (hard)
         const float cutoff = 2500.0f * std::pow (8.0f, (layers.size() > 1 ? 0.5f + 0.5f * within : vel));
@@ -113,5 +119,39 @@ private:
     std::array<Voice, 32> voices {};
     double hostRate = 48000.0;
 };
+
+// Cuts a recording (a vocal, a phrase) into its syllables: where the loudness jumps up.
+// Returns [start, length] pairs (in samples), 0.08..1.5 s long, at most `maxSlices`.
+inline std::vector<std::pair<int, int>> sliceByOnsets (const juce::AudioBuffer<float>& b, double sr, int maxSlices = 24)
+{
+    std::vector<std::pair<int, int>> out;
+    const int n = b.getNumSamples(), hop = std::max (1, (int) (0.01 * sr));
+    std::vector<float> env;
+    for (int i = 0; i + hop <= n; i += hop)
+        env.push_back (0.5f * (b.getRMSLevel (0, i, hop) + b.getRMSLevel (std::min (1, b.getNumChannels() - 1), i, hop)));
+    float peak = 0; for (float v : env) peak = std::max (peak, v);
+    if (peak <= 0.0f) return out;
+    std::vector<int> starts;
+    for (size_t k = 3; k < env.size(); ++k)
+    {
+        const float before = *std::min_element (env.begin() + (long) k - 3, env.begin() + (long) k);
+        const bool rise = env[k] > peak * 0.08f && env[k] > before * 2.0f + peak * 0.01f;
+        const bool fromQuiet = env[k] > peak * 0.08f && env[k - 1] <= peak * 0.05f;
+        if ((rise || fromQuiet) && (starts.empty() || (int) k * hop - starts.back() > (int) (0.1 * sr)))
+            starts.push_back (std::max (0, (int) k * hop - hop * 2)); // a little before, so the consonant isn't cut
+    }
+    if (starts.size() < 2) // one long sound: even pieces
+        for (int i = 0; i + (int) (0.25 * sr) < n; i += (int) (0.25 * sr)) starts.push_back (i);
+    for (size_t k = 0; k < starts.size() && (int) out.size() < maxSlices; ++k)
+    {
+        int end = k + 1 < starts.size() ? starts[k + 1] : n;
+        end = std::min (end, starts[k] + (int) (1.5 * sr));
+        // stop where it goes quiet (the gap between syllables isn't part of the chop)
+        for (int i = starts[k] / hop + 5; i < end / hop && i < (int) env.size(); ++i)
+            if (env[(size_t) i] < peak * 0.02f) { end = i * hop; break; }
+        if (end - starts[k] >= (int) (0.08 * sr)) out.push_back ({ starts[k], end - starts[k] });
+    }
+    return out;
+}
 
 } // namespace lp

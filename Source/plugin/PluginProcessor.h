@@ -51,6 +51,8 @@ public:
     bool loadSample (const juce::File& file);
     // a one-shot from your library played across the keyboard (Play mode), with its velocity layers
     bool loadSamplerInstrument (const juce::File& file);
+    // your own recording cut into its syllables, one on each key from C3 up (Play mode)
+    int loadVocalChops (const juce::File& file);
     void samplerOff();
     lp::Sampler sampler;
     std::atomic<bool> samplerOn { false };
@@ -112,6 +114,7 @@ public:
     juce::File masterFile;
     std::array<lp::Master, 8> liveMasters;      // one per preset, ready on the audio thread
     std::atomic<int> masterResets { 0 };
+    std::atomic<float> outPeakL { 0.0f }, outPeakR { 0.0f }; // everything the plugin plays (the master meter)
     std::atomic<float> songMakeupDb { 0.0f };
     juce::File loadedSongFolder;
     // the key boxes changed: move the current song to that key (Auto = the reference's key)

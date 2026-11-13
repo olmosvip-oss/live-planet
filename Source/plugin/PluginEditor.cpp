@@ -1431,6 +1431,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         addChildComponent (masterBox);
         addChildComponent (masterAB);
         addChildComponent (masterInfo);
+        masterMeter.setInterceptsMouseClicks (false, false);
+        addChildComponent (masterMeter);
     }
     addChildComponent (grainView);
     addChildComponent (sourcesPanel);
@@ -1462,6 +1464,19 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     oneShotButton.onClick = [this] { showOneShotMenu(); };
     oneShotButton.setTooltip ("Play a one-shot from your library across the keyboard (keyboard: Play)");
     addChildComponent (oneShotButton);
+    chopButton.setTooltip ("Pick a recording of your voice: it's cut into its syllables, one on each key from C3 up. Keyboard: Play.");
+    chopButton.onClick = [this]
+    {
+        chooser = std::make_unique<FileChooser> ("Choose a recording of your voice to chop", File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
+        chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+        {
+            if (! fc.getResult().existsAsFile()) return;
+            if (proc.loadVocalChops (fc.getResult()) > 0)
+                if (auto* km = proc.params.getParameter ("keymode")) km->setValueNotifyingHost (0.0f); // Play mode, ready to play
+            repaint();
+        });
+    };
+    addChildComponent (chopButton);
 
     addKnob ("pad", "chords", 0.86f, 52);
     addKnob ("drops", "melody", 0.78f, 52);
@@ -1576,6 +1591,7 @@ void LivePlanetEditor::setPage (int p)
     masterBox.setVisible (studio);
     masterAB.setVisible (studio);
     masterInfo.setVisible (studio);
+    masterMeter.setVisible (studio);
     grainView.setVisible (p == Sound);
     const bool haveSong = proc.songJob.getStatus().haveSong;
     songPanel.setVisible (write);
@@ -1588,6 +1604,7 @@ void LivePlanetEditor::setPage (int p)
     presetBrowser.setVisible (sound);
     loadButton.setVisible (sound);
     oneShotButton.setVisible (sound);
+    chopButton.setVisible (sound);
     keyStepper->setVisible (sound);
     scaleStepper->setVisible (sound);
     keySwitch.setVisible (sound);
@@ -1706,6 +1723,9 @@ void LivePlanetEditor::timerCallback()
             info = proc.masterReport.toUpperCase();
         }
         if (masterInfo.getText() != info) masterInfo.setText (info, dontSendNotification);
+        masterMeter.l.update (proc.outPeakL.exchange (0.0f));
+        masterMeter.r.update (proc.outPeakR.exchange (0.0f));
+        masterMeter.repaint();
         if (proc.masterResets.load() != seenMasterResets) { seenMasterResets = proc.masterResets.load(); masterBox.setSelectedId (1, dontSendNotification); }
         masterInfo.setColour (Label::textColourId, lnf.th->inkDim);
         const bool after = proc.masterAfter.load();
@@ -2026,6 +2046,7 @@ void LivePlanetEditor::resized()
     }
     masterBox.setBounds (masterAB.getX() - 8 - 236, cardTimeline.getY() + 12, 236, 26);
     masterInfo.setBounds (masterBox.getX() - 8 - 240, cardTimeline.getY() + 12, 240, 26);
+    masterMeter.setBounds (masterBox.getX() - 26, cardTimeline.getY() + 8, 13, 34);
     trackEditor.setBounds (M + 24, 84 + 18, W - 2 * M - 48, 644 - 36);
     if (page == Edit) playButton.setBounds (W - M - 24 - 44, 84 + 644 - 18 - 44, 44, 44);
 
@@ -2040,9 +2061,11 @@ void LivePlanetEditor::resized()
         r.removeFromTop (12);
         {
             auto lr = r.removeFromTop (34);
-            loadButton.setBounds (lr.removeFromLeft (130));
+            loadButton.setBounds (lr.removeFromLeft (124));
             lr.removeFromLeft (8);
-            oneShotButton.setBounds (lr.removeFromLeft (170));
+            oneShotButton.setBounds (lr.removeFromLeft (156));
+            lr.removeFromLeft (8);
+            chopButton.setBounds (lr.removeFromLeft (136));
         }
         r.removeFromTop (46); // (room for what's loaded)
         auto row = r.removeFromTop (32);

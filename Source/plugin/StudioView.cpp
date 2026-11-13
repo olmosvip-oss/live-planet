@@ -173,6 +173,14 @@ void StudioView::paint (Graphics& g)
                 g.fillRoundedRectangle (r.withWidth (std::max (r.getHeight(), r.getWidth() * v)), 4.5f);
         };
         bar (colBounds (i, Volume), jmap (m.gainDb.load(), -30.0f, 6.0f, 0.0f, 1.0f), false);
+        {
+            // its level meter (what it's playing right now), just left of the volume
+            const auto row = rowBounds (i);
+            meterL[(size_t) i].update (proc.studio.peakL[(size_t) i].exchange (0.0f));
+            meterR[(size_t) i].update (proc.studio.peakR[(size_t) i].exchange (0.0f));
+            lp::ui::drawStereoMeter (g, Rectangle<float> (colBounds (i, Volume).getX() - 22.0f, row.getY() + 2.0f, 9.0f, row.getHeight() - 4.0f),
+                                     meterL[(size_t) i], meterR[(size_t) i]);
+        }
         bar (colBounds (i, Pan), m.pan.load(), true);
         bar (colBounds (i, Tone), m.tone.load(), true);
 

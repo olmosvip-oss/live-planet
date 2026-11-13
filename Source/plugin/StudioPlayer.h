@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../engine/Dsp.h"
+#include "Peak.h"
 
 // Plays a song's tracks (the stem files) with a live mixer: volume, pan, mute, solo and tone.
 // Files are streamed from disk in the background, so long songs don't use much memory.
@@ -31,6 +32,9 @@ public:
 
     std::array<Mix, maxTracks> mix;
     std::atomic<int> skipTrack { -1 }; // a track played live instead (the drum editor's loop)
+    // what each track is playing right now (its loudest sample since the screen last looked), for the meters
+    std::array<std::atomic<float>, maxTracks> peakL {}, peakR {};
+    std::atomic<float> meterGain { 1.0f }; // the song's playback level, so the meters read what you hear
 
     // message thread: (re)open the tracks' files
     // waitMs: how long a read may wait for the disk (0 while playing live; offline prints wait)
@@ -192,6 +196,7 @@ public:
             const float wobDepth = nost * 0.0028f * (float) sampleRate;
             const float cho = m.chorus.load();
             const bool inserts = warm > 0.002f || nost > 0.002f || cho > 0.002f;
+            float pkL = 0.0f, pkR = 0.0f;
             for (int i = 0; i < n; ++i, ph += inc)
             {
                 const int i0 = (int) ph;
@@ -237,10 +242,15 @@ public:
                 }
                 oL[i] += xl * gl;
                 oR[i] += xr * gr;
+                pkL = std::max (pkL, std::abs (xl * gl));
+                pkR = std::max (pkR, std::abs (xr * gr));
                 if (toFx) { sendL[i] += xl * gl * send; sendR[i] += xr * gr * send; }
                 verbL[(size_t) i] += xl * gl * sp; verbR[(size_t) i] += xr * gr * sp;
                 delL[(size_t) i] += xl * gl * ec;  delR[(size_t) i] += xr * gr * ec;
             }
+            const float mg = meterGain.load();
+            lp::ui::notePeak (peakL[t], pkL * mg);
+            lp::ui::notePeak (peakR[t], pkR * mg);
         }
         if (! anySends && ! tailLeft) return;
         tailLeft = anySends ? (int) (sampleRate * 6.0) : std::max (0, tailLeft - n);
