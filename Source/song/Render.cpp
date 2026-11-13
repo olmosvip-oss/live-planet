@@ -1,5 +1,6 @@
 #include "Song.h"
 #include <thread>
+#include <set>
 #include <atomic>
 #include "../engine/Limiter.h"
 #include "../engine/Engine.h"
@@ -205,7 +206,7 @@ namespace
     // stretch audio to a new length without changing its pitch (WSOLA: overlapping slices,
     // each nudged to where it lines up best with the last one, so it stays smooth).
     // used for short drum slices; longer sounds go through Signalsmith Stretch below
-    juce::AudioBuffer<float> wsolaStretch (const juce::AudioBuffer<float>& in, int outLen)
+    juce::AudioBuffer<float> wsolaStretch (const juce::AudioBuffer<float>& in, int outLen, bool wrap = true)
     {
         const int inLen = in.getNumSamples();
         constexpr int N = 2048, H = N / 2, search = 384;
@@ -242,8 +243,9 @@ namespace
                 for (int k = 0; k < N; ++k)
                 {
                     const int si = best + k;
-                    // wrap round: a loop's end leads back into its start
-                    dst[o * H + k] += src[si < inLen ? si : si - inLen] * win[(size_t) k];
+                    // wrap round: a loop's end leads back into its start (a slice of a loop doesn't: it just ends)
+                    const float v = si < inLen ? src[si] : (wrap ? src[si - inLen] : 0.0f);
+                    dst[o * H + k] += v * win[(size_t) k];
                 }
             }
             for (int k = 0; k < N; ++k) norm[(size_t) (o * H + k)] += win[(size_t) k];
@@ -252,7 +254,7 @@ namespace
         juce::AudioBuffer<float> res (2, outLen);
         for (int ch = 0; ch < 2; ++ch)
             for (int i = 0; i < outLen; ++i)
-                res.setSample (ch, i, out.getSample (ch, i) / std::max (0.5f, norm[(size_t) i]));
+                res.setSample (ch, i, norm[(size_t) i] > 1e-3f ? out.getSample (ch, i) / norm[(size_t) i] : out.getSample (ch, i)); // (its start at full level: a hit stays a hit)
         return res;
     }
 
@@ -303,32 +305,93 @@ namespace
         return stretchAndPitch (in, outLen, 0.0, sr, true);
     }
 
-    // like a "beats" warp: cut the loop at each 16th (or 8th), pin every slice to its spot on the
-    // song's grid, and stretch each slice on its own, so hits land exactly in time
+    // like a "beats" warp: cut the loop where its hits are (on the 16th grid), pin every slice to its spot on
+    // the song's grid, and stretch each slice on its own, so hits land exactly in time. Where nothing new hits
+    // (a ringing hat, a reverb tail) it isn't cut at all. Each slice blends into the next over a few ms, using
+    // the sound just before the next hit, so nothing is chopped to silence: no clicks between slices.
     juce::AudioBuffer<float> beatStretch (const juce::AudioBuffer<float>& in, int outLen, int bars)
     {
         const int inLen = in.getNumSamples();
-        int slices = bars * 16;
-        while (slices > bars && inLen / slices < 4096 + 64) slices /= 2;
-        if (inLen / slices < 4096 + 64) return wsolaStretch (in, outLen);
+        if (inLen <= 0 || outLen <= 0 || bars <= 0) return wsolaStretch (in, outLen);
+        const int grid = bars * 16;
+        // how sharply the sound rises at each grid point: there's a hit there, or not
+        const int w = std::max (32, inLen / grid / 6);
+        auto energy = [&] (int from, int n)
+        {
+            double e = 0;
+            for (int i = std::max (0, from); i < std::min (inLen, from + n); ++i)
+                e += (double) in.getSample (0, i) * in.getSample (0, i) + (double) in.getSample (std::min (1, in.getNumChannels() - 1), i) * in.getSample (std::min (1, in.getNumChannels() - 1), i);
+            return e;
+        };
+        std::vector<int> cuts { 0 };
+        for (int k = 1; k < grid; ++k)
+        {
+            const int at = (int) ((juce::int64) inLen * k / grid);
+            // look a little either side: a hit played slightly early or late still counts
+            double best = 0;
+            for (int d = -w; d <= w; d += std::max (1, w / 4))
+                best = std::max (best, (energy (at + d, w) + 1e-9) / (energy (at + d - w, w) + 1e-9));
+            const int minGap = std::max (4096 + 64, inLen / grid);
+            if (best > 1.6 && at - cuts.back() >= minGap) cuts.push_back (k);
+        }
+        // grid index -> sample positions in and out
+        auto inAt = [&] (int k) { return (int) ((juce::int64) inLen * k / grid); };
+        auto outAt = [&] (int k) { return (int) ((juce::int64) outLen * k / grid); };
         juce::AudioBuffer<float> out (2, outLen);
         out.clear();
-        constexpr int fade = 96;
-        for (int k = 0; k < slices; ++k)
+        const int xf = std::min (256, std::max (32, inLen / grid / 8)); // the blend (about 5 ms)
+        for (size_t c = 0; c < cuts.size(); ++c)
         {
-            const int s0 = (int) ((juce::int64) inLen * k / slices), s1 = (int) ((juce::int64) inLen * (k + 1) / slices);
-            const int o0 = (int) ((juce::int64) outLen * k / slices), o1 = (int) ((juce::int64) outLen * (k + 1) / slices);
-            juce::AudioBuffer<float> piece (2, s1 - s0);
-            for (int ch = 0; ch < 2; ++ch) piece.copyFrom (ch, 0, in, ch, s0, s1 - s0);
-            auto fitted = wsolaStretch (piece, o1 - o0);
-            const int n = std::min (fitted.getNumSamples(), outLen - o0);
+            const int k0 = cuts[c], k1 = c + 1 < cuts.size() ? cuts[c + 1] : grid;
+            int s0 = inAt (k0);
+            const int s1 = inAt (k1), o0 = outAt (k0), o1 = outAt (k1);
+            // start the slice up to ~1 ms early or late, wherever its lead-in lines up best with what's already
+            // playing, so a ringing note blends in step instead of half-cancelling itself
+            if (c > 0 && o0 >= xf)
+            {
+                double best = -1e30; int bestD = 0;
+                const float* x = in.getReadPointer (0);
+                const float* o = out.getReadPointer (0);
+                for (int d = -48; d <= 48; ++d)
+                {
+                    if (s0 + d - xf < 0 || s0 + d >= inLen) continue;
+                    double cc = 0;
+                    for (int i = 0; i < xf; i += 2) cc += (double) o[o0 - xf + i] * x[s0 + d - xf + i];
+                    if (cc > best) { best = cc; bestD = d; }
+                }
+                s0 += bestD;
+            }
+            // the slice, plus what follows it (so its end isn't cut off mid-stretch), stretched by the slice's own ratio
+            // (the last slice carries on into the loop's start: it's a loop)
+            const int extra = std::min (inLen, 4096);
+            juce::AudioBuffer<float> piece (2, s1 - s0 + extra);
             for (int ch = 0; ch < 2; ++ch)
+            {
+                const float* x = in.getReadPointer (std::min (ch, in.getNumChannels() - 1));
+                float* y = piece.getWritePointer (ch);
+                for (int i = 0; i < s1 - s0 + extra; ++i) y[i] = x[(s0 + i) % inLen];
+            }
+            const double ratio = (double) (o1 - o0) / (double) (s1 - s0);
+            const auto fitted = (s1 - s0) == (o1 - o0) ? piece : wsolaStretch (piece, (int) std::round ((s1 - s0 + extra) * ratio), false);
+            const int n = std::min ({ fitted.getNumSamples(), outLen - o0, o1 - o0 });
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                float* o = out.getWritePointer (ch);
+                const float* f = fitted.getReadPointer (ch);
                 for (int i = 0; i < n; ++i)
                 {
-                    // short fade out at the slice end so the next one starts clean on its beat
-                    const float g = std::min (1.0f, (float) (n - i) / fade);
-                    out.getWritePointer (ch)[o0 + i] += fitted.getSample (ch, i) * g;
+                    // fades out over its last few ms while the next slice fades in (not for the loop's end: it wraps)
+                    // (equal-power: the two sounds differ, so a plain linear blend would dip in the middle)
+                    const float g = n - i >= xf ? 1.0f : std::sin (0.5f * juce::MathConstants<float>::pi * (float) (n - i) / (float) xf);
+                    o[o0 + i] += f[i] * g;
                 }
+                // the lead-in: the sound just before this slice's hit, fading in under the end of the slice before.
+                // the first slice's lead-in is the loop's own end, at the end of the output: the repeat runs straight on
+                const float* x = in.getReadPointer (std::min (ch, in.getNumChannels() - 1));
+                const int at = c > 0 ? o0 - xf : outLen - xf;
+                for (int i = 0; i < xf && at + i >= 0; ++i)
+                    o[at + i] += x[((s0 - xf + i) % inLen + inLen) % inLen] * std::sin (0.5f * juce::MathConstants<float>::pi * (float) i / (float) xf);
+            }
         }
         return out;
     }
@@ -695,9 +758,26 @@ namespace
             // clean edges wherever the sound doesn't simply carry on from the bar before / into the next
             const bool joinPrev = srcOf (b - 1) >= 0 && ! modified (b - 1) && ! modified (b) && src == (srcOf (b - 1) + 1) % std::max (1, part.loopBars) && src != 0;
             const bool joinNext = srcOf (b + 1) >= 0 && ! modified (b + 1) && ! modified (b) && srcOf (b + 1) == (src + 1) % std::max (1, part.loopBars) && srcOf (b + 1) != 0;
-            if (! joinPrev && ! swell) ramp (0, fade, true);
-            if (! joinNext && ! part.gapBars.count (b)) ramp (len - fade, fade, false);
+            // where the sound jumps (a new section, a chop): this bar fades out over its last few ms while the next
+            // fades in with the sound from just before its own start, so they blend instead of dipping to silence
+            const int xf = (int) (0.005 * sr);
+            const bool playsBefore = b > 0 && (srcOf (b - 1) >= 0 || part.swellBars.count (b - 1)) && ! part.gapBars.count (b - 1);
+            const bool playsAfter = b + 1 < nb && (srcOf (b + 1) >= 0 || part.swellBars.count (b + 1));
+            const bool leadIn = ! joinPrev && ! swell && playsBefore && a >= xf && ! part.chopBars.count (b);
+            if (! joinPrev && ! swell && ! leadIn) ramp (0, fade, true);
+            if (! joinNext && ! part.gapBars.count (b)) ramp (len - (playsAfter ? xf : fade), playsAfter ? xf : fade, false);
             for (int ch = 0; ch < 2; ++ch) out.addFrom (ch, a, seg, ch, 0, len);
+            if (leadIn)
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const float* in = loop.getReadPointer (ch);
+                    float* o = out.getWritePointer (ch);
+                    for (int i = 0; i < xf; ++i)
+                    {
+                        const int k = ((srcStart - xf + i) % loopLen + loopLen) % loopLen; // (bar 1's lead-in: the loop's end)
+                        o[a - xf + i] += in[k] * ((float) i / (float) xf);
+                    }
+                }
         }
 
         // filter sweeps: muffled intros that open up, outros that close down
@@ -1125,15 +1205,21 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
             if (! part.barSrc.empty())
                 renderArrangedLoop (part, loop, barSamples, buf, total, sr); // a produced arrangement, bar by bar
             else
-            for (int startBar : part.loopStartBars)
             {
-                const int at = (int) (startBar * barSamples);
-                for (int ch = 0; ch < 2; ++ch)
-                    for (int i = 0; i < ln && at + i < total; ++i)
-                    {
-                        const float fade = std::min ({ 1.0f, (float) i / 240.0f, (float) (ln - i) / 240.0f });
-                        buf.getWritePointer (ch)[at + i] += loop.getSample (ch, i) * fade;
-                    }
+                // back-to-back repeats run straight on (the loop's end leads into its start); only a repeat with
+                // nothing before or after it fades in or out
+                std::set<int> starts (part.loopStartBars.begin(), part.loopStartBars.end());
+                for (int startBar : part.loopStartBars)
+                {
+                    const int at = (int) (startBar * barSamples);
+                    const bool before = starts.count (startBar - part.loopBars) > 0, after = starts.count (startBar + part.loopBars) > 0;
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < ln && at + i < total; ++i)
+                        {
+                            const float fade = std::min ({ 1.0f, before ? 1.0f : (float) i / 240.0f, after ? 1.0f : (float) (ln - i) / 240.0f });
+                            buf.getWritePointer (ch)[at + i] += loop.getSample (ch, i) * fade;
+                        }
+                }
             }
         }
     }

@@ -1511,6 +1511,76 @@ static int rootNoteTest()
     return 0;
 }
 
+
+static int loopClickTest (const juce::File& dir)
+{
+    using namespace lp::song;
+    // a drum loop at 128 bpm, 2 bars: a kick on each beat, hats on 8ths, and a long ringing tone + noise under it all
+    const double sr = 48000.0, srcBpm = 128.0;
+    const int len = (int) std::round (2 * 4 * 60.0 / srcBpm * sr);
+    juce::AudioBuffer<float> b (2, len);
+    juce::Random rng (3);
+    for (int i = 0; i < len; ++i)
+    {
+        const double t = i / sr, beat = t * srcBpm / 60.0;
+        const double sinceKick = (beat - std::floor (beat)) * 60.0 / srcBpm, sinceHat = (beat * 2 - std::floor (beat * 2)) * 30.0 / srcBpm;
+        float v = (float) (0.6 * std::sin (2 * juce::MathConstants<double>::pi * 55 * sinceKick) * std::exp (-sinceKick * 12));
+        v += (rng.nextFloat() * 2 - 1) * 0.15f * (float) std::exp (-sinceHat * 25);
+        v += 0.12f * (float) std::sin (2 * juce::MathConstants<double>::pi * 440 * t) + (rng.nextFloat() * 2 - 1) * 0.03f; // the ringing bed
+        b.setSample (0, i, v); b.setSample (1, i, v);
+    }
+    dir.createDirectory();
+    const auto f = dir.getChildFile ("test_drum_loop_128.wav");
+    f.deleteFile();
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (f), sr, 2, 24, {}, 0));
+        w->writeFromAudioSampleBuffer (b, 0, len);
+    }
+    for (double bpm : { 128.0, 140.0, 110.0 })
+    {
+        Song song;
+        song.bpm = bpm;
+        song.sections.push_back ({ "verse", 0, 8, 0.6f });
+        Part part;
+        part.kind = PartKind::Loop;
+        part.name = "drum loop";
+        part.samplePath = f.getFullPathName();
+        part.loopBars = 2;
+        part.loopStartBars = { 0, 2, 4, 6 };
+        for (int round = 0; round < 2; ++round)
+        {
+            if (round == 1) { part.barSrc = { 0, 1, 0, 1, 1, 0, 0, 1 }; } // arranged, with jumps
+            juce::AudioBuffer<float> out;
+            if (! renderPart (song, part, {}, out)) { std::printf ("render failed\n"); return 1; }
+            // the bed never stops, so the level (1 ms steps) should never dip far below what's around it
+            const int step = 48, n = out.getNumSamples() / step;
+            std::vector<float> rms ((size_t) n);
+            for (int k = 0; k < n; ++k)
+            {
+                // the high end only (sample-to-sample change): the noise bed is steady there, the kick isn't in it
+                double e = 0;
+                for (int i = std::max (1, k * step); i < (k + 1) * step; ++i) { const double d = out.getSample (0, i) - out.getSample (0, i - 1); e += d * d; }
+                rms[(size_t) k] = (float) std::sqrt (e / step);
+            }
+            int dips = 0; float worst = 1.0f;
+            for (int k = 3; k + 3 < n && k < (int) (7.9 * 4 * 60.0 / bpm * sr / step); ++k)
+            {
+                const float around = std::min (rms[(size_t) k - 3], rms[(size_t) k + 3]);
+                if (around > 1e-4f) { const float r = rms[(size_t) k] / around; worst = std::min (worst, r); if (r < 0.5f) { ++dips; if ((dips <= 6 || r < 0.1f) && round == 0) std::printf ("   dip at %.3f sixteenths: %.0f%%\n", k * step / (15.0 / bpm * sr), r * 100.0f); } }
+            }
+            // and no jumps: the biggest sample-to-sample step, against the biggest anywhere in the source
+            float jump = 0;
+            for (int i = 1; i < out.getNumSamples() - 1; ++i) jump = std::max (jump, std::abs (out.getSample (0, i) - out.getSample (0, i - 1)));
+            float srcJump = 0;
+            for (int i = 1; i < len; ++i) srcJump = std::max (srcJump, std::abs (b.getSample (0, i) - b.getSample (0, i - 1)));
+            std::printf ("128 -> %.0f bpm, %s: dips %d, deepest %.0f%% of around, biggest step %.3f (source %.3f)\n", bpm,
+                         round == 0 ? "repeats" : "arranged", dips, worst * 100.0f, jump, srcJump);
+        }
+    }
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -1553,6 +1623,8 @@ int main (int argc, char** argv)
         return chordTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--livedrums")
         return liveDrumsTest();
+    if (argc > 2 && juce::String (argv[1]) == "--loopclicks")
+        return loopClickTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--rootnote")
         return rootNoteTest();
     if (argc > 1 && juce::String (argv[1]) == "--onenote")
