@@ -173,6 +173,8 @@ public:
                                                      "Organ", "Cello", "Your Sample" }; }
     static constexpr int kSampleChoice = 18;
     std::atomic<bool> hostPlaying { false };
+    bool canRecordMic() const; // only the standalone app has a mic input
+    static BusesProperties lpBuses();
     juce::String getSampleInfo() const { return sampleInfo; }
 
 private:

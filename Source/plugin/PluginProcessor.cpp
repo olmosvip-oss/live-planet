@@ -93,10 +93,21 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
     return l;
 }
 
+// Inside a DAW it's a plain instrument: stereo out, no audio input. (An instrument that asks for an input
+// isn't run by Logic at all: no sound, no tempo.) Only the standalone app takes your mic, for recording vocals;
+// in a DAW you record there and drop the file on the Sound page.
+juce::AudioProcessor::BusesProperties LivePlanetProcessor::lpBuses()
+{
+    auto b = BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true);
+    if (juce::PluginHostType::jucePlugInClientCurrentWrapperType == juce::AudioProcessor::wrapperType_Standalone)
+        b = b.withInput ("Mic in", juce::AudioChannelSet::stereo(), true);
+    return b;
+}
+
+bool LivePlanetProcessor::canRecordMic() const { return getTotalNumInputChannels() > 0; }
+
 LivePlanetProcessor::LivePlanetProcessor()
-    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)
-                                       // your mic (the standalone app's audio input, or a DAW's sidechain), for recording vocals
-                                       .withInput ("Mic in", juce::AudioChannelSet::stereo(), true)),
+    : AudioProcessor (lpBuses()),
       params (*this, nullptr, "LivePlanet", createLayout())
 {
     engine.setCitySeed (citySeed.load());
@@ -127,9 +138,10 @@ LivePlanetProcessor::~LivePlanetProcessor()
 
 bool LivePlanetProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
+    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo()) return false;
+    if (layouts.inputBuses.isEmpty()) return true;
     const auto in = layouts.getMainInputChannelSet();
-    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo()
-        && (in.isDisabled() || in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo());
+    return in.isDisabled() || in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo();
 }
 
 void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)

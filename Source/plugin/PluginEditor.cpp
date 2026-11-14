@@ -1711,7 +1711,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
             return;
         }
         PopupMenu m;
-        m.addItem (1, "Record now (from your mic)");
+        if (proc.canRecordMic()) m.addItem (1, "Record now (from your mic)");
+        else m.addItem (3, "Record in your DAW, then drop the file here", false, false);
         m.addItem (2, "From a file...");
         m.showMenuAsync (PopupMenu::Options().withTargetComponent (&chopButton), [this] (int r)
         {
