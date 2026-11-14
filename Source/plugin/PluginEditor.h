@@ -53,6 +53,9 @@ public:
     void drawTooltip (juce::Graphics&, const juce::String& text, int width, int height) override;
     juce::Rectangle<int> getTooltipBounds (const juce::String& tipText, juce::Point<int> screenPos, juce::Rectangle<int> parentArea) override;
     void applyThemeColours();   // the menus and boxes follow the colour you pick
+    void drawCallOutBoxBackground (juce::CallOutBox&, juce::Graphics&, const juce::Path&, juce::Image&) override;
+    int getCallOutBoxBorderSize (const juce::CallOutBox&) override { return 22; }
+    float getCallOutBoxCornerSize (const juce::CallOutBox&) override { return 12.0f; }
     void fillTextEditorBackground (juce::Graphics&, int, int, juce::TextEditor&) override {}
     void drawTextEditorOutline (juce::Graphics&, int, int, juce::TextEditor&) override {}
 
@@ -185,6 +188,42 @@ private:
 };
 
 // Song mode, right panel: drop a reference song, pick options, write a song
+// A small "?" next to something that might be confusing: click it for a short explanation in a bubble.
+class HelpDot : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    HelpDot (juce::String title, juce::String text) : heading (std::move (title)), body (std::move (text)) { setSize (16, 16); }
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    std::function<void()> onClick;  // instead of the bubble (the top bar's "?" replays the tour)
+    juce::String heading, body;
+};
+
+// The first-run tour: the screen dims, one part at a time is lit up with a short explanation, Next / Back.
+class Tour : public juce::Component
+{
+public:
+    struct Step { int page; std::function<juce::Rectangle<int>()> spot; juce::String title, text; };
+    Tour (std::vector<Step> s, std::function<void (int)> showPage, std::function<void()> done);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override {} // the tour comes first: clicks don't reach the plugin
+    bool keyPressed (const juce::KeyPress&) override;
+    void start() { go (0); }
+
+private:
+    void go (int i);
+    juce::Rectangle<int> card() const;
+    std::vector<Step> steps;
+    std::function<void (int)> setPage;
+    std::function<void()> onDone;
+    int at = 0;
+    juce::Rectangle<int> spotNow;
+    juce::TextButton back { "back" }, next { "next" };
+};
+
 class SongPanel : public juce::Component
 {
 public:
@@ -215,7 +254,14 @@ private:
     void showActivate (const juce::String& message);
 public:
     std::function<void()> onShowSources;
+    juce::Rectangle<int> heroArea() const { return hero; }
+    juce::Rectangle<int> settingsArea() const { return settings; }
 private:
+    HelpDot hTempo { "Follow my DAW's tempo", "On: the song is written at your project's tempo, so everything lines up when you drag it in. Off: it uses the tempo of the song you dropped, or the one you describe." },
+            hSounds { "Sounds", "My samples: only loops and sounds from your own sample folders. Mine + built-in: your samples, filled out with the plugin's own instruments where your library has nothing that fits. Built-in: only the plugin's own instruments." },
+            hPlay { "Play along with my DAW", "On: press play in your DAW and the plugin plays the song in time with it, from where your playhead is. Turn it off once you've dragged the tracks into your project, so you don't hear them twice." },
+            hNewKey { "New key", "Off: the song stays in your reference's key (or the key you pick above). On: it moves to a different key, so it feels less like the song you dropped." },
+            hLength { "Full song, sketch or 3 takes", "Full song: a whole arrangement, intro to outro. Sketch: a short idea, quick to write. 3 takes: three versions of the song to compare, and you can take a track from one into another." };
     juce::Rectangle<int> hero, settings;
 };
 
@@ -254,7 +300,13 @@ private:
 class StudioView : public juce::Component, public juce::TooltipClient
 {
 public:
-    explicit StudioView (LivePlanetProcessor& p) : proc (p) {}
+    explicit StudioView (LivePlanetProcessor& p) : proc (p) { for (auto* h : { &hFeel, &hTracks }) addAndMakeVisible (*h); }
+    void resized() override;
+    HelpDot hFeel { "Feel", "Shape the whole song at once (double-click any of them to undo it). Pump: everything ducks under the kick and swells back. "
+                            "Bright: brighter and airier, or darker and warmer. Sparse: the quieter sections (intro, verses, bridge) thin out to their core, so the choruses hit harder. "
+                            "Punch: drums and bass forward. Auto mix: the bass dips under each kick, chords and melodies stay out of the low end and make room for a voice." },
+            hTracks { "Your tracks", "Click a track's name to open it in Edit. M mutes, S solos, the padlock locks a track you love: 'write the rest again' then gives every unlocked track a new take. "
+                                     "Swap: another sound for the same part. Rev: backwards. - / +: pitch. x deletes the track (undo brings it back). The green bar by each volume shows what it's playing." };
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
@@ -501,6 +553,10 @@ private:
     std::map<juce::String, std::vector<float>> peakCache;
     int dragFrom = -1, dragTo = -1;
     juce::TextButton printFx { "FX: dry" }, bypassFx { "Bypass" };
+    HelpDot hFx { "Effects and dragging", "Bypass: hear this track without its effects; your settings stay. FX: printed means dragging the track gives it to you with its effects "
+                                          "(and the song's feel) recorded in, as you hear it; click it to get the dry track instead. Drag midi gives a played part's notes." },
+            hGrains { "Grains", "Re-plays the sample in tiny slices, in time with your song, for texture and movement. Grains: how much. Size: how long each slice is. "
+                                "Rate: how often they play. Chaos: how random. Position: where in the sample they come from." };
     FilePill dragMidi;          // a played part's notes as MIDI
     juce::String fxKey;                 // the track's effect settings last seen (to record them once you stop turning)
     juce::uint32 fxKeyAt = 0;
@@ -637,6 +693,13 @@ private:
     GrainView grainView;
     SourcesPanel sourcesPanel;
     FilePill pillMidi, pillChords, pillStems, pillMix, pillHelper, pillFolder;
+    // help: the tour (the first time, and from the "?" by the logo) and the "?"s by the drag buttons
+    HelpDot tourBtn { "", "" },
+            hMidi { "Drag MIDI", "Every MIDI part of the song in one drag: the drums, the 808, the hook, every played part, and the chords and bass your loops play (read from them). Drop it in your DAW and each part lands on its own MIDI track, with the song's sections as markers." },
+            hStems { "Drag stems or the mix", "Stems: every track as its own audio file, at bar 1, as you hear it (a track's effects are recorded in when it has any). Mix: the whole song in one file; with a master picked, it's the mastered version." },
+            hLocators { "Locators", "DAWs can't take locators from a dropped file, so this is a small helper device for Ableton Live Suite. Drag it onto any track once and press 'place song locators': your sections appear as named locators, and they follow when you change sections here. 'build song tracks' brings every track into Live." };
+    std::unique_ptr<Tour> tour;
+    void startTour();
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;
     juce::TextButton loadButton { "Load sample" };

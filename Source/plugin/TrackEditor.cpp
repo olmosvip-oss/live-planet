@@ -32,6 +32,8 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
         repaint();
     };
     addAndMakeVisible (bypassFx);
+    addAndMakeVisible (hFx);
+    addAndMakeVisible (hGrains);
     dragMidi.filesToDrag = [this] { const auto f = proc.songJob.partMidi (track); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
     dragMidi.setTooltip ("This part's notes as MIDI: drop it on a MIDI track to play it with your own instrument");
     addChildComponent (dragMidi);
@@ -307,6 +309,12 @@ void TrackEditor::resized()
     printFx.setBounds (0, rows.getY() + 4 + bh, 100, bh - 6);
     dragTrack.setBounds (0, rows.getY() + 4 + 2 * bh, 100, bh - 6);
     dragMidi.setBounds (0, rows.getY() + 4 + 3 * bh, 100, bh - 6);
+    hFx.setTopLeftPosition (104, rows.getY() + 4 + (bh - 6) / 2 - 8);
+    {
+        // by the "Grains" title (the second row)
+        const int y = (int) screen().getBottom() + 30 + (getHeight() - (int) screen().getBottom() - 30) / 2;
+        hGrains.setTopLeftPosition (64, y + 10);
+    }
     for (int r = 0; r < 2; ++r)
     {
         std::vector<Dial*> inRow;
@@ -344,6 +352,7 @@ void TrackEditor::paint (Graphics& g)
             const auto nm = String (tr0name).toLowerCase();
             want = ! showingDrums() && (nm.contains ("drum") || nm.contains ("perc"));
         }
+        else if (c == &hGrains) want = ! big;
         else if (big && std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s && d->row == 1; }))
             want = false;
         if (c->isVisible() != want) c->setVisible (want);

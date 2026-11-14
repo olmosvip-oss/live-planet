@@ -62,6 +62,7 @@ target_sources(LivePlanet PRIVATE
     Source/plugin/TrackEditor.cpp
     Source/plugin/DrumGrid.cpp
     Source/plugin/NoteGrid.cpp
+    Source/plugin/Help.cpp
     Source/plugin/GrainView.cpp
     Source/plugin/SourcesPanel.cpp
     Source/plugin/WeatherService.cpp)

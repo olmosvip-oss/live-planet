@@ -16,4 +16,20 @@ inline juce::File appFolder()
     }
     return folder;
 }
+
+// small settings kept for this computer (not per project), e.g. that you've done the tour
+inline juce::var setting (const juce::String& key, const juce::var& otherwise = {})
+{
+    const auto v = juce::JSON::parse (appFolder().getChildFile ("settings.json"));
+    return v.isObject() && v.hasProperty (key) ? v[key.toRawUTF8()] : otherwise;
+}
+inline void setSetting (const juce::String& key, const juce::var& value)
+{
+    const auto f = appFolder().getChildFile ("settings.json");
+    auto v = juce::JSON::parse (f);
+    if (! v.isObject()) v = juce::var (new juce::DynamicObject());
+    v.getDynamicObject()->setProperty (key, value);
+    f.getParentDirectory().createDirectory();
+    f.replaceWithText (juce::JSON::toString (v));
+}
 }

@@ -112,6 +112,16 @@ void LivePlanetLookAndFeel::applyThemeColours()
     setColour (ComboBox::backgroundColourId, Colours::transparentBlack);
 }
 
+void LivePlanetLookAndFeel::drawCallOutBoxBackground (CallOutBox&, Graphics& g, const Path& path, Image&)
+{
+    g.setColour (Colours::black.withAlpha (0.35f));
+    g.fillPath (path, AffineTransform::translation (0.0f, 3.0f));
+    g.setColour (th->bodyDark.interpolatedWith (Colour (0xff101014), 0.55f));
+    g.fillPath (path);
+    g.setColour (Colours::white.withAlpha (0.12f));
+    g.strokePath (path, PathStrokeType (1.0f));
+}
+
 void LivePlanetLookAndFeel::drawPopupMenuBackground (Graphics& g, int w, int h)
 {
     auto r = Rectangle<float> (0.0f, 0.0f, (float) w, (float) h);
@@ -815,6 +825,7 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     addChildComponent (samplesOnly);
     samplesOnlyAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "samplesonly", samplesOnly);
     addAndMakeVisible (dawTempo);
+    for (auto* h : { &hTempo, &hSounds, &hPlay, &hNewKey, &hLength }) addAndMakeVisible (*h);
     dawTempo.setWantsKeyboardFocus (false);
     dawTempo.setTooltip ("write the song at your project's tempo so every loop lines up");
     dawTempoAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "dawtempo", dawTempo);
@@ -874,6 +885,13 @@ void SongPanel::resized()
         t->setBounds (s.removeFromTop (25));
     s.removeFromTop (6);
     length.setBounds (s.removeFromTop (28));
+    // the "?"s: right after each setting's name
+    auto after = [] (juce::Component& c, const String& text) { return c.getX() + (int) GlyphArrangement::getStringWidth (font (13.5f, lp::ui::Medium), text) + 8; };
+    hTempo.setTopLeftPosition (after (dawTempo, dawTempo.getButtonText()), dawTempo.getY() + (dawTempo.getHeight() - 16) / 2);
+    hPlay.setTopLeftPosition (after (playWith, playWith.getButtonText()), playWith.getY() + (playWith.getHeight() - 16) / 2);
+    hNewKey.setTopLeftPosition (after (newKey, newKey.getButtonText()), newKey.getY() + (newKey.getHeight() - 16) / 2);
+    hSounds.setTopLeftPosition (soundsFrom.getX() - 64 + (int) GlyphArrangement::getStringWidth (font (13.5f, lp::ui::Medium), "Sounds") + 6, soundsFrom.getY() + 6);
+    hLength.setTopLeftPosition (length.getRight() - 8, length.getY() - 8);
     style->setBounds (0, hero.getBottom() + 16, r.getWidth(), 34);
 }
 
@@ -1722,8 +1740,60 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         }
     addMouseListener (this, true);
 
+    // help: the tour, and the "?"s
+    tourBtn.onClick = [this] { startTour(); };
+    tourBtn.setTooltip ("Take the tour again");
+    for (auto* h : { &tourBtn, &hMidi, &hStems, &hLocators }) addAndMakeVisible (*h);
+    // the first time on this computer: the tour, before anything else
+    if (! (bool) lp::setting ("tourDone", false))
+        MessageManager::callAsync ([safe = Component::SafePointer<LivePlanetEditor> (this)] { if (safe != nullptr) safe->startTour(); });
+
     timerCallback();
     startTimerHz (30);
+}
+
+void LivePlanetEditor::startTour()
+{
+    auto inSong = [this] (Rectangle<int> r) { return r + songPanel.getPosition(); };
+    std::vector<Tour::Step> steps {
+        { Write, nullptr, "Welcome to Loopwright",
+          "Loopwright writes complete, produced songs from your own samples, in your project's tempo and key, and lets you change every part of them. "
+          "This takes about a minute: click next (or press the right arrow) to go through it." },
+        { Write, [=] { auto r = inSong (songPanel.settingsArea()); return r.removeFromBottom (44); }, "1. Your samples",
+          "First, show it where your samples live: ADD FOLDER for each folder of sounds and packs you have. "
+          "It looks through them once (SCAN does it again after you add new ones), and SOURCES lets you choose which packs it may use." },
+        { Write, [=] { return inSong (songPanel.heroArea()); }, "2. Start a song",
+          "Drop a song you love here: it learns its tempo, key, feel and energy (never its melody). "
+          "Or just describe what you want, like \"dark trap in G minor with flute\". Then press Write a song." },
+        { Write, [=] { return inSong (songPanel.settingsArea()); }, "3. How it's written",
+          "Pick a key (or leave it on auto), whether it follows your DAW's tempo, and where the sounds come from: only your samples, "
+          "your samples with the plugin's instruments, or only built-in. Look for the ? marks: click one for a short explanation." },
+        { Write, [=] { return cardTimeline; }, "4. Your song",
+          "Its sections, intro to outro. Drag one to move it, drag its edge to make it longer, right-click it to make it hit harder, "
+          "a breakdown, or a build. The buttons along the bottom drag the MIDI, the stems, the mix or the locators into your DAW." },
+        { Studio, [=] { return studioView.getBounds(); }, "5. Studio",
+          "Every track with its mixer. Swap a sound for another, lock the ones you love and write the rest again, x deletes a track, "
+          "and + add instrument brings in a hook, an 808, your own vocal and more. The FEEL row shapes the whole song at once." },
+        { Edit, [=] { return trackEditor.getBounds(); }, "6. Edit",
+          "One track at a time: its sample, its own effects and its grains. Drums, 808s and hooks show their notes on a grid: "
+          "click to add, drag to move, and hear it as you go." },
+        { Sound, [=] { return cardInstrument; }, "7. Sound",
+          "Play any sound on your keyboard: pick one of your one-shots or drop a sample, or drop your own vocal and it's chopped onto the keys." },
+        { Write, [=] { return tourBtn.getBounds().expanded (10, 8); }, "That's it",
+          "Changed something you don't like? Undo is in the top bar (or Cmd+Z). This ? takes the tour again any time. Have fun." },
+    };
+    tour = std::make_unique<Tour> (std::move (steps), [this] (int pg) { setPage (pg); },
+                                   [this]
+                                   {
+                                       lp::setSetting ("tourDone", true);
+                                       MessageManager::callAsync ([safe = Component::SafePointer<LivePlanetEditor> (this)] { if (safe != nullptr) safe->tour.reset(); });
+                                       if (tour != nullptr) tour->setVisible (false);
+                                       setPage (Write);
+                                   });
+    addAndMakeVisible (*tour);
+    tour->setBounds (getLocalBounds());
+    tour->toFront (true);
+    tour->start();
 }
 
 LivePlanetEditor::~LivePlanetEditor()
@@ -1799,6 +1869,7 @@ void LivePlanetEditor::setPage (int p)
     studioView.setVisible (studio && haveSong);
     for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         pill->setVisible (write || studio);
+    for (auto* h : { &hMidi, &hStems, &hLocators }) h->setVisible (write || studio);
     // sound: the instrument and the knobs
     keys.setVisible (sound);
     presetBrowser.setVisible (sound);
@@ -2281,6 +2352,8 @@ void LivePlanetEditor::resized()
     auto k = [this] (const char* id) { return &knobById[id]->slider; };
     const int W = getWidth(), M = 28;
     themeDots.setBounds (W - M - (lp::ui::numThemes * 22 + 4), kH - 34, lp::ui::numThemes * 22 + 4, 24);
+    tourBtn.setBounds (210, 26, 18, 18);  // right after the logo's beta badge
+    if (tour != nullptr) tour->setBounds (getLocalBounds());
     sourcesPanel.setBounds (getLocalBounds());
 
     // ---- write: the hero + settings (song panel), the song, the drag buttons
@@ -2297,6 +2370,9 @@ void LivePlanetEditor::resized()
             pill->setBounds (px, y + 4, pw - 8, 36);
             px += pw;
         }
+        hMidi.setTopLeftPosition (pillMidi.getRight() - 24, pillMidi.getY() + 10);
+        hStems.setTopLeftPosition (pillStems.getRight() - 24, pillStems.getY() + 10);
+        hLocators.setTopLeftPosition (pillHelper.getRight() - 24, pillHelper.getY() + 10);
     }
     studioView.setBounds (M, 84, W - 2 * M, 432);
     studioMode.setBounds (cardTimeline.getRight() - 18 - 92, cardTimeline.getY() + 12, 92, 26);

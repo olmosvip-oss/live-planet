@@ -133,7 +133,7 @@ void StudioView::paint (Graphics& g)
     g.setColour (dim);
     auto head = Rectangle<float> (12.0f, 8.0f, b.getWidth() - 24.0f, 16.0f);
     g.drawText ("TRACKS", head.withTrimmedLeft (6.0f), Justification::centredLeft, false);
-    g.drawText ("CLICK A TRACK TO EDIT IT", head.withTrimmedLeft (90.0f).withWidth (260.0f), Justification::centredLeft, false);
+    g.drawText ("CLICK A TRACK TO EDIT IT", head.withTrimmedLeft (110.0f).withWidth (260.0f), Justification::centredLeft, false);
     if (! st.tracks.empty())
     {
         // ---- the song's feel, for the whole song at once
@@ -503,4 +503,10 @@ String StudioView::getTooltip()
     if (autoMixBounds().contains (p))
         return "Auto mix: the bass dips a little under each kick, chords and melodies stay out of the low end, and they make room for a voice when one plays";
     return {};
+}
+
+void StudioView::resized()
+{
+    hFeel.setTopLeftPosition (18 + (int) GlyphArrangement::getStringWidth (lp::ui::mono (10.0f, true, 0.14f), "FEEL") + 8, getHeight() - 44);
+    hTracks.setTopLeftPosition (18 + (int) GlyphArrangement::getStringWidth (lp::ui::mono (10.0f, false, 0.14f), "TRACKS") + 8, 8);
 }
