@@ -831,7 +831,7 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     dawTempoAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "dawtempo", dawTempo);
     write.onClick = [this]
     {
-        if (! lp::license::canWrite()) { showActivate ("Your trial has ended. Paste your license code to keep writing songs."); return; }
+        if (! lp::license::canWrite()) { showActivate ("Your 7-day trial has ended. Loopwright is " + lp::license::priceLine() + "\n\nPaste your license code to keep writing songs."); return; }
         proc.songPrompt = promptBox.getText();
         proc.songPromptIsAuto = autoDescription.isNotEmpty() && promptBox.getText().trim() == autoDescription;
         proc.makeSong (full, newKey.getToggleState(), takes3 ? 3 : 1);
@@ -1083,10 +1083,13 @@ void SongPanel::showActivate (const String& message)
     auto* w = new AlertWindow ("Loopwright license", message, MessageBoxIconType::NoIcon, this);
     w->addTextEditor ("code", {}, "License code");
     w->addButton ("Activate", 1, KeyPress (KeyPress::returnKey));
+    if (lp::license::buyUrl().isNotEmpty() && lp::license::activatedTo().isEmpty())
+        w->addButton ("Buy " + lp::license::price(), 2);
     w->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
     SafePointer<SongPanel> self (this);
     w->enterModalState (true, ModalCallbackFunction::create ([self, w] (int r)
     {
+        if (r == 2) URL (lp::license::buyUrl()).launchInDefaultBrowser();
         if (r == 1)
         {
             const auto code = w->getTextEditorContents ("code");
@@ -1128,7 +1131,10 @@ void SongPanel::mouseUp (const MouseEvent& e)
     if (licenseLink.contains (e.position))
     {
         const auto owner = lp::license::activatedTo();
-        showActivate (owner.isNotEmpty() ? "Licensed to " + owner + ". Thank you!" : "Paste your license code.");
+        const int left = lp::license::trialDaysLeft();
+        showActivate (owner.isNotEmpty() ? "Licensed to " + owner + ". Thank you!"
+                      : (left > 0 ? "You're on the free trial: " + String (left) + (left == 1 ? " day" : " days") + " left.\n" : String())
+                        + "Loopwright is " + lp::license::priceLine() + "\n\nPaste your license code to activate.");
         return;
     }
     if (folderLink.contains (e.position))

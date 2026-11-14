@@ -29,6 +29,7 @@ Licensing is off until you switch it on, so test builds stay free.
    `build/Keygen_artefacts/Release/Keygen --new my-keys`
 2. Build the plugin with your public key (or put it in a GitHub secret and pass it in the workflow):
    `cmake -B build -DLOOPWRIGHT_PUBLIC_KEY="$(cat my-keys/public.key)"`
-   Buyers then get a 14-day trial; after that, **Write a song** asks for a code.
+   Buyers then get a 7-day trial; after that, **Write a song** asks for a code.
+   Price: $39 one-time (the launch price), yours forever, free updates. Add `-DLOOPWRIGHT_BUY_URL=https://your-store/checkout` and the license window gets a **Buy $39** button.
 3. For each sale: `Keygen --make "Buyer Name" my-keys/private.key` and email them the `LW1-...` code.
    They paste it via the license link in Settings. A store like Gumroad, Lemon Squeezy or Paddle can send codes for you.

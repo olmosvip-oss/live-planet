@@ -18,7 +18,15 @@ inline juce::String publicKey() { return {}; }
 #endif
 
 inline bool required() { return publicKey().isNotEmpty(); }
-constexpr int trialDays = 14;
+constexpr int trialDays = 7;
+// what it costs: one payment, yours forever, free updates (the launch price; it goes up later)
+inline juce::String price() { return "$39"; }
+inline juce::String priceLine() { return price() + " one-time. Yours forever, with free updates."; }
+#ifdef LOOPWRIGHT_BUY_URL
+inline juce::String buyUrl() { return LOOPWRIGHT_BUY_URL; }
+#else
+inline juce::String buyUrl() { return {}; }
+#endif
 
 // the number a code signs: a hash of who it's for
 inline juce::BigInteger digestOf (const juce::String& owner)

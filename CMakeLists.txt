@@ -98,11 +98,16 @@ clap_juce_extensions_plugin(TARGET LivePlanet
 endif()
 
 # Command-line tool that renders example skies to WAV files (for testing the sound)
-# selling: build with -DLOOPWRIGHT_PUBLIC_KEY="$(cat public.key)" to require a license (14-day trial).
+# selling: build with -DLOOPWRIGHT_PUBLIC_KEY="$(cat public.key)" to require a license (7-day trial).
 # left empty (the default), every build is fully unlocked.
 set(LOOPWRIGHT_PUBLIC_KEY "" CACHE STRING "public key for license codes (empty = no licensing)")
 if(LOOPWRIGHT_PUBLIC_KEY)
     target_compile_definitions(LivePlanet PRIVATE LOOPWRIGHT_PUBLIC_KEY="${LOOPWRIGHT_PUBLIC_KEY}")
+endif()
+# where "Buy" in the license window goes (your store's checkout page)
+set(LOOPWRIGHT_BUY_URL "" CACHE STRING "checkout page for the Buy button (empty = no Buy button)")
+if(LOOPWRIGHT_BUY_URL)
+    target_compile_definitions(LivePlanet PRIVATE LOOPWRIGHT_BUY_URL="${LOOPWRIGHT_BUY_URL}")
 endif()
 
 # makes license codes (for you, the seller; not shipped)
