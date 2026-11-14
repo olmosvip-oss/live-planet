@@ -1651,6 +1651,91 @@ static int feelTest (const juce::File& dir)
     return 0;
 }
 
+
+// vocal chops from a realistic vocal: scoops into notes, vibrato, a syllable that changes note,
+// a harmony, a breath. Every chop the hook plays should land on the hook's note.
+static int chopHardTest (const juce::File& dir)
+{
+    using namespace lp::song;
+    const double sr = 48000.0, tau = juce::MathConstants<double>::twoPi;
+    dir.createDirectory();
+    auto vf = dir.getChildFile ("real vocal.wav");
+    {
+        juce::AudioBuffer<float> v (2, (int) (sr * 6.0));
+        v.clear();
+        juce::Random rng (9);
+        struct Syl { double midi; int kind; }; // 0 scoop + hold, 1 vibrato, 2 two notes, 3 harmony, 4 breath
+        const Syl syl[] = { { 57, 0 }, { 59, 1 }, { 60, 2 }, { 62, 0 }, { 64, 3 }, { 0, 4 }, { 65, 1 }, { 67, 0 }, { 69, 1 }, { 62, 2 }, { 60, 0 } };
+        double t = 0.1;
+        for (auto& sy : syl)
+        {
+            const int a = (int) (t * sr), n = (int) (0.42 * sr);
+            double ph = 0, ph2 = 0;
+            for (int i = 0; i < n; ++i)
+            {
+                const double ts = i / sr;
+                const double env = std::min (1.0, i / (0.015 * sr)) * std::min (1.0, (n - i) / (0.05 * sr));
+                double m = sy.midi;
+                if (sy.kind == 0) m -= 2.0 * std::max (0.0, 1.0 - ts / 0.09);            // scoops up into the note
+                if (sy.kind == 1) m += 0.4 * std::sin (tau * 5.5 * ts) * std::min (1.0, ts / 0.15); // vibrato after the start
+                if (sy.kind == 2 && ts > 0.23) m += 2.0;                                  // moves up a tone halfway
+                const double hz = 440.0 * std::pow (2.0, (m - 69.0) / 12.0);
+                ph += tau * hz / sr;
+                double x = std::sin (ph) + 0.5 * std::sin (2 * ph) + 0.3 * std::sin (3 * ph) + 0.15 * std::sin (4 * ph);
+                if (sy.kind == 3) { ph2 += tau * hz * std::pow (2.0, 4.0 / 12.0) / sr; x += 0.9 * (std::sin (ph2) + 0.5 * std::sin (2 * ph2)); } // a third above
+                if (sy.kind == 4) x = (rng.nextFloat() * 2 - 1) * 1.2;                     // a breath
+                const float y = (float) (0.22 * env * x);
+                v.setSample (0, a + i, y); v.setSample (1, a + i, y);
+            }
+            t += 0.5;
+        }
+        vf.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (vf), sr, 2, 24, {}, 0));
+        w->writeFromAudioSampleBuffer (v, 0, v.getNumSamples());
+    }
+    int right = 0, total = 0, worst = 0;
+    for (int seed : { 3, 4, 5, 6 })
+    {
+        lp::Weather sky; sky.temperatureC = 18;
+        Options o; o.seed = (juce::uint32) seed; o.full = false;
+        Song song = generate (Profile {}, sky, o);
+        std::vector<chords::Chord> cl;
+        for (auto& p : song.parts)
+            if (p.kind == PartKind::Chords)
+                for (int b = 0; b < song.totalBars() * 2; ++b)
+                {
+                    std::array<float, 12> pcs {};
+                    for (auto& n : p.notes) if (n.beat <= b * 2.0 + 1.0 && n.beat + n.length > b * 2.0 + 1.0) pcs[(size_t) (n.pitch % 12)] += 1.0f;
+                    auto got = chords::read ({ pcs }, {}, song.key, song.minor, 2.0);
+                    if (! got.empty()) { auto c = got[0]; c.beat = b * 2.0; c.length = 2.0; cl.push_back (c); }
+                }
+        juce::String where;
+        Part hook;
+        hook.kind = PartKind::Melody; hook.name = "vocal chops"; hook.samplePath = vf.getFullPathName();
+        hook.notes = hook::write (song, cl, (juce::uint32) seed * 7, true, where);
+        juce::AudioBuffer<float> out;
+        if (! renderPart (song, hook, {}, out)) { std::printf ("render FAILED\n"); return 1; }
+        const double spb = sr * 60.0 / song.bpm;
+        for (size_t k = 0; k < hook.notes.size(); ++k)
+        {
+            const auto& n = hook.notes[k];
+            const int a = (int) (n.beat * spb), len = std::min ((int) (n.length * spb), (int) (0.4 * sr));
+            if (len < (int) (0.15 * sr) || a + len > out.getNumSamples()) continue;
+            juce::AudioBuffer<float> seg (2, len);
+            for (int ch = 0; ch < 2; ++ch) seg.copyFrom (ch, 0, out, ch, a, len);
+            if (seg.getRMSLevel (0, 0, len) < 1e-4f) continue;
+            const auto r = lp::song::onenote::read (seg, sr);
+            if (r.midi <= 0) continue;
+            double d = std::fmod (std::abs (r.midi - n.pitch), 12.0); d = std::min (d, 12.0 - d);
+            ++total;
+            if (d < 0.5) ++right; else worst = std::max (worst, (int) std::lround (d * 100));
+        }
+    }
+    std::printf ("vocal chops on the right note: %d of %d (%.0f%%), worst miss %d cents\n", right, total, 100.0 * right / std::max (1, total), worst);
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -1693,6 +1778,8 @@ int main (int argc, char** argv)
         return chordTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--livedrums")
         return liveDrumsTest();
+    if (argc > 2 && juce::String (argv[1]) == "--chophard")
+        return chopHardTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--feel")
         return feelTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--loopclicks")

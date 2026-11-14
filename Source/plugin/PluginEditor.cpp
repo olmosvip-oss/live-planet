@@ -1173,13 +1173,13 @@ SongView::SongView (LivePlanetProcessor& p) : proc (p)
     {
         if (selected < 0 || selected >= (int) draft.size()) return;
         draft.insert (draft.begin() + selected + 1, draft[(size_t) selected]);
-        ++selected; dirty = true; repaint();
+        ++selected; dirty = true; lastShapeEdit = Time::getMillisecondCounter(); repaint();
     };
     removeBtn.onClick = [this]
     {
         if (selected < 0 || selected >= (int) draft.size() || draft.size() <= 1) return;
         draft.erase (draft.begin() + selected);
-        selected = std::min (selected, (int) draft.size() - 1); dirty = true; repaint();
+        selected = std::min (selected, (int) draft.size() - 1); dirty = true; lastShapeEdit = Time::getMillisecondCounter(); repaint();
     };
     undoBtn.onClick = [this] { dirty = false; version = -1; refresh(); };
     rebuildBtn.onClick = [this]
@@ -1201,11 +1201,15 @@ void SongView::refresh()
         waiting = false;
         if (selected >= (int) draft.size()) selected = -1;
     }
+    // your new shape is made by itself a moment after you stop changing it (not while you're still dragging)
+    if (dirty && ! waiting && drag == Drag::None && Time::getMillisecondCounter() - lastShapeEdit > 1100)
+        rebuildBtn.onClick();
     const bool edit = st.haveSong;
     for (auto* b : { &addBtn, &dupBtn, &removeBtn }) if (b->isVisible() != edit) b->setVisible (edit);
     dupBtn.setEnabled (selected >= 0);
     removeBtn.setEnabled (selected >= 0 && draft.size() > 1);
-    for (auto* b : { &undoBtn, &rebuildBtn }) if (b->isVisible() != (edit && dirty)) b->setVisible (edit && dirty);
+    if (rebuildBtn.isVisible()) rebuildBtn.setVisible (false); // (it rebuilds by itself now)
+    if (undoBtn.isVisible() != (edit && dirty)) undoBtn.setVisible (edit && dirty);
     repaint();
 }
 
@@ -1283,7 +1287,7 @@ void SongView::showAddMenu()
         lp::song::arrange::Item it { src, st.song.sections[(size_t) src].bars, name };
         const int at = selected >= 0 ? selected + 1 : (int) draft.size();
         draft.insert (draft.begin() + at, it);
-        selected = at; dirty = true; repaint();
+        selected = at; dirty = true; lastShapeEdit = Time::getMillisecondCounter(); repaint();
     });
 }
 
@@ -1312,13 +1316,20 @@ void SongView::mouseDown (const MouseEvent& e)
             const String name = draft[(size_t) i].name;
             PopupMenu m;
             m.addSectionHeader (name.toUpperCase());
-            m.addItem (1, "Hit harder (everything plays, crash, busier hats)", ! dirty);
-            m.addItem (2, "Breakdown (drums and bass drop out, the rest muffled)", ! dirty);
-            m.addItem (3, "Build into the next section (snare roll, rising filter, a beat of silence)", ! dirty);
-            if (dirty) m.addItem (4, "(wait a moment: your arrangement change is being made)", false);
+            m.addItem (1, "Hit harder (everything plays, crash, busier hats)");
+            m.addItem (2, "Breakdown (drums and bass drop out, the rest muffled)");
+            m.addItem (3, "Build into the next section (snare roll, rising filter, a beat of silence)");
+            if (dirty) m.addSectionHeader ("your new shape is rebuilt first");
             m.showMenuAsync (PopupMenu::Options(), [this, i] (int r)
             {
-                if (r >= 1 && r <= 3) proc.songJob.varySection (i, r - 1);
+                if (r < 1 || r > 3) return;
+                // a shape you changed but haven't rebuilt: rebuild it first, then change the section (in that order)
+                if (dirty)
+                {
+                    proc.songJob.rearrange (draft);
+                    dirty = false; waiting = true; repaint();
+                }
+                proc.songJob.varySection (i, r - 1);
             });
             selected = i;
             repaint();
@@ -1346,7 +1357,7 @@ void SongView::mouseDrag (const MouseEvent& e)
     {
         // whole bars, at least one, at most 64
         const int bars = jlimit (1, 64, dragOrigBars + (int) std::round ((e.position.x - dragStartX) / pxPerBarAtStart));
-        if (bars != draft[(size_t) dragIndex].bars) { draft[(size_t) dragIndex].bars = bars; dirty = true; }
+        if (bars != draft[(size_t) dragIndex].bars) { draft[(size_t) dragIndex].bars = bars; dirty = true; lastShapeEdit = Time::getMillisecondCounter(); }
         repaint();
     }
     else if (drag == Drag::Move && dragIndex >= 0 && e.getDistanceFromDragStartX() != 0)
@@ -1355,12 +1366,12 @@ void SongView::mouseDrag (const MouseEvent& e)
         if (dragIndex + 1 < (int) draft.size() && e.position.x > blockRect (dragIndex + 1).getCentreX())
         {
             std::swap (draft[(size_t) dragIndex], draft[(size_t) dragIndex + 1]);
-            ++dragIndex; selected = dragIndex; dirty = true;
+            ++dragIndex; selected = dragIndex; dirty = true; lastShapeEdit = Time::getMillisecondCounter();
         }
         else if (dragIndex > 0 && e.position.x < blockRect (dragIndex - 1).getCentreX())
         {
             std::swap (draft[(size_t) dragIndex], draft[(size_t) dragIndex - 1]);
-            --dragIndex; selected = dragIndex; dirty = true;
+            --dragIndex; selected = dragIndex; dirty = true; lastShapeEdit = Time::getMillisecondCounter();
         }
         repaint();
     }
@@ -1395,7 +1406,7 @@ void SongView::paint (Graphics& g)
         const double secs = totalBars * 4.0 * 60.0 / std::max (40.0, st.song.bpm);
         title = st.song.title + "  \xc2\xb7  " + String (roundToInt (st.song.bpm)) + " BPM  \xc2\xb7  " + lp::noteName (st.song.key)
               + (st.song.minor ? " MINOR" : " MAJOR") + "  \xc2\xb7  " + timeText (secs) + "  \xc2\xb7  " + String (totalBars) + " BARS"
-              + (dirty ? "  \xc2\xb7  NEW SHAPE: REBUILD TO HEAR IT" : "  \xc2\xb7  RIGHT-CLICK A SECTION TO CHANGE IT");
+              + (dirty ? "  \xc2\xb7  NEW SHAPE: MAKING IT IN A MOMENT" : waiting ? "  \xc2\xb7  REBUILDING..." : "  \xc2\xb7  RIGHT-CLICK A SECTION TO CHANGE IT");
     }
     else if (st.haveReference)
     {

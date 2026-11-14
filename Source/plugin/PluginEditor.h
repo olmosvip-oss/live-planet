@@ -290,6 +290,7 @@ private:
     LivePlanetProcessor& proc;
     std::vector<lp::song::arrange::Item> draft; // the structure you're shaping
     bool dirty = false, waiting = false;
+    juce::uint32 lastShapeEdit = 0;
     int version = -1, selected = -1, dragIndex = -1, dragOrigBars = 0;
     enum class Drag { None, Move, Resize } drag = Drag::None;
     float dragStartX = 0.0f, pxPerBarAtStart = 1.0f;

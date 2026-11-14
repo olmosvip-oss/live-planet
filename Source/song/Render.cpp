@@ -1122,16 +1122,29 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
                     starts.push_back ((int) k * hop);
             }
             if (starts.size() < 3) for (int i = 0; i + (int) (0.3 * sr) < n; i += (int) (0.3 * sr)) starts.push_back (i); // no clear syllables: even slices
-            for (size_t k = 0; k < starts.size() && slices.size() < 24; ++k)
+            // each syllable's note, heard over the part of it a chop plays (its first ~0.35 s). Only syllables that
+            // hold one clear note are used: a slide to another note, a harmony or a breath would land off the hook's
+            // notes, so they're left out (with a looser rule only if too few pass)
+            struct Heard { int a0, len; lp::song::onenote::Reading r; };
+            std::vector<Heard> heard;
+            for (size_t k = 0; k < starts.size() && heard.size() < 40; ++k)
             {
                 const int a0 = starts[k];
                 const int a1 = std::min ({ n, k + 1 < starts.size() ? starts[k + 1] : n, a0 + (int) (0.6 * sr) });
                 if (a1 - a0 < (int) (0.17 * sr)) continue;
-                std::vector<float> mono ((size_t) (a1 - a0));
-                for (int i = a0; i < a1; ++i) mono[(size_t) (i - a0)] = 0.5f * (src.getSample (0, i) + src.getSample (1, i));
-                const double hz = lp::sources::detectPitch (mono, sr);
-                if (hz <= 0.0) continue; // breaths and noises don't sing
-                slices.push_back ({ a0, a1 - a0, 69.0 + 12.0 * std::log2 (hz / 440.0) });
+                const int look = std::min (a1 - a0, (int) (0.38 * sr));
+                juce::AudioBuffer<float> seg (2, look);
+                for (int ch = 0; ch < 2; ++ch) seg.copyFrom (ch, 0, src, std::min (ch, src.getNumChannels() - 1), a0, look);
+                const auto r = lp::song::onenote::read (seg, sr);
+                if (r.midi > 0.0) heard.push_back ({ a0, a1 - a0, r });
+            }
+            for (float strict : { 1.0f, 0.0f })
+            {
+                for (auto& h : heard)
+                    if (slices.size() < 24 && h.r.voiced > 0.5f * strict + 0.3f * (1 - strict) && h.r.steady > (strict > 0 ? 0.82f : 0.65f) && h.r.body > 0.12f)
+                        slices.push_back ({ h.a0, h.len, h.r.midi });
+                if (slices.size() >= 3) break;
+                slices.clear();
             }
         }
         if (! slices.empty())
