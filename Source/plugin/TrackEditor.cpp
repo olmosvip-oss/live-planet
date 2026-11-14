@@ -304,7 +304,7 @@ void TrackEditor::resized()
                         : getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
     const int h = gridBig ? knobRowH : rows.getHeight() / 2;
     // left of the effects: switch them off, print them into the dragged track, and the track to drag
-    const int bh = gridBig ? 32 : 36;
+    const int bh = gridBig ? 28 : 36; // (four buttons fit beside the knobs: bypass, fx, drag track, drag midi)
     bypassFx.setBounds (0, rows.getY() + 4, 100, bh - 6);
     printFx.setBounds (0, rows.getY() + 4 + bh, 100, bh - 6);
     dragTrack.setBounds (0, rows.getY() + 4 + 2 * bh, 100, bh - 6);
