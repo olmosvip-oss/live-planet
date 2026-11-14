@@ -36,6 +36,23 @@ public:
     void drawButtonText (juce::Graphics&, juce::TextButton&, bool over, bool down) override;
     void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool over, bool down) override;
     juce::Font getTextButtonFont (juce::TextButton&, int) override;
+    // menus, confirm boxes and tips, in the plugin's own look
+    void drawPopupMenuBackground (juce::Graphics&, int w, int h) override;
+    void drawPopupMenuItem (juce::Graphics&, const juce::Rectangle<int>& area, bool isSeparator, bool isActive, bool isHighlighted,
+                            bool isTicked, bool hasSubMenu, const juce::String& text, const juce::String& shortcutKeyText,
+                            const juce::Drawable* icon, const juce::Colour* textColour) override;
+    void drawPopupMenuSectionHeader (juce::Graphics&, const juce::Rectangle<int>& area, const juce::String& name) override;
+    juce::Font getPopupMenuFont() override;
+    void getIdealPopupMenuItemSize (const juce::String& text, bool isSeparator, int standardMenuItemHeight, int& idealWidth, int& idealHeight) override;
+    int getPopupMenuBorderSize() override { return 7; }
+    void drawAlertBox (juce::Graphics&, juce::AlertWindow&, const juce::Rectangle<int>& textArea, juce::TextLayout&) override;
+    int getAlertBoxWindowFlags() override { return 0; } // no title bar: just the box
+    juce::Font getAlertWindowTitleFont() override;
+    juce::Font getAlertWindowMessageFont() override;
+    juce::Font getAlertWindowFont() override;
+    void drawTooltip (juce::Graphics&, const juce::String& text, int width, int height) override;
+    juce::Rectangle<int> getTooltipBounds (const juce::String& tipText, juce::Point<int> screenPos, juce::Rectangle<int> parentArea) override;
+    void applyThemeColours();   // the menus and boxes follow the colour you pick
     void fillTextEditorBackground (juce::Graphics&, int, int, juce::TextEditor&) override {}
     void drawTextEditorOutline (juce::Graphics&, int, int, juce::TextEditor&) override {}
 
@@ -234,7 +251,7 @@ private:
 };
 
 // The studio: every track of the song, where its sound came from, and its mixer and remix tools
-class StudioView : public juce::Component
+class StudioView : public juce::Component, public juce::TooltipClient
 {
 public:
     explicit StudioView (LivePlanetProcessor& p) : proc (p) {}
@@ -249,7 +266,9 @@ public:
     bool mixDirty = false;
 
 private:
-    enum Col { None, Mute, Solo, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
+    enum Col { None, Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
+    juce::Rectangle<float> rewriteBounds (int numTracks) const;
+    bool hoverRewrite = false;
     void askRemove (int track);
     juce::Point<float> lastMouse;
     bool hoverRemove = false;
@@ -270,6 +289,15 @@ private:
     std::array<lp::ui::MeterBallistics, StudioPlayer::maxTracks> meterL {}, meterR {};
     juce::Rectangle<float> pumpBounds() const;
     bool draggingPump = false;
+    // the song's feel, along the bottom: pump, bright, sparse, punch, and the auto mix switch
+    juce::Rectangle<float> feelBar (int i) const;     // 0 pump, 1 bright, 2 sparse, 3 punch
+    juce::Rectangle<float> autoMixBounds() const;
+    float feelValue (int i) const;
+    void setFeel (int i, float x);
+    int draggingFeel = -1;
+public:
+    juce::String getTooltip() override;
+private:
     Col dragCol = None;
 };
 

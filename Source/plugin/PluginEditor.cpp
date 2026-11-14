@@ -89,10 +89,141 @@ const lp::ui::Theme& lp::ui::theme (int i)
 LivePlanetLookAndFeel::LivePlanetLookAndFeel()
 {
     setColour (TextEditor::highlightColourId, Colours::black.withAlpha (0.12f));
-    setColour (PopupMenu::backgroundColourId, Colour (0xff1c1b19));
-    setColour (PopupMenu::textColourId, Colours::white);
-    setColour (BubbleComponent::backgroundColourId, Colour (0xff1c1b19));
     setDefaultSansSerifTypeface (font (14.0f).getTypefacePtr());
+    applyThemeColours();
+}
+
+void LivePlanetLookAndFeel::applyThemeColours()
+{
+    // (a touch see-through: the menu windows then get their rounded corners)
+    const auto panel = th->bodyDark.interpolatedWith (Colour (0xff101014), 0.55f);
+    setColour (PopupMenu::backgroundColourId, panel.withAlpha (0.985f));
+    setColour (PopupMenu::textColourId, th->ink);
+    setColour (PopupMenu::headerTextColourId, th->grassLight);
+    setColour (PopupMenu::highlightedBackgroundColourId, th->grass.withAlpha (0.28f));
+    setColour (PopupMenu::highlightedTextColourId, Colours::white);
+    setColour (AlertWindow::backgroundColourId, panel.withAlpha (0.985f));
+    setColour (AlertWindow::textColourId, th->ink);
+    setColour (AlertWindow::outlineColourId, th->line);
+    setColour (TooltipWindow::backgroundColourId, panel.withAlpha (0.97f));
+    setColour (TooltipWindow::textColourId, th->ink);
+    setColour (TooltipWindow::outlineColourId, th->line);
+    setColour (BubbleComponent::backgroundColourId, panel);
+    setColour (ComboBox::backgroundColourId, Colours::transparentBlack);
+}
+
+void LivePlanetLookAndFeel::drawPopupMenuBackground (Graphics& g, int w, int h)
+{
+    auto r = Rectangle<float> (0.0f, 0.0f, (float) w, (float) h);
+    g.setColour (findColour (PopupMenu::backgroundColourId));
+    g.fillRoundedRectangle (r.reduced (0.5f), 10.0f);
+    g.setColour (Colours::white.withAlpha (0.09f));
+    g.drawRoundedRectangle (r.reduced (0.5f), 10.0f, 1.0f);
+}
+
+Font LivePlanetLookAndFeel::getPopupMenuFont() { return font (13.5f, lp::ui::Medium); }
+
+void LivePlanetLookAndFeel::getIdealPopupMenuItemSize (const String& text, bool isSeparator, int, int& idealWidth, int& idealHeight)
+{
+    if (isSeparator) { idealWidth = 50; idealHeight = 11; return; }
+    idealHeight = 26;
+    idealWidth = (int) GlyphArrangement::getStringWidth (getPopupMenuFont(), text) + 52;
+}
+
+void LivePlanetLookAndFeel::drawPopupMenuItem (Graphics& g, const Rectangle<int>& area, bool isSeparator, bool isActive, bool isHighlighted,
+                                               bool isTicked, bool hasSubMenu, const String& text, const String& shortcutKeyText,
+                                               const Drawable*, const Colour* textColour)
+{
+    auto r = area.toFloat().reduced (5.0f, 1.0f);
+    if (isSeparator)
+    {
+        g.setColour (Colours::white.withAlpha (0.08f));
+        g.fillRect (r.getX() + 6.0f, r.getCentreY(), r.getWidth() - 12.0f, 1.0f);
+        return;
+    }
+    if (isHighlighted && isActive)
+    {
+        g.setColour (findColour (PopupMenu::highlightedBackgroundColourId));
+        g.fillRoundedRectangle (r, 7.0f);
+    }
+    auto tr = r.reduced (12.0f, 0.0f);
+    if (isTicked)
+    {
+        // a dot in the accent colour for the one that's on
+        g.setColour (th->grassLight);
+        g.fillEllipse (tr.getX(), r.getCentreY() - 3.0f, 6.0f, 6.0f);
+    }
+    tr.removeFromLeft (14.0f);
+    if (hasSubMenu)
+    {
+        Path arrow;
+        const float x = r.getRight() - 14.0f, y = r.getCentreY();
+        arrow.startNewSubPath (x - 3.0f, y - 4.0f); arrow.lineTo (x + 1.0f, y); arrow.lineTo (x - 3.0f, y + 4.0f);
+        g.setColour (th->inkDim);
+        g.strokePath (arrow, PathStrokeType (1.4f));
+        tr.removeFromRight (16.0f);
+    }
+    g.setFont (getPopupMenuFont());
+    const auto base = textColour != nullptr ? *textColour : th->ink;
+    g.setColour (! isActive ? th->inkDim.withAlpha (0.5f) : (isHighlighted ? Colours::white : base));
+    g.drawFittedText (text, tr.toNearestInt(), Justification::centredLeft, 1);
+    if (shortcutKeyText.isNotEmpty())
+    {
+        g.setFont (lp::ui::mono (10.0f, false, 0.1f));
+        g.setColour (th->inkDim);
+        g.drawText (shortcutKeyText, tr, Justification::centredRight, true);
+    }
+}
+
+void LivePlanetLookAndFeel::drawPopupMenuSectionHeader (Graphics& g, const Rectangle<int>& area, const String& name)
+{
+    g.setFont (lp::ui::mono (9.5f, true, 0.16f));
+    g.setColour (th->grassLight);
+    g.drawFittedText (name.toUpperCase(), area.reduced (17, 0).withTrimmedTop (6), Justification::centredLeft, 1);
+}
+
+Font LivePlanetLookAndFeel::getAlertWindowTitleFont() { return font (19.0f, lp::ui::Medium, -0.01f); }
+Font LivePlanetLookAndFeel::getAlertWindowMessageFont() { return font (14.0f); }
+Font LivePlanetLookAndFeel::getAlertWindowFont() { return font (13.5f); }
+
+void LivePlanetLookAndFeel::drawAlertBox (Graphics& g, AlertWindow& alert, const Rectangle<int>& textArea, TextLayout& layout)
+{
+    auto r = alert.getLocalBounds().toFloat();
+    g.setColour (findColour (AlertWindow::backgroundColourId));
+    g.fillRoundedRectangle (r.reduced (0.5f), 14.0f);
+    g.setColour (Colours::white.withAlpha (0.1f));
+    g.drawRoundedRectangle (r.reduced (0.5f), 14.0f, 1.0f);
+    // a thin accent line along the top, and no big icon: just the words
+    g.setColour (th->grass);
+    g.fillRoundedRectangle (Rectangle<float> (r.getX() + 24.0f, r.getY() + 1.0f, 36.0f, 3.0f), 1.5f);
+    layout.draw (g, textArea.withX (24).withWidth (alert.getWidth() - 48).toFloat());
+}
+
+void LivePlanetLookAndFeel::drawTooltip (Graphics& g, const String& text, int width, int height)
+{
+    auto r = Rectangle<float> (0.0f, 0.0f, (float) width, (float) height);
+    g.setColour (findColour (TooltipWindow::backgroundColourId));
+    g.fillRoundedRectangle (r.reduced (0.5f), 7.0f);
+    g.setColour (Colours::white.withAlpha (0.1f));
+    g.drawRoundedRectangle (r.reduced (0.5f), 7.0f, 1.0f);
+    AttributedString s;
+    s.setJustification (Justification::centredLeft);
+    s.append (text, font (12.5f), th->ink);
+    TextLayout tl;
+    tl.createLayoutWithBalancedLineLengths (s, (float) width - 24.0f);
+    tl.draw (g, r.reduced (12.0f, 8.0f));
+}
+
+Rectangle<int> LivePlanetLookAndFeel::getTooltipBounds (const String& tipText, Point<int> screenPos, Rectangle<int> parentArea)
+{
+    AttributedString s;
+    s.append (tipText, font (12.5f));
+    TextLayout tl;
+    tl.createLayoutWithBalancedLineLengths (s, 340.0f);
+    const int w = (int) tl.getWidth() + 26, h = (int) tl.getHeight() + 18;
+    return Rectangle<int> (screenPos.x > parentArea.getCentreX() ? screenPos.x - (w + 12) : screenPos.x + 16,
+                           screenPos.y > parentArea.getCentreY() ? screenPos.y - (h + 8) : screenPos.y + 20, w, h)
+        .constrainedWithin (parentArea);
 }
 
 void LivePlanetLookAndFeel::drawRotarySlider (Graphics& g, int x, int y, int w, int h, float pos,
@@ -944,7 +1075,7 @@ void SongPanel::showActivate (const String& message)
             if (lp::license::activate (code))
                 AlertWindow::showMessageBoxAsync (MessageBoxIconType::NoIcon, "Loopwright", "Activated for " + lp::license::activatedTo() + ". Enjoy!");
             else
-                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Loopwright", "That code didn't work. Copy the whole code, starting with LW1-");
+                AlertWindow::showMessageBoxAsync (MessageBoxIconType::NoIcon, "Loopwright", "That code didn't work. Copy the whole code, starting with LW1-");
         }
         if (self != nullptr) self->repaint();
     }), true);
@@ -1153,6 +1284,30 @@ void SongView::mouseDown (const MouseEvent& e)
 {
     if (! proc.songJob.getStatus().haveSong || waiting) return;
     drag = Drag::None;
+    // right-click a section: make it different (hit harder, a breakdown, a build into what comes next)
+    if (e.mods.isPopupMenu())
+    {
+        for (int i = 0; i < (int) draft.size(); ++i)
+        {
+            const auto r = blockRect (i);
+            if (e.position.y < r.getY() || e.position.x < r.getX() || e.position.x > r.getRight()) continue;
+            const String name = draft[(size_t) i].name;
+            PopupMenu m;
+            m.addSectionHeader (name.toUpperCase());
+            m.addItem (1, "Hit harder (everything plays, crash, busier hats)", ! dirty);
+            m.addItem (2, "Breakdown (drums and bass drop out, the rest muffled)", ! dirty);
+            m.addItem (3, "Build into the next section (snare roll, rising filter, a beat of silence)", ! dirty);
+            if (dirty) m.addItem (4, "(wait a moment: your arrangement change is being made)", false);
+            m.showMenuAsync (PopupMenu::Options(), [this, i] (int r)
+            {
+                if (r >= 1 && r <= 3) proc.songJob.varySection (i, r - 1);
+            });
+            selected = i;
+            repaint();
+            return;
+        }
+        return;
+    }
     for (int i = 0; i < (int) draft.size(); ++i)
     {
         const auto r = blockRect (i);
@@ -1222,7 +1377,7 @@ void SongView::paint (Graphics& g)
         const double secs = totalBars * 4.0 * 60.0 / std::max (40.0, st.song.bpm);
         title = st.song.title + "  \xc2\xb7  " + String (roundToInt (st.song.bpm)) + " BPM  \xc2\xb7  " + lp::noteName (st.song.key)
               + (st.song.minor ? " MINOR" : " MAJOR") + "  \xc2\xb7  " + timeText (secs) + "  \xc2\xb7  " + String (totalBars) + " BARS"
-              + (dirty ? "  \xc2\xb7  NEW SHAPE: REBUILD TO HEAR IT" : "");
+              + (dirty ? "  \xc2\xb7  NEW SHAPE: REBUILD TO HEAR IT" : "  \xc2\xb7  RIGHT-CLICK A SECTION TO CHANGE IT");
     }
     else if (st.haveReference)
     {
@@ -1389,6 +1544,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       themeDots (p, [this] { applyTheme(); })
 {
     setLookAndFeel (&lnf);
+    LookAndFeel::setDefaultLookAndFeel (&lnf); // menus, boxes and tips open in their own windows: they take this look too
     setOpaque (true);
     startMs = Time::getMillisecondCounterHiRes();
 
@@ -1573,6 +1729,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
 LivePlanetEditor::~LivePlanetEditor()
 {
     stopTimer();
+    if (&LookAndFeel::getDefaultLookAndFeel() == &lnf) LookAndFeel::setDefaultLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
 
@@ -1601,9 +1758,7 @@ void LivePlanetEditor::applyTheme()
     lnf.setColour (ComboBox::textColourId, lnf.th->ink);
     lnf.setColour (ComboBox::outlineColourId, lnf.th->line);
     lnf.setColour (ComboBox::arrowColourId, lnf.th->inkDim);
-    lnf.setColour (PopupMenu::backgroundColourId, lnf.th->bodyLight);
-    lnf.setColour (PopupMenu::highlightedBackgroundColourId, lnf.th->grass);
-    lnf.setColour (PopupMenu::textColourId, lnf.th->ink);
+    lnf.applyThemeColours(); // menus, boxes and tips
     for (auto* ed : { &cityBox, &songPanel.promptBox })
     {
         ed->setColour (TextEditor::textColourId, lnf.th->ink);

@@ -45,6 +45,7 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("source", p.source); o->setProperty ("remix", p.remix); o->setProperty ("candidates", strings (p.candidates));
     o->setProperty ("candidate", p.candidate); o->setProperty ("pitchSemis", p.pitchSemis); o->setProperty ("reversed", p.reversed);
     o->setProperty ("autoTune", p.autoTune);
+    if (p.locked) o->setProperty ("locked", true);
     { std::vector<int> ct; for (int x : p.candidateTunes) ct.push_back (x); o->setProperty ("candidateTunes", ints (ct)); }
     o->setProperty ("barSrc", ints (p.barSrc));
     juce::Array<juce::var> bf;
@@ -76,7 +77,7 @@ inline Part partFromVar (const juce::var& v)
         for (auto& n : *a) p.notes.push_back ({ (double) n[0], (double) n[1], (int) n[2], (float) n[3], n.size() > 4 && (int) n[4] != 0 });
     p.samplePath = v["samplePath"].toString(); p.loopBars = v["loopBars"]; p.loopStartBars = readInts (v["loopStartBars"]);
     p.source = v["source"].toString(); p.remix = v["remix"].toString(); p.candidates = readStrings (v["candidates"]);
-    p.candidate = v["candidate"]; p.pitchSemis = v["pitchSemis"]; p.reversed = v["reversed"]; p.autoTune = v["autoTune"];
+    p.candidate = v["candidate"]; p.pitchSemis = v["pitchSemis"]; p.reversed = v["reversed"]; p.autoTune = v["autoTune"]; p.locked = (bool) v.getProperty ("locked", false);
     for (int x : readInts (v["candidateTunes"])) p.candidateTunes.add (x);
     p.barSrc = readInts (v["barSrc"]);
     if (auto* a = v["barFilter"].getArray()) for (auto& e : *a) p.barFilter[(int) e[0]] = (float) e[1];

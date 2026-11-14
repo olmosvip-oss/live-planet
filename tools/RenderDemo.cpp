@@ -1581,6 +1581,76 @@ static int loopClickTest (const juce::File& dir)
     return 0;
 }
 
+
+static int feelTest (const juce::File& dir)
+{
+    dir.createDirectory();
+    const double sr = 48000.0, bpm = 120.0;
+    const int len = (int) (sr * 8.0); // 4 bars
+    auto write = [&] (const juce::String& name, std::function<float (int)> f)
+    {
+        juce::AudioBuffer<float> b (2, len);
+        for (int i = 0; i < len; ++i) { const float v = f (i); b.setSample (0, i, v); b.setSample (1, i, v); }
+        auto file = dir.getChildFile (name);
+        file.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), sr, 2, 24, {}, 0));
+        w->writeFromAudioSampleBuffer (b, 0, len);
+        return file;
+    };
+    juce::Random rng (5);
+    const auto bass = write ("bass.wav", [&] (int i) { return 0.3f * (float) std::sin (2 * juce::MathConstants<double>::pi * 55.0 * i / sr); });
+    const auto keys = write ("keys.wav", [&] (int i) { return 0.1f * (rng.nextFloat() * 2 - 1) + 0.15f * (float) std::sin (2 * juce::MathConstants<double>::pi * 70.0 * i / sr); });
+    StudioPlayer ref;
+    std::vector<double> kicks; for (int b = 0; b < 16; ++b) kicks.push_back (b);
+    ref.setKicks (kicks, bpm);
+    std::vector<std::vector<unsigned char>> map { { 0, 0, 0, 0 }, { 1, 1, 0, 0 } }; // keys step back in bars 1-2
+    ref.setSparseMap (map, bpm);
+    std::array<StudioPlayer::Mix, StudioPlayer::maxTracks> mixes;
+    mixes[0].group = 3; mixes[1].group = 1;
+    auto run = [&] (const char* what)
+    {
+        auto out = StudioPlayer::bounce ({ bass, keys }, mixes, bpm, &ref);
+        return out;
+    };
+    auto band = [&] (const juce::AudioBuffer<float>& b, int from, int to, double lo, double hi)
+    {
+        // energy between lo and hi Hz, by a crude band-pass (difference of two one-pole low-passes)
+        const float a1 = 1.0f - std::exp (-2.0f * juce::MathConstants<float>::pi * (float) hi / (float) sr);
+        const float a2 = 1.0f - std::exp (-2.0f * juce::MathConstants<float>::pi * (float) lo / (float) sr);
+        float z1 = 0, z2 = 0; double e = 0;
+        for (int i = 0; i < to; ++i) { const float x = b.getSample (0, i); z1 += (x - z1) * a1; z2 += (x - z2) * a2; if (i >= from) e += (double) (z1 - z2) * (z1 - z2); }
+        return 10.0 * std::log10 (e / (to - from) + 1e-12);
+    };
+    ref.autoMix = false;
+    const auto plain = run ("plain");
+    ref.bright = 1.0f;
+    const auto br = run ("bright");
+    ref.bright = 0.0f; ref.sparse = 1.0f;
+    const auto sp = run ("sparse");
+    ref.sparse = 0.0f; ref.autoMix = true;
+    const auto am = run ("auto");
+    const int bar = (int) (sr * 2.0);
+    std::printf ("bright: highs (4-12k) %+.1f dB, lows (40-150) %+.1f dB\n", band (br, bar, 2 * bar, 4000, 12000) - band (plain, bar, 2 * bar, 4000, 12000),
+                 band (br, bar, 2 * bar, 40, 150) - band (plain, bar, 2 * bar, 40, 150));
+    std::printf ("sparse: bars 1-2 %+.1f dB, bars 3-4 %+.1f dB (highs = the keys)\n", band (sp, bar / 4, bar, 2000, 12000) - band (plain, bar / 4, bar, 2000, 12000),
+                 band (sp, 2 * bar + bar / 4, 3 * bar, 2000, 12000) - band (plain, 2 * bar + bar / 4, 3 * bar, 2000, 12000));
+    // the bass right after a kick vs between kicks (only the bass track: solo it)
+    mixes[1].mute = true;
+    ref.autoMix = false; const auto b0 = run ("bass");
+    ref.autoMix = true;  const auto b1 = run ("bass auto");
+    const int beat = (int) (sr * 0.5);
+    auto rmsAt = [&] (const juce::AudioBuffer<float>& b, int at, int n) { return 20.0 * std::log10 (b.getRMSLevel (0, at, n) + 1e-9); };
+    std::printf ("auto mix: bass just after a kick %+.1f dB, between kicks %+.1f dB\n",
+                 rmsAt (b1, 4 * beat + 200, 1500) - rmsAt (b0, 4 * beat + 200, 1500), rmsAt (b1, 4 * beat + 9000, 4000) - rmsAt (b0, 4 * beat + 9000, 4000));
+    mixes[1].mute = false; mixes[0].mute = true;
+    ref.autoMix = false; const auto k0 = run ("keys");
+    ref.autoMix = true;  const auto k1 = run ("keys auto");
+    std::printf ("auto mix: keys below 100 Hz %+.1f dB, above 2k %+.1f dB\n", band (k1, bar, 2 * bar, 40, 100) - band (k0, bar, 2 * bar, 40, 100),
+                 band (k1, bar, 2 * bar, 2000, 12000) - band (k0, bar, 2 * bar, 2000, 12000));
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 2 && juce::String (argv[1]) == "--library")
@@ -1623,6 +1693,8 @@ int main (int argc, char** argv)
         return chordTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--livedrums")
         return liveDrumsTest();
+    if (argc > 2 && juce::String (argv[1]) == "--feel")
+        return feelTest (juce::File (argv[2]));
     if (argc > 2 && juce::String (argv[1]) == "--loopclicks")
         return loopClickTest (juce::File (argv[2]));
     if (argc > 1 && juce::String (argv[1]) == "--rootnote")

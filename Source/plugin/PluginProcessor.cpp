@@ -451,7 +451,7 @@ juce::String LivePlanetProcessor::masterKeyNow (int preset)
                          m.nostalgia.load(), m.chorus.load(), m.mute.load() ? 1.0f : 0.0f, m.solo.load() ? 1.0f : 0.0f, m.fxBypass.load() ? 1.0f : 0.0f })
             k << "|" << juce::String (v, 3);
     }
-    k << "|pump " << studio.pumpDepth.load();
+    k << "|pump " << studio.pumpDepth.load() << "|feel " << studio.bright.load() << " " << studio.sparse.load() << " " << studio.punch.load() << " " << (int) studio.autoMix.load();
     return k;
 }
 
@@ -615,6 +615,7 @@ void LivePlanetProcessor::timerCallback()
                     if (auto* prm = params.getParameter (id)) prm->setValueNotifyingHost (0.0f);
             songBpm = st.song.bpm;
             songMakeupDb = st.song.playbackMakeupDb;
+            setUpFeel (st);
             studio.load (stems);
             studio.setKicks (songJob.kickBeats(), st.song.bpm); // the pump follows the kick
         }
@@ -954,12 +955,68 @@ bool LivePlanetProcessor::loadSample (const juce::File& file)
 
 //==============================================================================
 
+// what the song's feel needs to know: which tracks are voices (the auto mix makes room for them), and, for
+// "sparse", which tracks step back in the quieter sections (all but the core: drums, bass, one chord or melody part)
+void LivePlanetProcessor::setUpFeel (const SongJob::Status& st)
+{
+    const auto& song = st.song;
+    const int bars = std::max (1, song.totalBars());
+    bool anyVocal = false;
+    std::vector<int> melodic;
+    for (size_t i = 0; i < st.tracks.size() && i < (size_t) StudioPlayer::maxTracks; ++i)
+    {
+        const auto nm = st.tracks[i].name.toLowerCase();
+        const bool v = nm.contains ("vocal") || nm.contains ("vox") || nm.contains ("voice") || nm.contains ("chops") || nm.contains ("choir");
+        studio.mix[i].vocal = v;
+        anyVocal = anyVocal || (v && ! nm.contains ("choir"));
+        const int g = st.tracks[i].group;
+        if ((g == 1 || g == 2 || nm.contains ("perc")) && ! v) melodic.push_back ((int) i);
+    }
+    studio.setAnyVocal (anyVocal);
+    // does track i play in bars [a, b)?
+    auto plays = [&] (int i, int a, int b)
+    {
+        if (i >= (int) song.parts.size()) return false;
+        const auto& p = song.parts[(size_t) i];
+        if (! p.barSrc.empty())
+        {
+            for (int x = a; x < b && x < (int) p.barSrc.size(); ++x) if (p.barSrc[(size_t) x] >= 0) return true;
+            return false;
+        }
+        if (! p.notes.empty())
+        {
+            for (auto& n : p.notes) if (n.beat >= a * 4.0 && n.beat < b * 4.0) return true;
+            return false;
+        }
+        for (int s0 : p.loopStartBars) if (s0 < b && s0 + std::max (1, p.loopBars) > a) return true;
+        return false;
+    };
+    std::vector<std::vector<unsigned char>> map (st.tracks.size(), std::vector<unsigned char> ((size_t) bars, 0));
+    for (auto& sec : song.sections)
+    {
+        if (sec.energy >= 0.62f) continue; // the big sections keep everything
+        const int a = sec.startBar, b = sec.startBar + sec.bars;
+        bool kept = false;
+        for (int i : melodic)
+        {
+            if (! plays (i, a, b)) continue;
+            const bool perc = st.tracks[(size_t) i].name.toLowerCase().contains ("perc");
+            if (! kept && ! perc) { kept = true; continue; } // the core part stays
+            for (int x = a; x < b && x < bars; ++x) map[(size_t) i][(size_t) x] = 1;
+        }
+    }
+    studio.setSparseMap (std::move (map), song.bpm);
+}
+
 juce::File LivePlanetProcessor::fileToDrag (int t)
 {
     const auto st = songJob.getStatus();
     if (! st.haveSong || t < 0 || t >= (int) st.tracks.size()) return {};
     const auto stem = st.tracks[(size_t) t].stem;
-    if (t >= StudioPlayer::maxTracks || ! studio.mix[(size_t) t].printsFx()) return stem;
+    // the song's feel (bright, sparse, punch) is part of what you hear, so it's part of what you drag
+    const bool feel = std::abs (studio.bright.load()) > 0.01f || studio.sparse.load() > 0.01f || studio.punch.load() > 0.01f;
+    if (t >= StudioPlayer::maxTracks || studio.mix[(size_t) t].dragDry.load() || ! (studio.mix[(size_t) t].printsFx() || (feel && ! studio.mix[(size_t) t].fxBypass.load())))
+        return stem;
     const std::lock_guard<std::mutex> lk (printLock);
     const auto& m = studio.mix[(size_t) t];
     // one file per sound of the track: the same settings drag the same file without recording again
@@ -967,7 +1024,8 @@ juce::File LivePlanetProcessor::fileToDrag (int t)
     for (float v : { m.gainDb.load(), m.pan.load(), m.tone.load(), m.space.load(), m.echo.load(),
                      m.warmth.load(), m.nostalgia.load(), m.chorus.load() })
         key << juce::String (v, 3) << ",";
-    key << stem.getLastModificationTime().toMilliseconds() << "," << songBpm << "," << studio.pumpDepth.load();
+    key << stem.getLastModificationTime().toMilliseconds() << "," << songBpm << "," << studio.pumpDepth.load()
+        << "," << studio.bright.load() << "," << studio.sparse.load() << "," << studio.punch.load() << "," << (int) studio.autoMix.load() << "," << t;
     // (a folder per sound, so the file keeps the track's plain name when it lands in Ableton)
     const auto printed = st.files.folder.getChildFile ("printed");
     const auto out = printed.getChildFile (juce::String::toHexString (key.hashCode64()).substring (0, 8))
@@ -975,7 +1033,7 @@ juce::File LivePlanetProcessor::fileToDrag (int t)
     if (out.existsAsFile()) return out;
     for (auto& old : printed.findChildFiles (juce::File::findFiles, true, out.getFileName()))
         old.getParentDirectory().deleteRecursively(); // an older print of this track
-    return StudioPlayer::printTrack (stem, m, songBpm, out, &studio) ? out : stem;
+    return StudioPlayer::printTrack (stem, m, songBpm, out, &studio, t) ? out : stem;
 }
 
 void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
@@ -1002,6 +1060,10 @@ void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
         {
             state.setProperty ("songFolder", st.files.folder.getFullPathName(), nullptr);
             state.setProperty ("pump", studio.pumpDepth.load(), nullptr);
+            state.setProperty ("feelBright", studio.bright.load(), nullptr);
+            state.setProperty ("feelSparse", studio.sparse.load(), nullptr);
+            state.setProperty ("feelPunch", studio.punch.load(), nullptr);
+            state.setProperty ("autoMix", studio.autoMix.load(), nullptr);
             juce::ValueTree mixTree ("studioMix");
             for (size_t i = 0; i < st.tracks.size() && i < (size_t) StudioPlayer::maxTracks; ++i)
             {
@@ -1063,6 +1125,10 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
         }
         songJob.openSong (songFolder);
         studio.pumpDepth = (float) state.getProperty ("pump", 0.0f);
+        studio.bright = (float) state.getProperty ("feelBright", 0.0f);
+        studio.sparse = (float) state.getProperty ("feelSparse", 0.0f);
+        studio.punch = (float) state.getProperty ("feelPunch", 0.0f);
+        studio.autoMix = (bool) state.getProperty ("autoMix", true);
     }
 
     const juce::File f (state.getProperty ("samplePath", "").toString());

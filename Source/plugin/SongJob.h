@@ -40,6 +40,7 @@ public:
         bool isLoop = false;
         GrainSettings grains;
         juce::String keyText; // e.g. "G# major to C minor, down 5 st"
+        bool locked = false;  // kept when the rest is written again
     };
 
     struct Status
@@ -1828,13 +1829,14 @@ private:
     {
         TrackInfo t;
         t.name = p.name;
+        t.locked = p.locked;
         t.source = p.source;
         t.remix = p.remix;
         t.stem = stem;
         t.pitch = p.pitchSemis;
         t.reversed = p.reversed;
         t.canReverse = p.kind == lp::song::PartKind::Loop || (p.kind == lp::song::PartKind::Drums && isLibrarySource (p.source));
-        t.canSwap = true;
+        t.canSwap = ! (p.kind == lp::song::PartKind::Loop && p.candidates.size() <= 1); // a loop needs another one to swap to
         t.candidates = p.candidates.size();
         t.candidate = p.candidate;
         t.sample = isLibrarySource (p.source);
@@ -1950,6 +1952,166 @@ private:
         status.song = song;
         status.tracks.push_back (info (part, stem, song));
         status.message = "added " + juce::String (part.name) + ": " + juce::File (part.samplePath).getFileNameWithoutExtension();
+        ++status.version;
+        saveSession();
+    }
+
+public:
+    // one section made different: 0 hit harder, 1 breakdown (no drums or bass, filtered), 2 build into the next section
+    void varySection (int section, int how)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingVary = { section, how };
+            edits.push_back ({ section, EditOp::Section });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+private:
+    std::pair<int, int> pendingVary { -1, 0 };
+
+    // a loop placed as whole repeats gets a bar-by-bar plan (so single bars can be changed)
+    static void ensureBarSrc (lp::song::Part& p, int totalBars)
+    {
+        if (! p.barSrc.empty() || p.kind != lp::song::PartKind::Loop || p.loopBars <= 0) return;
+        p.barSrc.assign ((size_t) totalBars, -1);
+        for (int s0 : p.loopStartBars)
+            for (int k = 0; k < p.loopBars && s0 + k < totalBars; ++k) p.barSrc[(size_t) (s0 + k)] = k;
+    }
+
+    void applyVary()
+    {
+        std::pair<int, int> req;
+        lp::song::Song song;
+        std::vector<TrackInfo> tracks;
+        {
+            const juce::ScopedLock sl (lock);
+            req = pendingVary;
+            song = current; tracks = status.tracks;
+        }
+        if (req.first < 0 || req.first >= (int) song.sections.size()) return;
+        using PK = lp::song::PartKind;
+        auto& sec = song.sections[(size_t) req.first];
+        const int a = sec.startBar, b = sec.startBar + sec.bars, total = song.totalBars();
+        const double A = a * 4.0, B = b * 4.0;
+        std::vector<bool> changed (song.parts.size(), false);
+        auto lower = [] (const std::string& n) { return juce::String (n).toLowerCase(); };
+        juce::String what;
+        for (size_t i = 0; i < song.parts.size(); ++i)
+        {
+            auto& p = song.parts[i];
+            const auto nm = lower (p.name);
+            const bool drumsLike = p.kind == PK::Drums || nm.contains ("drum") || nm.contains ("perc");
+            const bool bassLike = p.kind == PK::Bass || nm.contains ("bass") || nm == "808";
+            if (p.kind == PK::Fx || nm.contains ("transition")) continue;
+            if (p.kind == PK::Loop) ensureBarSrc (p, total);
+            if (req.second == 0)
+            {
+                // ---- hit harder: everything plays, wide open, a crash on the one and busier hats
+                if (p.kind == PK::Loop && ! p.barSrc.empty() && p.loopBars > 0)
+                {
+                    for (int x = a; x < b && x < (int) p.barSrc.size(); ++x)
+                        if (p.barSrc[(size_t) x] < 0) { p.barSrc[(size_t) x] = (x - a) % p.loopBars; changed[i] = true; }
+                    for (int x = a; x < b; ++x)
+                        if (p.barFilter.erase (x) + p.chopBars.erase (x) > 0) changed[i] = true;
+                }
+                if (p.kind == PK::Drums)
+                {
+                    bool crash = false;
+                    for (auto& n : p.notes) crash = crash || (n.pitch == 49 && std::abs (n.beat - A) < 0.01);
+                    if (! crash) p.notes.push_back ({ A, 1.0, 49, 0.9f });
+                    // hats on every 8th where there were none
+                    std::set<long> hats;
+                    for (auto& n : p.notes) if ((n.pitch == 42 || n.pitch == 46) && n.beat >= A && n.beat < B) hats.insert (std::lround (n.beat * 2.0));
+                    for (double t = A; t < B; t += 0.5) if (! hats.count (std::lround (t * 2.0))) p.notes.push_back ({ t, 0.25, 42, std::fmod (t, 1.0) < 0.01 ? 0.75f : 0.55f });
+                    for (auto& n : p.notes) if (n.beat >= A && n.beat < B) n.velocity = std::min (1.0f, n.velocity * 1.1f);
+                    changed[i] = true;
+                }
+                else if (! p.notes.empty())
+                {
+                    for (auto& n : p.notes) if (n.beat >= A && n.beat < B) { n.velocity = std::min (1.0f, n.velocity * 1.12f); changed[i] = true; }
+                }
+                what = "hits harder";
+            }
+            else if (req.second == 1)
+            {
+                // ---- breakdown: the drums and bass drop out, the rest muffled, opening up again by the end
+                if (drumsLike || bassLike)
+                {
+                    if (! p.barSrc.empty())
+                        for (int x = a; x < b && x < (int) p.barSrc.size(); ++x) if (p.barSrc[(size_t) x] >= 0) { p.barSrc[(size_t) x] = -1; changed[i] = true; }
+                    const auto n0 = p.notes.size();
+                    p.notes.erase (std::remove_if (p.notes.begin(), p.notes.end(), [&] (const lp::song::Note& n) { return n.beat >= A && n.beat < B; }), p.notes.end());
+                    changed[i] = changed[i] || p.notes.size() != n0;
+                }
+                else if (p.kind == PK::Loop && ! p.barSrc.empty())
+                {
+                    for (int x = a; x < b; ++x) p.barFilter[x] = 0.22f + 0.78f * (float) (x - a) / (float) std::max (1, b - a);
+                    p.barFilter[b] = 1.0f;
+                    changed[i] = true;
+                }
+                else if (! p.notes.empty())
+                {
+                    for (auto& n : p.notes) if (n.beat >= A && n.beat < B) { n.velocity *= 0.75f; changed[i] = true; }
+                }
+                what = "is a breakdown";
+            }
+            else
+            {
+                // ---- build into the next section: a snare roll that speeds up and gets louder, the music opening up,
+                // and a beat of silence right before the next section hits
+                const int buildBars = std::min (2, b - a);
+                const double R = (b - buildBars) * 4.0;
+                if (p.kind == PK::Drums)
+                {
+                    p.notes.erase (std::remove_if (p.notes.begin(), p.notes.end(), [&] (const lp::song::Note& n) { return n.beat >= B - 1.0 && n.beat < B; }), p.notes.end());
+                    const double half = R + (B - 1.0 - R) * 0.5;
+                    for (double t = R; t < B - 1.0 - 1e-6; t += (t < half ? 0.5 : 0.25))
+                        p.notes.push_back ({ t, 0.2, 38, 0.45f + 0.5f * (float) ((t - R) / std::max (1.0, B - 1.0 - R)) });
+                    changed[i] = true;
+                }
+                else if (p.kind == PK::Loop && ! p.barSrc.empty())
+                {
+                    for (int x = b - buildBars; x < b; ++x) p.barFilter[x] = 0.35f + 0.65f * (float) (x - (b - buildBars)) / (float) buildBars;
+                    p.barFilter[b] = 1.0f;
+                    p.gapBars.insert (b - 1);
+                    changed[i] = true;
+                }
+                else if (! p.notes.empty())
+                {
+                    const auto n0 = p.notes.size();
+                    p.notes.erase (std::remove_if (p.notes.begin(), p.notes.end(), [&] (const lp::song::Note& n) { return n.beat >= B - 1.0 && n.beat < B; }), p.notes.end());
+                    changed[i] = p.notes.size() != n0;
+                }
+                what = "builds into what comes next";
+            }
+            std::sort (p.notes.begin(), p.notes.end(), [] (const lp::song::Note& x, const lp::song::Note& y) { return x.beat < y.beat; });
+        }
+        if (req.second == 0) sec.energy = std::min (1.0f, sec.energy + 0.15f);
+        if (req.second == 1) sec.energy = std::max (0.15f, sec.energy - 0.3f);
+        int n = 0, done = 0;
+        for (bool c : changed) n += c ? 1 : 0;
+        for (size_t i = 0; i < song.parts.size() && ! threadShouldExit(); ++i)
+        {
+            if (! changed[i]) continue;
+            {
+                const juce::ScopedLock sl (lock);
+                status.message = juce::String (sec.name) + ": recording " + juce::String (song.parts[i].name) + " (" + juce::String (++done) + " of " + juce::String (n) + ")...";
+            }
+            juce::AudioBuffer<float> buf;
+            if (! lp::song::renderPart (song, song.parts[i], currentRs, buf, [this] { return threadShouldExit(); })) return;
+            const auto stem = currentFolder.getChildFile ("stems").getChildFile (
+                juce::String ((int) i + 1).paddedLeft ('0', 2) + " " + juce::String (song.parts[i].name) + " (edit " + juce::String (++editCounter) + ").wav");
+            if (! writeStem (stem, buf, currentRs.sampleRate)) return;
+            tracks[i] = info (song.parts[i], stem, song);
+        }
+        rebuildMix (song, tracks);
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks = tracks;
+        status.message = juce::String (sec.name) + " " + what;
         ++status.version;
         saveSession();
     }
@@ -2232,6 +2394,19 @@ private:
 
 public:
     void undo() { editTrack (-1, EditOp::Undo); }
+
+    // lock a track you love: "write the rest again" leaves it as it is
+    void setLocked (int track, bool on)
+    {
+        const juce::ScopedLock sl (lock);
+        if (track < 0 || track >= (int) current.parts.size() || track >= (int) status.tracks.size()) return;
+        current.parts[(size_t) track].locked = on;
+        status.tracks[(size_t) track].locked = on;
+        status.song = current;
+        saveSession();
+    }
+    // every track that isn't locked gets a new take (new sounds, new parts); the locked ones stay
+    void rewriteUnlocked() { editTrack (-1, EditOp::Rewrite); }
 private:
 
     // a track taken out of the song (its file stays in the song folder, in case you drag it later)
@@ -2600,7 +2775,29 @@ private:
         if (op == EditOp::SliceDrums) { sliceDrums (tr); return; }
         if (op == EditOp::AddTuned) { addTuned(); return; }
         if (op == EditOp::Remove) { removeTrack (tr); return; }
+        if (op == EditOp::Rewrite)
+        {
+            std::vector<int> todo;
+            {
+                const juce::ScopedLock sl (lock);
+                for (int i = 0; i < (int) current.parts.size(); ++i)
+                    if (! current.parts[(size_t) i].locked && i < (int) status.tracks.size() && status.tracks[(size_t) i].canSwap) todo.push_back (i);
+            }
+            for (size_t k = 0; k < todo.size() && ! threadShouldExit(); ++k)
+            {
+                {
+                    const juce::ScopedLock sl (lock);
+                    status.message = "writing the rest again (" + juce::String ((int) k + 1) + " of " + juce::String ((int) todo.size()) + ")...";
+                }
+                applyEdit (todo[k], EditOp::Swap);
+            }
+            const juce::ScopedLock sl (lock);
+            status.message = todo.empty() ? juce::String ("every track is locked: unlock one to write it again")
+                                          : juce::String ((int) todo.size()) + " tracks written again; your locked ones stayed";
+            return;
+        }
         if (op == EditOp::Arrange) { applyArrange(); return; }
+        if (op == EditOp::Section) { applyVary(); return; }
         if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
         lp::song::Song song;
@@ -2771,6 +2968,13 @@ private:
             {
                 part.variant = (part.variant + 1) % lp::song::kNumStyles; // another coded kit
                 part.source = juce::String ("loopwright: ") + lp::song::styleName ((lp::song::Style) part.variant) + " kit";
+            }
+            else if (part.kind == PK::Loop)
+            {
+                // nothing else like it in your library: it stays as it is
+                const juce::ScopedLock sl (lock);
+                status.message = "no other " + juce::String (part.name) + " loop in your library fits this song: add more samples, or try add instrument";
+                return;
             }
             else if (part.kind != PK::Bass)
             {

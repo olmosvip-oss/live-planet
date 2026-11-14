@@ -287,6 +287,7 @@ struct Part
     int pitchSemis = 0;
     bool reversed = false;
     int autoTune = 0;                // loops: semitones to bring the sample into the song's key
+    bool locked = false;             // you love it: "write the rest again" leaves it as it is
     juce::Array<int> candidateTunes; // ...for each candidate
     // produced arrangement (loops): for every bar of the song, which bar of the loop plays (-1 = silent),
     // and what is done to it, like a producer would

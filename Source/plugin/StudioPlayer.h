@@ -26,12 +26,14 @@ public:
         std::atomic<bool> dragDry { false };
         // the track's effects switched off for now (their settings kept), to compare with and without
         std::atomic<bool> fxBypass { false };
+        std::atomic<bool> vocal { false }; // a voice (the auto mix makes room for it)
         bool hasFx() const
         {
             return space.load() > 0.001f || echo.load() > 0.001f || warmth.load() > 0.001f || nostalgia.load() > 0.001f
                 || chorus.load() > 0.001f || std::abs (tone.load()) > 0.01f;
         }
         // what you drag is what you hear: the effects are recorded in whenever the track has any (unless you chose dry)
+        // (the song's feel is added by the processor: see fileToDrag)
         bool printsFx() const { return ! dragDry.load() && ! fxBypass.load() && (printFx.load() || hasFx()); }
     };
 
@@ -86,6 +88,20 @@ public:
 
     // ---- the pump: everything but the drums ducks under each kick and swells back (sidechain)
     std::atomic<float> pumpDepth { 0.0f };   // 0 off .. 1 deep
+
+    // ---- the song's feel, for the whole song at once (heard live, and in the master, the mix and printed tracks)
+    std::atomic<float> bright { 0.0f };      // -1 darker and warmer .. +1 brighter and airier
+    std::atomic<float> sparse { 0.0f };      // 0 as written .. 1 the quieter sections thin out to their core
+    std::atomic<float> punch { 0.0f };       // 0 .. 1 drums and bass forward
+    // the auto mix: the bass ducks under the kick, chords and melodies keep out of the low end and make room for a voice
+    std::atomic<bool> autoMix { true };
+    // message thread: for each track, which bars it steps back in when the song is made sparse (1 = steps back)
+    void setSparseMap (std::vector<std::vector<unsigned char>> map, double songBpm)
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        std::swap (sparseMap, map);
+        sparseBpm = songBpm;
+    }
     // message thread: where the kicks are (in beats) and the song's tempo
     void setKicks (std::vector<double> beats, double songBpm)
     {
@@ -110,6 +126,18 @@ public:
         else if (since < release) { const double x = (since - attack) / (release - attack); duck = 1.0 - x * x * (3.0 - 2.0 * x); }
         else duck = 0.0;
         return (float) (1.0 - depth * 0.85 * duck);
+    }
+
+    // the auto mix: the bass dips about 4 dB for a moment under each kick, so the two don't fight
+    float kickDuck (double pos) const
+    {
+        const double beat = pos / fileRate * kickBpm / 60.0;
+        auto it = std::upper_bound (kicks.begin(), kicks.end(), beat);
+        if (it == kicks.begin()) return 1.0f;
+        const double since = (beat - *(it - 1)) * 60.0 / kickBpm;
+        if (since > 0.11) return 1.0f;
+        const double d = since < 0.003 ? since / 0.003 : 1.0 - (since - 0.003) / 0.107;
+        return (float) (1.0 - 0.37 * d);
     }
 
     // message thread: (re)open the tracks' files
@@ -156,7 +184,7 @@ public:
             auto& d = p.mix[t]; const auto& m = mixes[t];
             d.gainDb = m.gainDb.load(); d.pan = m.pan.load(); d.tone = m.tone.load(); d.mute = m.mute.load(); d.solo = m.solo.load();
             d.space = m.space.load(); d.echo = m.echo.load(); d.warmth = m.warmth.load(); d.nostalgia = m.nostalgia.load(); d.chorus = m.chorus.load();
-            d.group = m.group.load(); d.fxBypass = m.fxBypass.load();
+            d.group = m.group.load(); d.fxBypass = m.fxBypass.load(); d.vocal = m.vocal.load();
         }
         constexpr int block = 1024;
         p.prepare (block);
@@ -176,11 +204,12 @@ public:
     // records one track as you hear it: its volume, pan, tone, warmth / nostalgia / chorus, and its
     // own reverb and delay (with their tails), into a new file. The master knobs aren't included.
     // message thread (takes a second or two for a whole song)
-    static bool printTrack (const juce::File& stem, const Mix& m, double bpm, const juce::File& out, const StudioPlayer* pumpFrom = nullptr)
+    static bool printTrack (const juce::File& stem, const Mix& m, double bpm, const juce::File& out, const StudioPlayer* pumpFrom = nullptr, int trackIndex = -1)
     {
         juce::ScopedNoDenormals noDenormals;
         StudioPlayer p;
         p.load ({ stem }, 5000);
+        p.copyRow = trackIndex;
         if (pumpFrom != nullptr) p.copyPump (*pumpFrom);
         const auto len = p.length();
         if (len <= 0) return false;
@@ -188,7 +217,7 @@ public:
         d.gainDb = m.gainDb.load(); d.pan = m.pan.load(); d.tone = m.tone.load();
         d.space = m.space.load(); d.echo = m.echo.load(); d.warmth = m.warmth.load();
         d.nostalgia = m.nostalgia.load(); d.chorus = m.chorus.load();
-        d.group = m.group.load(); d.fxBypass = m.fxBypass.load();
+        d.group = m.group.load(); d.fxBypass = m.fxBypass.load(); d.vocal = m.vocal.load();
         constexpr int block = 1024;
         p.prepare (block);
         const auto total = len + (juce::int64) (fileRate * 6.0); // room for the echo and reverb tails
@@ -280,6 +309,42 @@ public:
             const bool inserts = warm > 0.002f || nost > 0.002f || cho > 0.002f;
             float pkL = 0.0f, pkR = 0.0f;
             const bool pumped = grp != 4 && pumpDepth.load() > 0.001f && ! kicks.empty();
+            // ---- the song's feel and the auto mix
+            auto& mf = macroFx[t];
+            const bool am = autoMix.load();
+            const float br = bright.load();
+            const bool melodic = (grp == 1 || grp == 2) && ! m.vocal.load();
+            const bool roomForVoice = am && melodic && anyVocal;
+            if (std::abs (br - mf.lastBright) > 0.002f || am != mf.lastAuto || roomForVoice != mf.lastRoom || sampleRate != mf.rate)
+            {
+                mf.lastBright = br; mf.lastAuto = am; mf.lastRoom = roomForVoice; mf.rate = sampleRate;
+                const bool tiltOn = std::abs (br) > 0.01f;
+                mf.tilt = tiltOn;
+                if (tiltOn)
+                {
+                    { const auto c = BQ::make (2, sampleRate, 3800.0, 0.7, br * 5.0); mf.hs[0].take (c); mf.hs[1].take (c); }   // air up (or down)
+                    { const auto c = BQ::make (1, sampleRate, 160.0, 0.7, -br * 2.5); mf.ls[0].take (c); mf.ls[1].take (c); }   // and the lows the other way
+                }
+                mf.clean = am && melodic;   // chords and melodies: out of the bass's way
+                if (mf.clean) { const auto c = BQ::make (3, sampleRate, 95.0, 0.6, 0.0); mf.hp[0].take (c); mf.hp[1].take (c); }
+                mf.room = roomForVoice;     // and a little dip where a voice lives
+                if (mf.room) { const auto c = BQ::make (0, sampleRate, 2600.0, 0.9, -2.5); mf.pk[0].take (c); mf.pk[1].take (c); }
+            }
+            // punch: drums and bass forward, the rest a touch back
+            const float pu = punch.load();
+            const float punchG = grp == 4 ? 1.0f + 0.45f * pu : grp == 3 ? 1.0f + 0.22f * pu : 1.0f - 0.12f * pu;
+            // sparse: in the quieter sections, the extra layers step back (a smooth fade, never a click)
+            float sparseTarget = 1.0f;
+            {
+                const float sv = sparse.load();
+                if (sv > 0.001f && t < sparseMap.size() && ! sparseMap[t].empty())
+                {
+                    const int bar = (int) (pos / fileRate * sparseBpm / 240.0);
+                    if (bar >= 0 && bar < (int) sparseMap[t].size() && sparseMap[t][(size_t) bar]) sparseTarget = 1.0f - sv;
+                }
+            }
+            const float sparseStep = (sparseTarget - mf.sparseG) / (float) std::max (1, n);
+            const bool bassDuck = am && grp == 3 && ! kicks.empty();
             for (int i = 0; i < n; ++i, ph += inc)
             {
                 const int i0 = (int) ph;
@@ -324,6 +389,13 @@ public:
                     }
                 }
                 if (pumped) { const float pg = pumpGain (pos + i * inc); xl *= pg; xr *= pg; }
+                if (mf.tilt) { xl = mf.hs[0].process (mf.ls[0].process (xl)); xr = mf.hs[1].process (mf.ls[1].process (xr)); }
+                if (mf.clean) { xl = mf.hp[0].process (xl); xr = mf.hp[1].process (xr); }
+                if (mf.room) { xl = mf.pk[0].process (xl); xr = mf.pk[1].process (xr); }
+                if (bassDuck) { const float dg = kickDuck (pos + i * inc); xl *= dg; xr *= dg; }
+                mf.sparseG += sparseStep;
+                const float mg2 = punchG * mf.sparseG;
+                xl *= mg2; xr *= mg2;
                 oL[i] += xl * gl;
                 oR[i] += xr * gr;
                 pkL = std::max (pkL, std::abs (xl * gl));
@@ -367,7 +439,17 @@ public:
         { const juce::SpinLock::ScopedLockType sl (o.lock); k = o.kicks; b = o.kickBpm; }
         setKicks (std::move (k), b);
         pumpDepth = o.pumpDepth.load();
+        bright = o.bright.load(); sparse = o.sparse.load(); punch = o.punch.load(); autoMix = o.autoMix.load();
+        std::vector<std::vector<unsigned char>> m;
+        double sb;
+        { const juce::SpinLock::ScopedLockType sl (o.lock); m = o.sparseMap; sb = o.sparseBpm; anyVocal = o.anyVocal; }
+        // a print plays one track as track 0: it takes that track's row
+        if (copyRow >= 0) m = { copyRow < (int) m.size() ? m[(size_t) copyRow] : std::vector<unsigned char> {} };
+        setSparseMap (std::move (m), sb);
     }
+    int copyRow = -1;         // set before copyPump for a print of one track
+    bool anyVocal = false;    // the song has a voice in it (audio thread reads; set with the mixer)
+    void setAnyVocal (bool v) { const juce::SpinLock::ScopedLockType sl (lock); anyVocal = v; }
 
 private:
     std::vector<double> kicks;
@@ -392,6 +474,35 @@ private:
         trackVerb.setParameters (rp);
     }
     std::array<TrackFx, maxTracks> trackFx;
+    // a plain biquad (RBJ cookbook): 0 peak, 1 low shelf, 2 high shelf, 3 high-pass
+    struct BQ
+    {
+        float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+        inline float process (float x) { const float y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return y; }
+        // new settings, keeping what's ringing in it (so turning a knob doesn't click)
+        void take (const BQ& o) { b0 = o.b0; b1 = o.b1; b2 = o.b2; a1 = o.a1; a2 = o.a2; }
+        static BQ make (int type, double sr, double f, double q, double db)
+        {
+            BQ b;
+            const double A = std::pow (10.0, db / 40.0), w = 2.0 * juce::MathConstants<double>::pi * f / sr;
+            const double cw = std::cos (w), sw = std::sin (w), alpha = sw / (2.0 * q);
+            double b0, b1, b2, a0, a1, a2;
+            if (type == 0) { b0 = 1 + alpha * A; b1 = -2 * cw; b2 = 1 - alpha * A; a0 = 1 + alpha / A; a1 = -2 * cw; a2 = 1 - alpha / A; }
+            else if (type == 1) { const double sq = 2 * std::sqrt (A) * alpha;
+                b0 = A * ((A + 1) - (A - 1) * cw + sq); b1 = 2 * A * ((A - 1) - (A + 1) * cw); b2 = A * ((A + 1) - (A - 1) * cw - sq);
+                a0 = (A + 1) + (A - 1) * cw + sq; a1 = -2 * ((A - 1) + (A + 1) * cw); a2 = (A + 1) + (A - 1) * cw - sq; }
+            else if (type == 2) { const double sq = 2 * std::sqrt (A) * alpha;
+                b0 = A * ((A + 1) + (A - 1) * cw + sq); b1 = -2 * A * ((A - 1) + (A + 1) * cw); b2 = A * ((A + 1) + (A - 1) * cw - sq);
+                a0 = (A + 1) - (A - 1) * cw + sq; a1 = 2 * ((A - 1) - (A + 1) * cw); a2 = (A + 1) - (A - 1) * cw - sq; }
+            else { b0 = (1 + cw) / 2; b1 = -(1 + cw); b2 = (1 + cw) / 2; a0 = 1 + alpha; a1 = -2 * cw; a2 = 1 - alpha; }
+            b.b0 = (float) (b0 / a0); b.b1 = (float) (b1 / a0); b.b2 = (float) (b2 / a0); b.a1 = (float) (a1 / a0); b.a2 = (float) (a2 / a0);
+            return b;
+        }
+    };
+    struct MacroFx { BQ hs[2], ls[2], hp[2], pk[2]; float lastBright = 99.0f, sparseG = 1.0f; bool lastAuto = false, lastRoom = false, tilt = false, clean = false, room = false; double rate = 0; };
+    std::array<MacroFx, maxTracks> macroFx;
+    std::vector<std::vector<unsigned char>> sparseMap;
+    double sparseBpm = 120.0;
     std::vector<float> verbL, verbR, delL, delR;
     lp::dsp::Delay dLineL, dLineR;
     lp::dsp::SVF dFiltL, dFiltR;

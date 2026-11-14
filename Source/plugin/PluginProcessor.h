@@ -79,6 +79,7 @@ public:
     juce::File exportRecentNotes (int bars = 8);
     // the file to drag for a track: its dry stem, or (Print FX on) the stem with its own effects recorded in
     juce::File fileToDrag (int track);
+    void setUpFeel (const SongJob::Status&);
     std::atomic<int> printsRunning { 0 };
     int seenMixInserts = 0;
     // the drum editor: hear each hit, and loop the bars you're editing with the rest of the song

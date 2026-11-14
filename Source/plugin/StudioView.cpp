@@ -12,7 +12,7 @@ Rectangle<float> StudioView::rowBounds (int row) const
 
 int StudioView::visibleRows() const
 {
-    return std::max (1, (int) ((getHeight() - 30 - 22) / 27));
+    return std::max (1, (int) ((getHeight() - 30 - 50) / 27)); // (the feel row and the "how it was made" line below)
 }
 
 void StudioView::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
@@ -38,6 +38,7 @@ Rectangle<float> StudioView::colBounds (int row, Col c) const
     {
         case Mute:      return { x + 6, y + 3, 19, 19 };
         case Solo:      return { x + 28, y + 3, 19, 19 };
+        case Lock:      return { x + 50, y + 3, 19, 19 };
         case Volume:    return { x + w * 0.42f, y + 8, w * 0.18f, 9 };
         case Pan:       return { x + w * 0.63f, y + 8, w * 0.08f, 9 };
         case Tone:      return { x + w * 0.74f, y + 8, w * 0.08f, 9 };
@@ -53,7 +54,14 @@ Rectangle<float> StudioView::colBounds (int row, Col c) const
 Rectangle<float> StudioView::addBounds (int numTracks) const
 {
     auto r = rowBounds (numTracks);
-    return { r.getX() + 50.0f, r.getY() + 2.0f, 150.0f, r.getHeight() - 4.0f };
+    return { r.getX() + 76.0f, r.getY() + 2.0f, 150.0f, r.getHeight() - 4.0f };
+}
+
+// next to "add instrument": a new take of every track you haven't locked
+Rectangle<float> StudioView::rewriteBounds (int numTracks) const
+{
+    const auto a = addBounds (numTracks);
+    return { a.getRight() + 10.0f, a.getY(), 200.0f, a.getHeight() };
 }
 
 void StudioView::showAddMenu()
@@ -105,7 +113,7 @@ void StudioView::showAddMenu()
 
 StudioView::Col StudioView::colAt (int row, Point<float> p) const
 {
-    for (Col c : { Mute, Solo, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove })
+    for (Col c : { Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove })
         if (colBounds (row, c).expanded (2.0f, 4.0f).contains (p)) return c;
     return None;
 }
@@ -128,15 +136,41 @@ void StudioView::paint (Graphics& g)
     g.drawText ("CLICK A TRACK TO EDIT IT", head.withTrimmedLeft (90.0f).withWidth (260.0f), Justification::centredLeft, false);
     if (! st.tracks.empty())
     {
-        // the pump: everything but the drums ducks under the kick
-        const auto pb = pumpBounds();
-        const float v = proc.studio.pumpDepth.load();
-        g.setColour (v > 0.001f ? th.grassLight : dim);
-        g.drawText ("PUMP " + (v > 0.001f ? String (roundToInt (v * 100.0f)) + "%" : String ("OFF")), Rectangle<float> (pb.getX() - 86.0f, 8.0f, 82.0f, 16.0f), Justification::centredRight, false);
-        g.setColour (Colours::white.withAlpha (0.08f));
-        g.fillRoundedRectangle (pb, 4.5f);
-        g.setColour (th.grass);
-        if (v > 0.001f) g.fillRoundedRectangle (pb.withWidth (std::max (pb.getHeight(), pb.getWidth() * v)), 4.5f);
+        // ---- the song's feel, for the whole song at once
+        const float y = (float) getHeight() - 44.0f;
+        g.setColour (th.line);
+        g.drawHorizontalLine ((int) y - 8, 12.0f, b.getRight() - 12.0f);
+        g.setFont (lp::ui::mono (10.0f, true, 0.14f));
+        g.setColour (txt);
+        g.drawText ("FEEL", Rectangle<float> (18.0f, y, 90.0f, 16.0f), Justification::centredLeft, false);
+        const char* names[] = { "PUMP", "BRIGHT", "SPARSE", "PUNCH" };
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto fb = feelBar (i);
+            const float v = feelValue (i);
+            const bool on = i == 1 ? std::abs (v - 0.5f) > 0.01f : v > 0.001f;
+            g.setFont (lp::ui::mono (9.5f, false, 0.12f));
+            g.setColour (on ? th.grassLight : dim);
+            String label = names[i];
+            if (i == 1 && on) label = v < 0.5f ? "DARK" : "BRIGHT";
+            g.drawText (label, Rectangle<float> (fb.getX() - 62.0f, y, 58.0f, 16.0f), Justification::centredRight, false);
+            g.setColour (Colours::white.withAlpha (0.08f));
+            g.fillRoundedRectangle (fb, 4.5f);
+            g.setColour (accent);
+            if (i == 1)
+            {
+                const float mid = fb.getCentreX(), x = fb.getX() + fb.getWidth() * v;
+                g.fillRoundedRectangle (Rectangle<float> (std::min (mid, x), fb.getY(), std::max (2.0f, std::abs (x - mid)), fb.getHeight()), 4.0f);
+            }
+            else if (on) g.fillRoundedRectangle (fb.withWidth (std::max (fb.getHeight(), fb.getWidth() * v)), 4.5f);
+        }
+        const auto ab = autoMixBounds();
+        const bool am = proc.studio.autoMix.load();
+        g.setColour (am ? th.grass.withAlpha (0.35f) : Colours::white.withAlpha (0.06f));
+        g.fillRoundedRectangle (ab, 6.0f);
+        g.setFont (lp::ui::mono (9.5f, true, 0.12f));
+        g.setColour (am ? Colours::white : dim);
+        g.drawText (am ? "AUTO MIX ON" : "AUTO MIX OFF", ab, Justification::centred, false);
     }
     for (auto [label, c] : { std::pair { "VOLUME", Volume }, { "PAN", Pan }, { "TONE", Tone }, { "SWAP", Swap }, { "REV", Reverse }, { "PITCH", PitchDown } })
         g.drawText (label, Rectangle<float> (colBounds (scroll, c).getX(), 8.0f, 80.0f, 16.0f), Justification::centredLeft, false);
@@ -178,8 +212,20 @@ void StudioView::paint (Graphics& g)
         };
         pill (colBounds (i, Mute), "M", m.mute.load(), Colour (0xfff2a33a));
         pill (colBounds (i, Solo), "S", m.solo.load(), th.grassLight);
+        {
+            // the lock: a track you love stays when the rest is written again
+            const auto lb = colBounds (i, Lock);
+            g.setColour (t.locked ? th.grass : Colours::white.withAlpha (0.08f));
+            g.fillRoundedRectangle (lb, 5.0f);
+            g.setColour (t.locked ? Colours::white : Colours::white.withAlpha (0.55f));
+            const auto c = lb.getCentre();
+            g.fillRoundedRectangle (Rectangle<float> (c.x - 4.0f, c.y - 1.0f, 8.0f, 6.0f), 1.2f);
+            Path shackle;
+            shackle.addCentredArc (c.x + (t.locked ? 0.0f : 2.0f), c.y - 1.5f, 2.6f, 3.0f, 0.0f, -MathConstants<float>::halfPi, MathConstants<float>::halfPi, true);
+            g.strokePath (shackle, PathStrokeType (1.3f));
+        }
 
-        auto nameArea = Rectangle<float> (row.getX() + 58, row.getY(), row.getWidth() * 0.42f - 70, row.getHeight());
+        auto nameArea = Rectangle<float> (row.getX() + 76, row.getY(), row.getWidth() * 0.42f - 88, row.getHeight());
         g.setColour (txt);
         g.setFont (font (12.0f, lp::ui::Medium));
         String name = t.name;
@@ -195,7 +241,7 @@ void StudioView::paint (Graphics& g)
             g.setFont (lp::ui::mono (9.5f, false, 0.06f));
             g.setColour (t.keyText.endsWith ("already") ? dim : accent.brighter (0.4f));
             const float nw = GlyphArrangement::getStringWidth (font (12.0f, lp::ui::Medium), t.name) + 12.0f;
-            g.drawText (t.keyText.toUpperCase(), Rectangle<float> (row.getX() + 58.0f + nw, row.getY() + 1.0f, colBounds (i, Volume).getX() - row.getX() - 70.0f - nw, 13.0f),
+            g.drawText (t.keyText.toUpperCase(), Rectangle<float> (row.getX() + 76.0f + nw, row.getY() + 1.0f, colBounds (i, Volume).getX() - row.getX() - 88.0f - nw, 13.0f),
                         Justification::bottomLeft, true);
         }
 
@@ -258,6 +304,13 @@ void StudioView::paint (Graphics& g)
         g.setColour (Colours::white.withAlpha (0.85f));
         g.setFont (font (11.5f, lp::ui::Medium));
         g.drawText ("+  add instrument", r, Justification::centred, false);
+        int locked = 0;
+        for (auto& tr : st.tracks) locked += tr.locked ? 1 : 0;
+        auto w = rewriteBounds ((int) st.tracks.size());
+        g.setColour (hoverRewrite ? th.grass.withAlpha (0.45f) : th.grass.withAlpha (0.22f));
+        g.fillRoundedRectangle (w, 6.0f);
+        g.setColour (Colours::white.withAlpha (0.9f));
+        g.drawText (locked > 0 ? "write the rest again (" + String (locked) + " locked)" : String ("write the rest again"), w, Justification::centred, false);
     }
 
     // how the hovered track was made
@@ -282,9 +335,41 @@ void StudioView::setFromX (int row, Col c, float x)
     if (onMixChanged) onMixChanged();
 }
 
-Rectangle<float> StudioView::pumpBounds() const
+Rectangle<float> StudioView::pumpBounds() const { return feelBar (0); }
+
+// the feel row: four bars and the auto mix switch, along the bottom
+Rectangle<float> StudioView::feelBar (int i) const
 {
-    return { colBounds (scroll, Volume).getX() - 160.0f, 11.5f, 110.0f, 9.0f };
+    const float y = (float) getHeight() - 44.0f, w = ((float) getWidth() - 120.0f - 150.0f) / 4.0f;
+    return { 120.0f + (float) i * w + 62.0f, y + 4.0f, w - 80.0f, 9.0f };
+}
+Rectangle<float> StudioView::autoMixBounds() const
+{
+    return { (float) getWidth() - 140.0f, (float) getHeight() - 46.0f, 126.0f, 20.0f };
+}
+float StudioView::feelValue (int i) const
+{
+    auto& st = proc.studio;
+    switch (i)
+    {
+        case 0: return st.pumpDepth.load();
+        case 1: return st.bright.load() * 0.5f + 0.5f;
+        case 2: return st.sparse.load();
+        default: return st.punch.load();
+    }
+}
+void StudioView::setFeel (int i, float x)
+{
+    const auto r = feelBar (i);
+    const float v = jlimit (0.0f, 1.0f, (x - r.getX()) / r.getWidth());
+    auto& st = proc.studio;
+    if (i == 0) st.pumpDepth = v;
+    else if (i == 1) st.bright = std::abs (v - 0.5f) < 0.04f ? 0.0f : v * 2.0f - 1.0f; // (snaps to the middle)
+    else if (i == 2) st.sparse = v;
+    else st.punch = v;
+    mixDirty = true;
+    if (onMixChanged) onMixChanged();
+    repaint();
 }
 
 void StudioView::mouseDown (const MouseEvent& e)
@@ -292,17 +377,34 @@ void StudioView::mouseDown (const MouseEvent& e)
     const auto st = proc.songJob.getStatus();
     dragRow = -1;
     draggingPump = false;
-    if (! st.tracks.empty() && pumpBounds().expanded (4.0f, 6.0f).contains (e.position))
+    draggingFeel = -1;
+    if (! st.tracks.empty())
     {
-        if (e.getNumberOfClicks() > 1) proc.studio.pumpDepth = 0.0f; // double-click: off
-        else { draggingPump = true; proc.studio.pumpDepth = jlimit (0.0f, 1.0f, (e.position.x - pumpBounds().getX()) / pumpBounds().getWidth()); }
-        repaint();
-        return;
+        for (int i = 0; i < 4; ++i)
+            if (feelBar (i).expanded (4.0f, 7.0f).contains (e.position))
+            {
+                if (e.getNumberOfClicks() > 1) setFeel (i, i == 1 ? feelBar (i).getCentreX() : feelBar (i).getX()); // double-click: back to as written
+                else { draggingFeel = i; setFeel (i, e.position.x); }
+                return;
+            }
+        if (autoMixBounds().contains (e.position))
+        {
+            proc.studio.autoMix = ! proc.studio.autoMix.load();
+            mixDirty = true;
+            if (onMixChanged) onMixChanged();
+            repaint();
+            return;
+        }
     }
     if (! st.tracks.empty() && (int) st.tracks.size() < StudioPlayer::maxTracks && rowShown ((int) st.tracks.size())
         && addBounds ((int) st.tracks.size()).contains (e.position))
     {
         showAddMenu();
+        return;
+    }
+    if (! st.tracks.empty() && rowShown ((int) st.tracks.size()) && rewriteBounds ((int) st.tracks.size()).contains (e.position))
+    {
+        proc.songJob.rewriteUnlocked();
         return;
     }
     for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
@@ -316,7 +418,7 @@ void StudioView::mouseDown (const MouseEvent& e)
             return;
         }
         const auto c = colAt (i, e.position);
-        if (c == None && e.position.x > rowBounds (i).getX() + 50.0f && e.position.x < colBounds (i, Volume).getX() - 10.0f)
+        if (c == None && e.position.x > rowBounds (i).getX() + 72.0f && e.position.x < colBounds (i, Volume).getX() - 10.0f)
         {
             if (onOpenTrack) onOpenTrack (i);
             return;
@@ -326,6 +428,7 @@ void StudioView::mouseDown (const MouseEvent& e)
         {
             case Mute: m.mute = ! m.mute.load(); mixDirty = true; break;
             case Solo: m.solo = ! m.solo.load(); mixDirty = true; break;
+            case Lock: proc.songJob.setLocked (i, ! st.tracks[(size_t) i].locked); break;
             case Volume: case Pan: case Tone:
                 if (e.getNumberOfClicks() > 1) // double-click resets
                 {
@@ -349,7 +452,7 @@ void StudioView::mouseDown (const MouseEvent& e)
 
 void StudioView::mouseDrag (const MouseEvent& e)
 {
-    if (draggingPump) { proc.studio.pumpDepth = jlimit (0.0f, 1.0f, (e.position.x - pumpBounds().getX()) / pumpBounds().getWidth()); repaint(); return; }
+    if (draggingFeel >= 0) { setFeel (draggingFeel, e.position.x); return; }
     if (dragRow >= 0) { setFromX (dragRow, dragCol, e.position.x); repaint(); }
 }
 
@@ -358,7 +461,7 @@ void StudioView::askRemove (int track)
     const auto st = proc.songJob.getStatus();
     if (track < 0 || track >= (int) st.tracks.size() || st.tracks.size() <= 1) return;
     const auto name = st.tracks[(size_t) track].name;
-    AlertWindow::showOkCancelBox (MessageBoxIconType::QuestionIcon, "Remove " + name + "?",
+    AlertWindow::showOkCancelBox (MessageBoxIconType::NoIcon, "Remove " + name + "?",
         "\"" + name + "\" comes out of the song, and the tracks below it move up. (Its file stays in the song folder.)",
         "Remove", "Keep it", this,
         ModalCallbackFunction::create ([this, track, name] (int ok)
@@ -383,5 +486,21 @@ void StudioView::mouseMove (const MouseEvent& e)
     const auto n = (int) proc.songJob.getStatus().tracks.size();
     const bool ha = n > 0 && rowShown (n) && addBounds (n).contains (e.position);
     const bool hx = h >= 0 && colBounds (h, Remove).expanded (2.0f, 4.0f).contains (e.position);
-    if (h != hoverRow || ha != hoverAdd || hx != hoverRemove) { hoverRow = h; hoverAdd = ha; hoverRemove = hx; repaint(); }
+    const bool hr = n > 0 && rowShown (n) && rewriteBounds (n).contains (e.position);
+    if (h != hoverRow || ha != hoverAdd || hx != hoverRemove || hr != hoverRewrite) { hoverRow = h; hoverAdd = ha; hoverRemove = hx; hoverRewrite = hr; repaint(); }
+}
+
+String StudioView::getTooltip()
+{
+    const auto p = getMouseXYRelative().toFloat();
+    const char* tips[] = {
+        "Pump: everything but the drums ducks under the kick and swells back (sidechain). Double-click: off",
+        "Bright: the whole song brighter and airier (right) or darker and warmer (left). Double-click: as written",
+        "Sparse: in the quieter sections (intro, verses, bridge) the extra layers step back, so the choruses hit harder. Double-click: as written",
+        "Punch: drums and bass forward, the rest a touch back. Double-click: as written" };
+    for (int i = 0; i < 4; ++i)
+        if (feelBar (i).expanded (60.0f, 8.0f).withTrimmedRight (56.0f).contains (p)) return tips[i];
+    if (autoMixBounds().contains (p))
+        return "Auto mix: the bass dips a little under each kick, chords and melodies stay out of the low end, and they make room for a voice when one plays";
+    return {};
 }
