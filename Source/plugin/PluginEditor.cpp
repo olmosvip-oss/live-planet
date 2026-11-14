@@ -1786,7 +1786,8 @@ void LivePlanetEditor::startTour()
                                    [this]
                                    {
                                        lp::setSetting ("tourDone", true);
-                                       MessageManager::callAsync ([safe = Component::SafePointer<LivePlanetEditor> (this)] { if (safe != nullptr) safe->tour.reset(); });
+                                       Component::SafePointer<LivePlanetEditor> safe (this);
+                                       MessageManager::callAsync ([safe] { if (safe != nullptr) safe->tour.reset(); });
                                        if (tour != nullptr) tour->setVisible (false);
                                        setPage (Write);
                                    });
