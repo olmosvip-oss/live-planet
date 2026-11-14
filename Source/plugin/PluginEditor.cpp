@@ -645,7 +645,20 @@ static void setUpKeyBoxes (LivePlanetProcessor& p, ComboBox& key, ComboBox& mode
 SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     : proc (p), th (theme),
       length ({ "Full song", "Sketch", "3 takes" }, [this] { return takes3 ? 2 : (full ? 0 : 1); },
-              [this] (int i) { full = i != 1; takes3 = i == 2; }, theme)
+              [this] (int i) { full = i != 1; takes3 = i == 2; }, theme),
+      soundsFrom ({ "My samples", "Mine + built-in", "Built-in" },
+                  [this]
+                  {
+                      const bool lib = proc.params.getRawParameterValue ("usesamples")->load() > 0.5f;
+                      const bool only = proc.params.getRawParameterValue ("samplesonly")->load() > 0.5f;
+                      return lib && only ? 0 : (lib ? 1 : (only ? 0 : 2));
+                  },
+                  [this] (int i)
+                  {
+                      auto set = [this] (const char* id, bool on) { if (auto* q = proc.params.getParameter (id)) q->setValueNotifyingHost (on ? 1.0f : 0.0f); };
+                      set ("usesamples", i <= 1);
+                      set ("samplesonly", i == 0);
+                  }, theme)
 {
     newKey.setToggleState (false, dontSendNotification); // stay in your song's key unless you ask
     addAndMakeVisible (newKey);
@@ -661,11 +674,14 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     addAndMakeVisible (keyBox);
     addAndMakeVisible (modeBox);
     addAndMakeVisible (*style);
-    addAndMakeVisible (useSamples);
+    addChildComponent (useSamples);  // (the two switches live on behind "Sounds")
+    addAndMakeVisible (soundsFrom);
+    soundsFrom.setTooltip ("Where the song's sounds come from. My samples: only loops and sounds from your own sample folders. "
+                           "Mine + built-in: your samples, filled out with the plugin's built-in instruments. Built-in: only the plugin's own instruments.");
     addAndMakeVisible (playWith);
     useSamplesAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "usesamples", useSamples);
     playWithAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "songplay", playWith);
-    addAndMakeVisible (samplesOnly);
+    addChildComponent (samplesOnly);
     samplesOnlyAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "samplesonly", samplesOnly);
     addAndMakeVisible (dawTempo);
     dawTempo.setWantsKeyboardFocus (false);
@@ -715,7 +731,15 @@ void SongPanel::resized()
         keyBox.setBounds (kr);
     }
     s.removeFromTop (6);
-    for (auto* t : { &dawTempo, &useSamples, &samplesOnly, &playWith, &newKey })
+    dawTempo.setBounds (s.removeFromTop (25));
+    s.removeFromTop (3);
+    {
+        auto sr = s.removeFromTop (28);
+        sr.removeFromLeft (64); // "Sounds"
+        soundsFrom.setBounds (sr);
+    }
+    s.removeFromTop (4);
+    for (auto* t : { &playWith, &newKey })
         t->setBounds (s.removeFromTop (25));
     s.removeFromTop (6);
     length.setBounds (s.removeFromTop (28));
@@ -883,6 +907,7 @@ void SongPanel::paint (Graphics& g)
         g.setFont (font (13.5f, lp::ui::Medium));
         g.setColour (t.ink.withAlpha (0.88f));
         g.drawText ("Key", Rectangle<float> (r.getX(), (float) keyBox.getY(), 60.0f, (float) keyBox.getHeight()), Justification::centredLeft, false);
+        g.drawText ("Sounds", Rectangle<float> (r.getX(), (float) soundsFrom.getY(), 60.0f, (float) soundsFrom.getHeight()), Justification::centredLeft, false);
         // the library along the bottom
         auto lib = c.reduced (22.0f, 16.0f).removeFromBottom (16.0f);
         g.setFont (lp::ui::mono (10.0f, false, 0.1f));

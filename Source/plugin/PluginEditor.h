@@ -45,7 +45,7 @@ public:
 };
 
 // Two-way switch, like "live | manual"
-class Segmented : public juce::Component
+class Segmented : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     Segmented (juce::StringArray names, std::function<int()> get, std::function<void (int)> set,
@@ -185,6 +185,7 @@ private:
     const lp::ui::Theme*& th;
     juce::ToggleButton newKey { "new key" }, useSamples { "my samples" }, playWith { "play it with my song" }, samplesOnly { "samples only" }, dawTempo { "daw tempo" };
     Segmented length;
+    Segmented soundsFrom; // where the sounds come from: your sample folders only, yours + built-in, built-in only
     std::unique_ptr<ChoiceChips> style;
     juce::ComboBox keyBox, modeBox;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> keyAtt, modeAtt;
