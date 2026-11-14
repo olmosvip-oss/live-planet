@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      licensed:
+        description: "Build the version you sell (7-day trial, then a license code)"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -32,8 +37,19 @@ jobs:
           sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libfreetype6-dev libfontconfig1-dev libcurl4-openssl-dev libgl1-mesa-dev libjack-jackd2-dev
 
+      # The version you sell: release tags (v1.0.0 ...) or a manual run with "licensed" ticked get the
+      # public key, so buyers get the 7-day trial and then need a code. Everything else stays unlocked for testing.
+      # Set the repository variable LOOPWRIGHT_BUY_URL (https://your-site/api/checkout) for the Buy button.
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        shell: bash
+        run: |
+          EXTRA=()
+          if [[ "${{ github.ref }}" == refs/tags/v* || "${{ inputs.licensed }}" == "true" ]]; then
+            EXTRA+=("-DLOOPWRIGHT_PUBLIC_KEY=$(tr -d '\r\n' < packaging/license-public-key.txt)")
+            if [ -n "${{ vars.LOOPWRIGHT_BUY_URL }}" ]; then EXTRA+=("-DLOOPWRIGHT_BUY_URL=${{ vars.LOOPWRIGHT_BUY_URL }}"); fi
+            echo "licensed build"
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "${EXTRA[@]}"
 
       - name: Build
         run: cmake --build build --config Release --parallel 4

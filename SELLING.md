@@ -23,13 +23,29 @@ just include their notices.
 
 Windows: an EV / OV code-signing certificate stops SmartScreen warnings (later).
 
-## 4. License codes (offline, no server)
-Licensing is off until you switch it on, so test builds stay free.
-1. Make your key pair once, on your own computer, and **back up `private.key` somewhere safe** (never in the repo):
-   `build/Keygen_artefacts/Release/Keygen --new my-keys`
-2. Build the plugin with your public key (or put it in a GitHub secret and pass it in the workflow):
-   `cmake -B build -DLOOPWRIGHT_PUBLIC_KEY="$(cat my-keys/public.key)"`
-   Buyers then get a 7-day trial; after that, **Write a song** asks for a code.
-   Price: $39 one-time (the launch price), yours forever, free updates. Add `-DLOOPWRIGHT_BUY_URL=https://your-store/checkout` and the license window gets a **Buy $39** button.
-3. For each sale: `Keygen --make "Buyer Name" my-keys/private.key` and email them the `LW1-...` code.
-   They paste it via the license link in Settings. A store like Gumroad, Lemon Squeezy or Paddle can send codes for you.
+## 4. Selling and license codes (Stripe + the website)
+Price: **$39 one-time** (the launch price), yours forever, free updates, with a **7-day free trial**.
+
+How a sale works:
+1. "buy now" on the website goes to `/api/checkout`, which opens a Stripe checkout for $39.
+2. After paying, Stripe sends the buyer to `/thanks`: the site checks the payment with Stripe and shows their
+   license code (made from their email, so the same buyer always gets the same code). It's emailed to them too.
+3. In the plugin they click **TRIAL** at the top of Settings, paste the code and press **Activate**. It's checked
+   offline from then on. Lost codes: `/license` emails the code again to the address that bought.
+
+The key pair: the website holds `private.key` (it makes codes), the plugin holds `packaging/license-public-key.txt`
+(it only checks them). **Back up `private.key` somewhere safe and never put it in a repo.** Lose it and you can't
+make codes that the shipped plugins accept; leak it and anyone can.
+
+Setup, once:
+- **Website secrets** (Lovable > Secrets): `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `LOOPWRIGHT_PRIVATE_KEY`
+  (the whole contents of private.key), and for the emails `RESEND_API_KEY` + `LICENSE_EMAIL_FROM`.
+- **Stripe webhook**: Developers > Webhooks > add `https://your-site/api/stripe-webhook`, event
+  `checkout.session.completed`; its signing secret is `STRIPE_WEBHOOK_SECRET`.
+- **GitHub variable** (Settings > Secrets and variables > Actions > Variables): `LOOPWRIGHT_BUY_URL` =
+  `https://your-site/api/checkout`, for the plugin's **Buy $39** button.
+- **The version you sell**: push a tag like `v1.0.0` (or run the workflow by hand with "licensed" ticked). Those builds
+  have the trial and need a code; every other build stays unlocked for testing.
+
+By hand, if you ever need to: `Keygen --make "buyer@email.com" private.key` prints a code (use their email in lowercase,
+the same as the website, so both give the same code).
