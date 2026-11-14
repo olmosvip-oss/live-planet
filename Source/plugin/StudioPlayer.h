@@ -62,6 +62,23 @@ public:
             }
         }
     }
+    // a deleted track comes back (undo): the rows from t down move one lower, and t starts fresh
+    void insertTrackMix (int t)
+    {
+        if (t < 0 || t >= maxTracks) return;
+        for (int i = maxTracks - 1; i > t; --i)
+        {
+            auto& d = mix[(size_t) i];
+            const auto& s = mix[(size_t) i - 1];
+            d.gainDb = s.gainDb.load(); d.pan = s.pan.load(); d.tone = s.tone.load(); d.mute = s.mute.load(); d.solo = s.solo.load();
+            d.sample = s.sample.load(); d.group = s.group.load(); d.space = s.space.load(); d.echo = s.echo.load();
+            d.warmth = s.warmth.load(); d.nostalgia = s.nostalgia.load(); d.chorus = s.chorus.load(); d.printFx = s.printFx.load();
+            d.dragDry = s.dragDry.load(); d.fxBypass = s.fxBypass.load();
+        }
+        auto& d = mix[(size_t) t];
+        d.gainDb = 0.0f; d.pan = 0.0f; d.tone = 0.0f; d.mute = false; d.solo = false; d.space = 0.0f; d.echo = 0.0f;
+        d.warmth = 0.0f; d.nostalgia = 0.0f; d.chorus = 0.0f; d.printFx = false; d.dragDry = false; d.fxBypass = false;
+    }
     std::atomic<int> skipTrack { -1 }; // a track played live instead (the drum editor's loop)
     // what each track is playing right now (its loudest sample since the screen last looked), for the meters
     std::array<std::atomic<float>, maxTracks> peakL {}, peakR {};

@@ -80,6 +80,7 @@ public:
     // the file to drag for a track: its dry stem, or (Print FX on) the stem with its own effects recorded in
     juce::File fileToDrag (int track);
     std::atomic<int> printsRunning { 0 };
+    int seenMixInserts = 0;
     // the drum editor: hear each hit, and loop the bars you're editing with the rest of the song
     LiveDrums liveDrums;
     std::atomic<int> liveTrack { -1 };

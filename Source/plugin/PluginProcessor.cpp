@@ -566,6 +566,12 @@ void LivePlanetProcessor::timerCallback()
         double bpm = 90.0;
         songJob.takeFinishedMix (bpm); // (the studio plays the tracks themselves now)
         const auto st = songJob.getStatus();
+        if (st.mixInsertSerial != seenMixInserts)
+        {
+            // an undone delete: its track comes back, and so does a row in the mixer for it
+            seenMixInserts = st.mixInsertSerial;
+            studio.insertTrackMix (st.mixInsertAt);
+        }
         if (st.haveSong && st.version != loadedStudioVersion)
         {
             loadedStudioVersion = st.version;

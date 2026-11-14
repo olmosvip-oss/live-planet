@@ -8,6 +8,7 @@ using lp::ui::font;
 
 TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     : proc (p), th (theme), drumGrid (p, theme), noteGrid (p, theme),
+      dragMidi ("drag midi", [this] { auto st = proc.songJob.getStatus(); return st.haveSong ? StringArray (st.files.folder.getFullPathName()) : StringArray(); }),
       dragTrack ("drag track", [this] { auto st = proc.songJob.getStatus();
                                         return st.haveSong && track < (int) st.tracks.size() ? StringArray (st.tracks[(size_t) track].stem.getFullPathName()) : StringArray(); })
 {
@@ -31,6 +32,9 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
         repaint();
     };
     addAndMakeVisible (bypassFx);
+    dragMidi.filesToDrag = [this] { const auto f = proc.songJob.partMidi (track); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
+    dragMidi.setTooltip ("This part's notes as MIDI: drop it on a MIDI track to play it with your own instrument");
+    addChildComponent (dragMidi);
     addAndMakeVisible (dragTrack);
     addChildComponent (drumGrid);
     addChildComponent (noteGrid);
@@ -302,6 +306,7 @@ void TrackEditor::resized()
     bypassFx.setBounds (0, rows.getY() + 4, 100, bh - 6);
     printFx.setBounds (0, rows.getY() + 4 + bh, 100, bh - 6);
     dragTrack.setBounds (0, rows.getY() + 4 + 2 * bh, 100, bh - 6);
+    dragMidi.setBounds (0, rows.getY() + 4 + 3 * bh, 100, bh - 6);
     for (int r = 0; r < 2; ++r)
     {
         std::vector<Dial*> inRow;
@@ -332,6 +337,7 @@ void TrackEditor::paint (Graphics& g)
         bool want = true;
         if (c == &drumGrid) want = showingDrums();
         else if (c == &noteGrid) want = notesTrack && ! showingDrums();
+        else if (c == &dragMidi) want = notesTrack || showingDrums();
         else if (c == &sliceBtn)
         {
             // drum loops and percussion loops can be sliced

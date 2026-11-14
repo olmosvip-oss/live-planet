@@ -122,23 +122,17 @@ inline std::vector<Chord> read (const std::vector<std::array<float, 12>>& music,
 }
 
 // a chords track (close voicing around middle C) and a bass track, plus the chord names as markers
-inline void writeMidi (const std::vector<Chord>& chords, double bpm, const juce::String& title, const juce::File& file)
+// the chords (voiced close, like a player would) and their bass notes, as two MIDI tracks; the chord names
+// go on `markers` if given
+inline void chordTracks (const std::vector<Chord>& chords, int tpq, juce::MidiMessageSequence& ch, juce::MidiMessageSequence& bs,
+                         juce::MidiMessageSequence* markers)
 {
-    constexpr int tpq = 960;
-    juce::MidiFile mf;
-    mf.setTicksPerQuarterNote (tpq);
-    juce::MidiMessageSequence conductor, ch, bs;
-    conductor.addEvent (juce::MidiMessage::tempoMetaEvent ((int) (60000000.0 / bpm)), 0);
-    conductor.addEvent (juce::MidiMessage::timeSignatureMetaEvent (4, 4), 0);
-    conductor.addEvent (juce::MidiMessage::textMetaEvent (3, title + " - chords"), 0);
-    ch.addEvent (juce::MidiMessage::textMetaEvent (3, "chords"), 0);
-    bs.addEvent (juce::MidiMessage::textMetaEvent (3, "bass"), 0);
     int prevTop = 64;
     for (auto& c : chords)
     {
         if (! c.valid) continue;
         const double t0 = c.beat * tpq, t1 = (c.beat + c.length) * tpq - 1;
-        conductor.addEvent (juce::MidiMessage::textMetaEvent (6, name (c)), t0);
+        if (markers != nullptr) markers->addEvent (juce::MidiMessage::textMetaEvent (6, name (c)), t0);
         // voice the chord close to the last one (smooth, like a player would)
         std::vector<int> notes;
         for (int pc : tones (c))
@@ -159,7 +153,21 @@ inline void writeMidi (const std::vector<Chord>& chords, double bpm, const juce:
         bs.addEvent (juce::MidiMessage::noteOn (2, bassNote, 0.8f), t0);
         bs.addEvent (juce::MidiMessage::noteOff (2, bassNote), t1);
     }
-    for (auto* s : { &ch, &bs }) { s->sort(); s->updateMatchedPairs(); }
+    for (auto* q : { &ch, &bs }) { q->sort(); q->updateMatchedPairs(); }
+}
+
+inline void writeMidi (const std::vector<Chord>& chords, double bpm, const juce::String& title, const juce::File& file)
+{
+    constexpr int tpq = 960;
+    juce::MidiFile mf;
+    mf.setTicksPerQuarterNote (tpq);
+    juce::MidiMessageSequence conductor, ch, bs;
+    conductor.addEvent (juce::MidiMessage::tempoMetaEvent ((int) (60000000.0 / bpm)), 0);
+    conductor.addEvent (juce::MidiMessage::timeSignatureMetaEvent (4, 4), 0);
+    conductor.addEvent (juce::MidiMessage::textMetaEvent (3, title + " - chords"), 0);
+    ch.addEvent (juce::MidiMessage::textMetaEvent (3, "chords"), 0);
+    bs.addEvent (juce::MidiMessage::textMetaEvent (3, "bass"), 0);
+    chordTracks (chords, tpq, ch, bs, &conductor);
     mf.addTrack (conductor);
     mf.addTrack (ch);
     mf.addTrack (bs);

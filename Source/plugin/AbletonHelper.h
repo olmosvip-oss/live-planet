@@ -16,12 +16,14 @@ inline juce::File helperFolder()
 inline juce::String helperScript (const juce::File& latest)
 {
     const auto posix = latest.getFullPathName();
-    juce::String js = R"JS(// Live Planet Song Helper: tempo + named locators for the newest Live Planet song.
+    juce::String js = R"JS(// Loopwright Song Helper: the song's tempo, its sections as named locators, and (Live 12) its tracks.
 autowatch = 1;
 inlets = 1;
 outlets = 1;
 
 var PATHS = ["@POSIX@", "Macintosh HD:@POSIX@"];
+// names Loopwright gives its sections: locators with these names are its own, and get moved when the song changes
+var OURS = /^(intro|verse|pre-chorus|pre chorus|prechorus|chorus|hook|drop|bridge|break|breakdown|build|outro|interlude|post-chorus)( \d+)?$/i;
 
 function readText (p)
 {
@@ -34,68 +36,175 @@ function readText (p)
 }
 
 function first (v) { return (v instanceof Array) ? v[0] : v; }
+function say (t) { outlet (0, "set", t); }
 
 function readPlan()
 {
     var txt = null;
     for (var i = 0; i < PATHS.length && ! txt; i++) txt = readText (PATHS[i]);
-    if (! txt) { outlet (0, "set", "no song yet: make one in Loopwright first"); return null; }
+    if (! txt) { say ("no song yet: make one in Loopwright first"); return null; }
     return JSON.parse (txt);
 }
 
-// one audio track per part, each clip starting at bar 1 (needs Live 12)
+// ---- steps, one at a time: Live needs a moment after the playhead moves before a locator lands there
+var steps = [], stepTask = null, afterSteps = null;
+function runSteps (then)
+{
+    afterSteps = then;
+    if (stepTask) stepTask.cancel();
+    stepTask = new Task (nextStep, this);
+    stepTask.interval = 60;
+    stepTask.repeat (-1);
+}
+function nextStep()
+{
+    if (steps.length == 0)
+    {
+        stepTask.cancel();
+        stepTask = null;
+        if (afterSteps) { var f = afterSteps; afterSteps = null; f(); }
+        return;
+    }
+    var s = steps.shift();
+    try { s(); } catch (e) { post ("loopwright helper: " + e + "\n"); }
+}
+
+function cues()
+{
+    var song = new LiveAPI ("live_set");
+    var out = [];
+    var n = song.getcount ("cue_points");
+    for (var c = 0; c < n; c++)
+    {
+        var cue = new LiveAPI ("live_set cue_points " + c);
+        out.push ({ api: cue, time: first (cue.get ("time")), name: String (first (cue.get ("name"))) });
+    }
+    return out;
+}
+
+// the song's sections as named locators (old Loopwright locators that aren't sections any more are taken away)
+function bang() { place (null); watch(); }
+
+// keeps the locators in step with the plugin: when you change the song's sections there, they move here too
+// (only while Live is stopped, so it never jumps the playhead while you play)
+var watchTask = null, lastSeen = null;
+function planKey()
+{
+    var txt = null;
+    for (var i = 0; i < PATHS.length && ! txt; i++) txt = readText (PATHS[i]);
+    if (! txt) return null;
+    var p = JSON.parse (txt);
+    return p.title + "|" + p.bpm + "|" + JSON.stringify (p.sections);
+}
+function watch()
+{
+    if (watchTask) return;
+    lastSeen = planKey();
+    watchTask = new Task (function()
+    {
+        var k = planKey();
+        if (k === null || k === lastSeen || stepTask) return;
+        if (first (new LiveAPI ("live_set").get ("is_playing")) == 1) return;
+        lastSeen = k;
+        place (null);
+    }, this);
+    watchTask.interval = 2000;
+    watchTask.repeat (-1);
+}
+function place (then)
+{
+    var plan = readPlan();
+    if (! plan) return;
+    var song = new LiveAPI ("live_set");
+    song.set ("tempo", plan.bpm);
+    if (first (song.get ("is_playing")) == 1) song.call ("stop_playing"); // the playhead has to stand still
+    var keep = first (song.get ("current_song_time"));
+
+    var want = {};
+    for (var s = 0; s < plan.sections.length; s++) want[Math.round (plan.sections[s].beat * 4)] = plan.sections[s].name;
+    var have = {};
+    var existing = cues();
+    steps = [];
+    for (var c = 0; c < existing.length; c++)
+    {
+        var key = Math.round (existing[c].time * 4);
+        if (want[key] !== undefined) { have[key] = true; continue; }
+        if (OURS.test (existing[c].name)) toggleAt (existing[c].time);   // an old section of ours: away with it
+    }
+    for (var k in want) if (! have[k]) toggleAt (k / 4);
+    steps.push (function()
+    {
+        // name them, and count what's really there
+        var placed = 0, all = cues();
+        for (var i = 0; i < all.length; i++)
+        {
+            var nm = want[Math.round (all[i].time * 4)];
+            if (nm !== undefined) { all[i].api.set ("name", nm); placed++; }
+        }
+        new LiveAPI ("live_set").set ("current_song_time", keep);
+        say (placed + " of " + plan.sections.length + " locators for '" + plan.title + "' at " + plan.bpm + " bpm"
+             + (placed < plan.sections.length ? ". press again to finish" : ""));
+        lastSeen = planKey();
+        if (then) then (plan);
+    });
+    say ("placing " + plan.sections.length + " locators...");
+    runSteps (null);
+}
+function toggleAt (beat)
+{
+    steps.push (function() { new LiveAPI ("live_set").set ("current_song_time", beat); });
+    steps.push (function() { new LiveAPI ("live_set").call ("set_or_delete_cue"); });
+}
+
+// the whole song in Live: a track for every part with its file at bar 1, its notes as MIDI where it has some (Live 12)
 function build()
 {
     var plan = readPlan();
     if (! plan) return;
     var major = first (new LiveAPI ("live_app").call ("get_major_version"));
-    if (major < 12) { outlet (0, "set", "building tracks needs Live 12. drag the stems in instead (hold cmd)."); return; }
+    if (major < 12) { say ("building tracks needs Live 12. drag the stems in instead"); return; }
     var song = new LiveAPI ("live_set");
     song.set ("tempo", plan.bpm);
-    for (var i = 0; i < plan.stems.length; i++)
+    var tracks = plan.tracks || [];
+    if (tracks.length == 0) for (var s = 0; s < plan.stems.length; s++) tracks.push ({ name: "", file: plan.stems[s] });
+    steps = [];
+    for (var i = 0; i < tracks.length; i++) (function (t)
     {
-        song.call ("create_audio_track", -1);
-        var count = song.getcount ("tracks");
-        var track = new LiveAPI ("live_set tracks " + (count - 1));
-        var file = plan.stems[i];
-        track.set ("name", file.split ("/").pop().replace (/\.wav$/, "").replace (/^\d+ /, ""));
-        track.call ("create_audio_clip", file, 0);
-    }
-    bang();
-    outlet (0, "set", plan.stems.length + " tracks + locators for '" + plan.title + "'. turn off 'play with my song' in loopwright.");
-}
-
-function bang()
-{
-    var plan = readPlan();
-    if (! plan) return;
-    var song = new LiveAPI ("live_set");
-    song.set ("tempo", plan.bpm);
-
-    // only add locators that aren't there yet (the call toggles them)
-    var have = {};
-    var n = song.getcount ("cue_points");
-    for (var c = 0; c < n; c++)
-        have[Math.round (first (new LiveAPI ("live_set cue_points " + c).get ("time")))] = true;
-
-    var keep = first (song.get ("current_song_time"));
-    for (var s = 0; s < plan.sections.length; s++)
-    {
-        var t = plan.sections[s].beat;
-        if (! have[t]) { song.set ("current_song_time", t); song.call ("set_or_delete_cue"); }
-    }
-
-    // name them after the song's sections
-    n = song.getcount ("cue_points");
-    for (var c2 = 0; c2 < n; c2++)
-    {
-        var cue = new LiveAPI ("live_set cue_points " + c2);
-        var time = Math.round (first (cue.get ("time")));
-        for (var s2 = 0; s2 < plan.sections.length; s2++)
-            if (plan.sections[s2].beat == time) cue.set ("name", plan.sections[s2].name);
-    }
-    song.set ("current_song_time", keep);
-    outlet (0, "set", plan.sections.length + " locators for '" + plan.title + "' at " + plan.bpm + " bpm");
+        steps.push (function()
+        {
+            song.call ("create_audio_track", -1);
+            var count = song.getcount ("tracks");
+            var track = new LiveAPI ("live_set tracks " + (count - 1));
+            track.set ("name", t.name || t.file.split ("/").pop().replace (/\.wav$/, "").replace (/^\d+ /, ""));
+            if (t.color !== undefined) track.set ("color", t.color);
+            track.call ("create_audio_clip", t.file, 0);
+            if (t.mute) track.set ("mute", 1);
+        });
+        if (t.notes && t.notes.length > 0) steps.push (function()
+        {
+            // the same part as MIDI, muted, to play with your own instruments
+            try
+            {
+                song.call ("create_midi_track", -1);
+                var count = song.getcount ("tracks");
+                var track = new LiveAPI ("live_set tracks " + (count - 1));
+                track.set ("name", (t.name || "part") + " midi");
+                if (t.color !== undefined) track.set ("color", t.color);
+                track.set ("mute", 1);
+                var end = 0;
+                for (var n = 0; n < t.notes.length; n++) end = Math.max (end, t.notes[n][0] + t.notes[n][1]);
+                track.call ("create_midi_clip", 0, Math.ceil (end / 4) * 4);
+                var clip = new LiveAPI ("live_set tracks " + (count - 1) + " arrangement_clips 0");
+                var list = [];
+                for (var m = 0; m < t.notes.length; m++)
+                    list.push ({ pitch: t.notes[m][2], start_time: t.notes[m][0], duration: t.notes[m][1], velocity: Math.round (t.notes[m][3] * 127) });
+                clip.call ("add_new_notes", { notes: list });
+            }
+            catch (e) { post ("loopwright helper (midi): " + e + "\n"); }
+        });
+    }) (tracks[i]);
+    say ("building " + tracks.length + " tracks...");
+    runSteps (function() { place (function (p) { say (tracks.length + " tracks + locators for '" + p.title + "'. turn off 'play along with my DAW' in loopwright."); }); });
 }
 )JS";
     return js.replace ("@POSIX@", posix);
@@ -141,7 +250,7 @@ inline juce::String helperPatcher()
               "outlettype": [ "signal", "signal" ], "patching_rect": [ 380.0, 120.0, 60.0, 22.0 ] } },
    { "box": { "id": "obj-11", "maxclass": "newobj", "text": "plugout~", "numinlets": 2, "numoutlets": 0,
               "patching_rect": [ 380.0, 170.0, 60.0, 22.0 ] } },
-   { "box": { "id": "obj-3", "maxclass": "message", "text": "drop me on any track: I set the tempo + song locators", "numinlets": 2, "numoutlets": 1,
+   { "box": { "id": "obj-3", "maxclass": "message", "text": "drop me on any track: tempo + song locators (kept in step with loopwright)", "numinlets": 2, "numoutlets": 1,
               "outlettype": [ "" ], "patching_rect": [ 20.0, 130.0, 330.0, 22.0 ],
               "presentation": 1, "presentation_rect": [ 8.0, 48.0, 348.0, 22.0 ] } }
   ],

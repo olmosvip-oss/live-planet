@@ -274,7 +274,7 @@ private:
 };
 
 // EDIT: one track at a time, like a sampler: its sample (choose which bars play), its own effects and remix tools
-class FilePill : public juce::Component
+class FilePill : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     FilePill (juce::String text, std::function<juce::StringArray()> files) : label (std::move (text)), getFiles (std::move (files)) {}
@@ -473,6 +473,7 @@ private:
     std::map<juce::String, std::vector<float>> peakCache;
     int dragFrom = -1, dragTo = -1;
     juce::TextButton printFx { "FX: dry" }, bypassFx { "Bypass" };
+    FilePill dragMidi;          // a played part's notes as MIDI
     juce::String fxKey;                 // the track's effect settings last seen (to record them once you stop turning)
     juce::uint32 fxKeyAt = 0;
     bool fxPrinted = false;
@@ -630,6 +631,9 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
 
     // cards on each page
+    juce::Rectangle<float> undoChip;   // the top bar's "undo ..." (empty when there's nothing to undo)
+    juce::String undoShown;
+    bool keyPressed (const juce::KeyPress&) override;
     juce::Rectangle<int> cardTimeline, cardInstrument, cardSky, cardWeather, plateMix, plateTex, plateFx;
     int page = 0;
     bool dragging = false;

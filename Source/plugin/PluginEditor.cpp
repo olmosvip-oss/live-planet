@@ -1471,7 +1471,11 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray();
     };
     pillChords.filesToDrag = [&p] { const auto f = p.songJob.chordsMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
-    for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
+    // one drag: every MIDI part (drums, 808, hook, bass lines, and the chords + bass your loops play)
+    pillMidi.filesToDrag = [&p] { const auto f = p.songJob.allMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
+    pillMidi.setTooltip ("Every MIDI part in one drag: drums, 808, hook, bass lines, and the chords + bass your loops play. Each lands on its own MIDI track, sections as markers.");
+    pillHelper.setTooltip ("Drag onto any track in Ableton once (Live Suite): it sets the tempo and places your song's sections as named locators, keeps them in step when you change sections here, and 'build song tracks' brings in every track.");
+    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         addChildComponent (pill);
     addAndMakeVisible (themeDots);
 
@@ -1638,7 +1642,7 @@ void LivePlanetEditor::setPage (int p)
     songPanel.setVisible (write);
     songView.setVisible (write || studio);
     studioView.setVisible (studio && haveSong);
-    for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
+    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         pill->setVisible (write || studio);
     // sound: the instrument and the knobs
     keys.setVisible (sound);
@@ -1754,6 +1758,7 @@ void LivePlanetEditor::showOneShotMenu()
 
 void LivePlanetEditor::timerCallback()
 {
+    if (proc.songJob.getStatus().undoWhat != undoShown) repaint (0, 0, getWidth(), 76); // the undo button in the top bar
     if (page == Sound)
     {
         const float in = proc.inPeak.exchange (0.0f);
@@ -1850,7 +1855,7 @@ void LivePlanetEditor::timerCallback()
         if (haveSong && page == Studio) studioView.repaint();
         songPanel.refresh();
         songView.refresh();
-        for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
             pill->repaint();
     }
     if (page == Sound)
@@ -1967,6 +1972,24 @@ void LivePlanetEditor::paint (Graphics& g)
         const double bpm = proc.dawBpm.load();
         chipAt (bpm > 1.0 ? String (bpm, bpm == std::round (bpm) ? 0 : 1) + " BPM" : String ("NO DAW TEMPO"), bpm > 1.0);
         chipAt (st.scanning ? String ("SCANNING LIBRARY") : String (st.librarySounds) + " SAMPLES", ! st.scanning && st.librarySounds > 0);
+        // undo: the last change to the song, taken back (Cmd + Z)
+        undoChip = {};
+        undoShown = st.undoWhat;
+        if (st.undoWhat.isNotEmpty() && st.haveSong)
+        {
+            const String text = "UNDO " + st.undoWhat.toUpperCase();
+            const float w = std::min (260.0f, GlyphArrangement::getStringWidth (lp::ui::mono (10.5f, false, 0.12f), text) + 26.0f);
+            auto c = right.removeFromRight (w);
+            const bool over = isMouseOver (true) && c.contains (getMouseXYRelative().toFloat());
+            g.setColour (over ? th.grass.withAlpha (0.35f) : th.grass.withAlpha (0.18f));
+            g.fillRoundedRectangle (c, 15.0f);
+            g.setColour (th.grass);
+            g.drawRoundedRectangle (c.reduced (0.5f), 15.0f, 1.0f);
+            g.setFont (lp::ui::mono (10.5f, false, 0.12f));
+            g.setColour (th.ink);
+            g.drawText (text, c.reduced (12.0f, 0.0f), Justification::centred, true);
+            undoChip = c;
+        }
     }
 
     // ---- page cards
@@ -2061,9 +2084,22 @@ void LivePlanetEditor::mouseDown (const MouseEvent& e)
     auto& pb = songPanel.promptBox;
     if (e.eventComponent != &pb && ! pb.isParentOf (e.eventComponent) && pb.hasKeyboardFocus (true))
         pb.giveAwayKeyboardFocus();
+    if (e.eventComponent == this && ! undoChip.isEmpty() && undoChip.contains (e.position)) { proc.songJob.undo(); repaint(); return; }
     if (e.eventComponent == this)
         for (int i = 0; i < 4; ++i)
             if (tabBounds (i).expanded (8, 10).contains (e.getPosition())) { setPage (i); return; }
+}
+
+bool LivePlanetEditor::keyPressed (const KeyPress& k)
+{
+    // Cmd + Z: undo the last change to the song (the note and drum editors keep their own undo while you edit there)
+    if (k.getModifiers().isCommandDown() && k.getKeyCode() == 'Z' && proc.songJob.getStatus().undoWhat.isNotEmpty())
+    {
+        proc.songJob.undo();
+        repaint();
+        return true;
+    }
+    return false;
 }
 
 void LivePlanetEditor::paintOverChildren (Graphics& g)
@@ -2100,8 +2136,8 @@ void LivePlanetEditor::resized()
         const int y = cardTimeline.getBottom() - 54;
         playButton.setBounds (cardTimeline.getX() + 18, y + 2, 40, 40);
         int px = cardTimeline.getX() + 74;
-        const int pw = (cardTimeline.getRight() - 18 - px) / 6;
-        for (auto* pill : { &pillMidi, &pillChords, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        const int pw = (cardTimeline.getRight() - 18 - px) / 5;
+        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         {
             pill->setBounds (px, y + 4, pw - 8, 36);
             px += pw;

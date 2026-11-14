@@ -20,7 +20,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -64,6 +64,8 @@ public:
         bool editing = false;
         juce::Array<juce::File> takes;  // the takes written together (empty = just this one)
         int take = -1;                  // which of them is open
+        juce::String undoWhat;          // what "undo" takes back (empty: nothing to undo)
+        int mixInsertAt = -1, mixInsertSerial = 0; // an undone delete: its mixer row comes back here
     };
 
     SongJob() : juce::Thread ("Live Planet song mode", 16 * 1024 * 1024) { startThread (juce::Thread::Priority::low); } // loads your sample library right away
@@ -471,6 +473,108 @@ public:
         return lp::song::chords::read (mc, bc, song.key, song.minor, 2.0);
     }
 
+    // every MIDI part of the song in one file ("drag midi"): the drums, each played part (808, hook, bass lines,
+    // melodies) on its own track, and the chords and bass your loops play (read from them), with the song's
+    // sections as markers. Dropped in a DAW it becomes one MIDI track per part. Made once per version of the song.
+    juce::File allMidi()
+    {
+        lp::song::Song song;
+        std::vector<TrackInfo> tracks;
+        juce::File folder;
+        int version = 0;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong) return {};
+            song = current; tracks = status.tracks; folder = currentFolder; version = status.version;
+        }
+        const auto file = folder.getChildFile (song.title + " - midi.mid");
+        if (allMidiVersion == version && file.existsAsFile()) return file;
+        constexpr int tpq = 960;
+        juce::MidiFile mf;
+        mf.setTicksPerQuarterNote (tpq);
+        juce::MidiMessageSequence conductor;
+        conductor.addEvent (juce::MidiMessage::textMetaEvent (3, song.title), 0);
+        conductor.addEvent (juce::MidiMessage::tempoMetaEvent ((int) (60000000.0 / song.bpm)), 0);
+        conductor.addEvent (juce::MidiMessage::timeSignatureMetaEvent (4, 4), 0);
+        conductor.addEvent (juce::MidiMessage::keySignatureMetaEvent (0, song.minor), 0);
+        for (auto& sec : song.sections) conductor.addEvent (juce::MidiMessage::textMetaEvent (6, sec.name), sec.startBar * 4.0 * tpq);
+        conductor.addEvent (juce::MidiMessage::endOfTrack(), song.totalBars() * 4.0 * tpq);
+        mf.addTrack (conductor);
+        bool anyLoops = false;
+        for (auto& part : song.parts)
+        {
+            anyLoops = anyLoops || part.kind == lp::song::PartKind::Loop;
+            if (part.notes.empty() || part.kind == lp::song::PartKind::Loop || part.kind == lp::song::PartKind::Fx) continue;
+            juce::MidiMessageSequence seq;
+            seq.addEvent (juce::MidiMessage::textMetaEvent (3, juce::String (part.name)), 0);
+            const int ch = part.kind == lp::song::PartKind::Drums ? 10 : 1;
+            for (auto& n : part.notes)
+            {
+                seq.addEvent (juce::MidiMessage::noteOn (ch, juce::jlimit (0, 127, n.pitch), juce::jlimit (0.05f, 1.0f, n.velocity)), n.beat * tpq);
+                seq.addEvent (juce::MidiMessage::noteOff (ch, juce::jlimit (0, 127, n.pitch)), std::max (n.beat * tpq + 1, (n.beat + n.length) * tpq - 1));
+            }
+            seq.sort();
+            seq.updateMatchedPairs();
+            mf.addTrack (seq);
+        }
+        if (anyLoops)
+        {
+            // what your loops play, as chords and a bass line (to double them, or swap in your own sounds)
+            juce::MidiMessageSequence ch, bs;
+            ch.addEvent (juce::MidiMessage::textMetaEvent (3, "chords (from your loops)"), 0);
+            bs.addEvent (juce::MidiMessage::textMetaEvent (3, "bass (from your loops)"), 0);
+            lp::song::chords::chordTracks (songChords (song, tracks), tpq, ch, bs, nullptr);
+            mf.addTrack (ch);
+            mf.addTrack (bs);
+        }
+        file.deleteFile();
+        {
+            juce::FileOutputStream os (file);
+            if (! os.openedOk()) return {};
+            mf.writeTo (os, 1);
+        }
+        allMidiVersion = version;
+        return file;
+    }
+
+    // one played part's notes as MIDI (EDIT's "drag midi"): the 808, the hook, a bass line, the drums
+    juce::File partMidi (int track)
+    {
+        lp::song::Song song;
+        juce::File folder;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return {};
+            song = current; folder = currentFolder;
+        }
+        const auto& part = song.parts[(size_t) track];
+        if (part.notes.empty() || part.kind == lp::song::PartKind::Loop) return {};
+        constexpr int tpq = 960;
+        juce::MidiFile mf;
+        mf.setTicksPerQuarterNote (tpq);
+        juce::MidiMessageSequence seq;
+        seq.addEvent (juce::MidiMessage::tempoMetaEvent ((int) (60000000.0 / song.bpm)), 0);
+        seq.addEvent (juce::MidiMessage::timeSignatureMetaEvent (4, 4), 0);
+        seq.addEvent (juce::MidiMessage::textMetaEvent (3, juce::String (part.name)), 0);
+        const int ch = part.kind == lp::song::PartKind::Drums ? 10 : 1;
+        for (auto& n : part.notes)
+        {
+            seq.addEvent (juce::MidiMessage::noteOn (ch, juce::jlimit (0, 127, n.pitch), juce::jlimit (0.05f, 1.0f, n.velocity)), n.beat * tpq);
+            seq.addEvent (juce::MidiMessage::noteOff (ch, juce::jlimit (0, 127, n.pitch)), std::max (n.beat * tpq + 1, (n.beat + n.length) * tpq - 1));
+        }
+        seq.sort();
+        seq.updateMatchedPairs();
+        mf.addTrack (seq);
+        // (in its own folder so the clip keeps the part's plain name in your DAW)
+        const auto file = folder.getChildFile ("midi").getChildFile (juce::String (part.name) + ".mid");
+        file.getParentDirectory().createDirectory();
+        file.deleteFile();
+        juce::FileOutputStream os (file);
+        if (! os.openedOk()) return {};
+        mf.writeTo (os, 1);
+        return file;
+    }
+
     // the song's chords and bass as MIDI ("drag chords"): read from what its tracks really play, so it
     // matches the song even after swaps and key changes. Made once per version of the song.
     juce::File chordsMidi (juce::String* summary = nullptr)
@@ -535,6 +639,9 @@ public:
         s.editing = status.editing;
         s.takes = status.takes;
         s.take = status.take;
+        s.undoWhat = status.undoWhat;
+        s.mixInsertAt = status.mixInsertAt;
+        s.mixInsertSerial = status.mixInsertSerial;
         s.stage = status.stage;
         s.progress = status.progress;
         s.message = status.message;
@@ -644,7 +751,31 @@ private:
             }
             if (! todo.empty())
             {
-                for (auto& [tr, op] : todo) applyEdit (tr, op);
+                for (auto& [tr, op] : todo)
+                {
+                    if (op == EditOp::Undo) { undoLast(); continue; }
+                    // what the song was before this change, so it can be undone
+                    Snapshot snap;
+                    int v0 = 0;
+                    const bool record = op != EditOp::Like && op != EditOp::Dislike;
+                    {
+                        const juce::ScopedLock sl (lock);
+                        snap.song = current; snap.tracks = status.tracks; v0 = status.version;
+                        snap.what = describe (tr, op);
+                        snap.removedAt = op == EditOp::Remove ? tr : -1;
+                    }
+                    applyEdit (tr, op);
+                    if (record)
+                    {
+                        const juce::ScopedLock sl (lock);
+                        if (status.haveSong && status.version != v0 && ! snap.tracks.empty())
+                        {
+                            history.push_back (std::move (snap));
+                            if (history.size() > 40) history.erase (history.begin());
+                            status.undoWhat = history.back().what;
+                        }
+                    }
+                }
                 const juce::ScopedLock sl (lock);
                 status.editing = ! edits.empty();
                 continue;
@@ -1228,6 +1359,8 @@ private:
         for (int k = 1; k < lp::song::kNumLoopKinds; ++k)
             status.kindCounts[(size_t) k] = (int) usableLib.loopsOfKind ((lp::song::LoopKind) k, song.bpm).size();
         status.haveSong = true;
+        history.clear();
+        status.undoWhat = {};
         status.stage = Stage::Done;
         status.progress = 1.0f;
         status.message = "\"" + song.title + "\" is ready. locators: drag the locators button onto any track in ableton";
@@ -1584,7 +1717,7 @@ private:
             juce::AudioBuffer<float> buf;
             if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
             const auto stem = currentFolder.getChildFile ("stems").getChildFile (
-                juce::String ((int) i + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (" + lp::noteName (key) + (minor ? "m" : "") + ").wav");
+                juce::String ((int) i + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (" + lp::noteName (key) + (minor ? "m" : "") + " " + juce::String (++editCounter) + ").wav");
             if (! writeStem (stem, buf, currentRs.sampleRate)) return;
             tracks[i] = info (part, stem, song);
         }
@@ -2035,6 +2168,71 @@ private:
         ++status.version;
         saveSession();
     }
+
+    // ---- undo: the song as it was before each change (its tracks' files stay on disk, so going back is instant)
+    struct Snapshot
+    {
+        lp::song::Song song;
+        std::vector<TrackInfo> tracks;
+        juce::String what;
+        int removedAt = -1;
+    };
+    std::vector<Snapshot> history;
+
+    juce::String describe (int tr, EditOp op) const
+    {
+        const juce::String name = tr >= 0 && tr < (int) status.tracks.size() ? status.tracks[(size_t) tr].name : juce::String();
+        auto on = [&] (const char* what) { return name.isNotEmpty() ? juce::String (what) + " " + name : juce::String (what); };
+        switch (op)
+        {
+            case EditOp::Swap: return on ("swap");
+            case EditOp::Reverse: return on ("reverse");
+            case EditOp::PitchUp: case EditOp::PitchDown: return on ("pitch");
+            case EditOp::Add: return "add instrument";
+            case EditOp::Region: return on ("bars of");
+            case EditOp::Grains: return on ("grains on");
+            case EditOp::Key: return "key change";
+            case EditOp::Notes: return on ("notes of");
+            case EditOp::SwapDrum: return on ("drum swap in");
+            case EditOp::Feel: return "drum feel";
+            case EditOp::AddHook: return "add hook";
+            case EditOp::AddChops: return "add vocal chops";
+            case EditOp::FromTake: return "track from a take";
+            case EditOp::Arrange: return "arrangement";
+            case EditOp::Add808: return "add 808";
+            case EditOp::SliceDrums: return on ("slice");
+            case EditOp::AddTuned: return "add tuned vocal";
+            case EditOp::Remove: return on ("delete");
+            case EditOp::Section: return "section change";
+            case EditOp::Rewrite: return "write the rest again";
+            default: return "change";
+        }
+    }
+
+    void undoLast()
+    {
+        Snapshot s;
+        {
+            const juce::ScopedLock sl (lock);
+            if (history.empty() || ! status.haveSong) return;
+            s = std::move (history.back());
+            history.pop_back();
+        }
+        rebuildMix (s.song, s.tracks);
+        const juce::ScopedLock sl (lock);
+        current = s.song;
+        status.song = s.song;
+        status.tracks = s.tracks;
+        if (s.removedAt >= 0) { status.mixInsertAt = s.removedAt; ++status.mixInsertSerial; }
+        status.message = "undone: " + s.what;
+        status.undoWhat = history.empty() ? juce::String() : history.back().what;
+        ++status.version;
+        saveSession();
+    }
+
+public:
+    void undo() { editTrack (-1, EditOp::Undo); }
+private:
 
     // a track taken out of the song (its file stays in the song folder, in case you drag it later)
     void removeTrack (int tr)
@@ -2597,8 +2795,52 @@ private:
     }
 
     // everything needed to open this song again and keep editing it (called with `lock` held)
+    // the song as the Ableton helper reads it (tempo, sections for locators, every track's file and notes):
+    // rewritten after every change, so the locators and tracks it makes are always the song you have now
+    void writePlan()
+    {
+        if (! currentFolder.isDirectory() || current.parts.empty()) return;
+        auto* plan = new juce::DynamicObject();
+        plan->setProperty ("title", current.title);
+        plan->setProperty ("bpm", current.bpm);
+        plan->setProperty ("key", juce::String (lp::noteName (current.key)) + (current.minor ? " minor" : " major"));
+        juce::Array<juce::var> secs;
+        for (auto& sec : current.sections)
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("name", juce::String (sec.name));
+            o->setProperty ("beat", sec.startBar * 4);
+            o->setProperty ("bars", sec.bars);
+            secs.add (o);
+        }
+        plan->setProperty ("sections", secs);
+        juce::Array<juce::var> stems, tracks;
+        for (size_t i = 0; i < status.tracks.size(); ++i)
+        {
+            stems.add (status.tracks[i].stem.getFullPathName());
+            auto* t = new juce::DynamicObject();
+            t->setProperty ("name", status.tracks[i].name);
+            t->setProperty ("file", status.tracks[i].stem.getFullPathName());
+            if (i < current.parts.size() && current.parts[i].kind != lp::song::PartKind::Loop && ! current.parts[i].notes.empty())
+            {
+                juce::Array<juce::var> notes;
+                for (auto& n : current.parts[i].notes) notes.add (juce::Array<juce::var> { n.beat, n.length, n.pitch, n.velocity });
+                t->setProperty ("notes", notes);
+            }
+            tracks.add (t);
+        }
+        plan->setProperty ("stems", stems);
+        plan->setProperty ("tracks", tracks);
+        plan->setProperty ("mix", status.files.mixFile.getFullPathName());
+        const auto text = juce::JSON::toString (juce::var (plan));
+        currentFolder.getChildFile ("plan.json").replaceWithText (text);
+        latestPointer().getParentDirectory().createDirectory();
+        latestPointer().replaceWithText (text);
+    }
+
     void saveSession()
     {
+        writePlan();
         if (! currentFolder.isDirectory()) return;
         namespace F = lp::song::file;
         auto* o = new juce::DynamicObject();
@@ -2615,6 +2857,7 @@ private:
         tg->setProperty ("wish", F::ints (std::vector<int> { w.dark, w.plucky, w.punchy, w.lofi, w.warm, w.airy }));
         o->setProperty ("target", tg);
         o->setProperty ("seed", (juce::int64) currentSeed);
+        o->setProperty ("editCounter", editCounter);
         o->setProperty ("drumPacks", F::strings (currentPicksDrumPacks));
         auto* rf = new juce::DynamicObject();
         rf->setProperty ("valid", currentRef.valid); rf->setProperty ("hasStems", currentRef.hasStems);
@@ -2648,6 +2891,8 @@ private:
         const auto stems = F::readStrings (v["stems"]);
         if (stems.size() != (int) song.parts.size()) return;
         for (auto& p : stems) if (! juce::File (p).existsAsFile()) return; // moved or deleted: leave it
+        // carry on numbering new files after the ones already made (so a new file never replaces an old one)
+        editCounter = std::max ((int) v.getProperty ("editCounter", 0), (int) folder.getChildFile ("stems").getNumberOfChildFiles (juce::File::findFiles)) + 1;
         lp::song::RenderSettings rs;
         rs.sampleRate = v["render"].getProperty ("sampleRate", 48000.0); rs.nostalgia = v["render"]["nostalgia"];
         rs.space = v["render"]["space"]; rs.warmth = v["render"]["warmth"]; rs.echo = v["render"]["echo"];
@@ -2690,6 +2935,8 @@ private:
         for (int k = 1; k < lp::song::kNumLoopKinds; ++k)
             status.kindCounts[(size_t) k] = (int) usableLib.loopsOfKind ((lp::song::LoopKind) k, song.bpm).size();
         status.haveSong = true;
+        history.clear();
+        status.undoWhat = {};
         status.stage = Stage::Done;
         status.progress = 1.0f;
         status.message = "\"" + song.title + "\" is back, as you left it";
@@ -2707,6 +2954,7 @@ private:
     }
 
     int editCounter = 0;
+    int allMidiVersion = -1;
 
     // ---------- the producer: which loop plays where, and what happens to it
     enum class Role { Main, Second, Third, Fourth, Bass, DrumLoop, Perc, Pad, Vocal, Fx };
