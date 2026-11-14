@@ -105,6 +105,12 @@ void LivePlanetLookAndFeel::applyThemeColours()
     setColour (AlertWindow::backgroundColourId, panel.withAlpha (0.985f));
     setColour (AlertWindow::textColourId, th->ink);
     setColour (AlertWindow::outlineColourId, th->line);
+    // text boxes inside dialogs (the license code): a visible field
+    setColour (TextEditor::backgroundColourId, Colours::black.withAlpha (0.35f));
+    setColour (TextEditor::textColourId, th->ink);
+    setColour (TextEditor::outlineColourId, th->line.brighter (0.4f));
+    setColour (TextEditor::focusedOutlineColourId, th->grass);
+    setColour (CaretComponent::caretColourId, th->grass);
     setColour (TooltipWindow::backgroundColourId, panel.withAlpha (0.97f));
     setColour (TooltipWindow::textColourId, th->ink);
     setColour (TooltipWindow::outlineColourId, th->line);
@@ -190,6 +196,22 @@ void LivePlanetLookAndFeel::drawPopupMenuSectionHeader (Graphics& g, const Recta
     g.setFont (lp::ui::mono (9.5f, true, 0.16f));
     g.setColour (th->grassLight);
     g.drawFittedText (name.toUpperCase(), area.reduced (17, 0).withTrimmedTop (6), Justification::centredLeft, 1);
+}
+
+void LivePlanetLookAndFeel::fillTextEditorBackground (Graphics& g, int w, int h, TextEditor& ed)
+{
+    const auto c = ed.findColour (TextEditor::backgroundColourId);
+    if (c.getAlpha() == 0) return;
+    g.setColour (c);
+    g.fillRoundedRectangle (Rectangle<float> (0.0f, 0.0f, (float) w, (float) h), 12.0f);
+}
+
+void LivePlanetLookAndFeel::drawTextEditorOutline (Graphics& g, int w, int h, TextEditor& ed)
+{
+    const auto c = ed.findColour (ed.hasKeyboardFocus (true) ? TextEditor::focusedOutlineColourId : TextEditor::outlineColourId);
+    if (c.getAlpha() == 0 || ! ed.isEnabled()) return;
+    g.setColour (c);
+    g.drawRoundedRectangle (Rectangle<float> (0.5f, 0.5f, (float) w - 1.0f, (float) h - 1.0f), 12.0f, ed.hasKeyboardFocus (true) ? 1.5f : 1.0f);
 }
 
 Font LivePlanetLookAndFeel::getAlertWindowTitleFont() { return font (19.0f, lp::ui::Medium, -0.01f); }
@@ -831,7 +853,7 @@ SongPanel::SongPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     dawTempoAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (p.params, "dawtempo", dawTempo);
     write.onClick = [this]
     {
-        if (! lp::license::canWrite()) { showActivate ("Your 7-day trial has ended. Loopwright is " + lp::license::priceLine() + "\n\nPaste your license code to keep writing songs."); return; }
+        if (! lp::license::canWrite()) { showActivate ("ended"); return; }
         proc.songPrompt = promptBox.getText();
         proc.songPromptIsAuto = autoDescription.isNotEmpty() && promptBox.getText().trim() == autoDescription;
         proc.makeSong (full, newKey.getToggleState(), takes3 ? 3 : 1);
@@ -1080,26 +1102,18 @@ void SongPanel::paint (Graphics& g)
 
 void SongPanel::showActivate (const String& message)
 {
-    auto* w = new AlertWindow ("Loopwright license", message, MessageBoxIconType::NoIcon, this);
-    w->addTextEditor ("code", {}, "License code");
-    w->addButton ("Activate", 1, KeyPress (KeyPress::returnKey));
-    if (lp::license::buyUrl().isNotEmpty() && lp::license::activatedTo().isEmpty())
-        w->addButton ("Buy " + lp::license::price(), 2);
-    w->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+    // over the whole plugin window
+    auto* top = getTopLevelComponent();
+    if (top == nullptr) return;
     SafePointer<SongPanel> self (this);
-    w->enterModalState (true, ModalCallbackFunction::create ([self, w] (int r)
+    licensePanel = std::make_unique<LicensePanel> ([self]
     {
-        if (r == 2) URL (lp::license::buyUrl()).launchInDefaultBrowser();
-        if (r == 1)
-        {
-            const auto code = w->getTextEditorContents ("code");
-            if (lp::license::activate (code))
-                AlertWindow::showMessageBoxAsync (MessageBoxIconType::NoIcon, "Loopwright", "Activated for " + lp::license::activatedTo() + ". Enjoy!");
-            else
-                AlertWindow::showMessageBoxAsync (MessageBoxIconType::NoIcon, "Loopwright", "That code didn't work. Copy the whole code, starting with LW1-");
-        }
-        if (self != nullptr) self->repaint();
-    }), true);
+        MessageManager::callAsync ([self] { if (self != nullptr) { self->licensePanel.reset(); self->repaint(); } });
+    }, message);
+    top->addAndMakeVisible (*licensePanel);
+    licensePanel->setBounds (top->getLocalBounds());
+    licensePanel->toFront (true);
+    licensePanel->focusCode();
 }
 
 void SongPanel::refresh()
@@ -1130,11 +1144,7 @@ void SongPanel::mouseUp (const MouseEvent& e)
     if (sourcesLink.contains (e.position)) { if (onShowSources) onShowSources(); return; }
     if (licenseLink.contains (e.position))
     {
-        const auto owner = lp::license::activatedTo();
-        const int left = lp::license::trialDaysLeft();
-        showActivate (owner.isNotEmpty() ? "Licensed to " + owner + ". Thank you!"
-                      : (left > 0 ? "You're on the free trial: " + String (left) + (left == 1 ? " day" : " days") + " left.\n" : String())
-                        + "Loopwright is " + lp::license::priceLine() + "\n\nPaste your license code to activate.");
+        showActivate ({});
         return;
     }
     if (folderLink.contains (e.position))

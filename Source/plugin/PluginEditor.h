@@ -56,8 +56,9 @@ public:
     void drawCallOutBoxBackground (juce::CallOutBox&, juce::Graphics&, const juce::Path&, juce::Image&) override;
     int getCallOutBoxBorderSize (const juce::CallOutBox&) override { return 22; }
     float getCallOutBoxCornerSize (const juce::CallOutBox&) override { return 12.0f; }
-    void fillTextEditorBackground (juce::Graphics&, int, int, juce::TextEditor&) override {}
-    void drawTextEditorOutline (juce::Graphics&, int, int, juce::TextEditor&) override {}
+    // text boxes draw their own box only when given a colour (the big prompt box is see-through)
+    void fillTextEditorBackground (juce::Graphics&, int, int, juce::TextEditor&) override;
+    void drawTextEditorOutline (juce::Graphics&, int, int, juce::TextEditor&) override;
 
     const lp::ui::Theme* th = &lp::ui::theme (0);
     std::map<std::pair<const lp::ui::Theme*, int>, juce::Image> balls; // grass knob images
@@ -224,6 +225,29 @@ private:
     juce::TextButton back { "back" }, next { "next" };
 };
 
+// the license window: the price, the trial, a box for the code, Activate / Buy (a card over the plugin)
+class LicensePanel : public juce::Component
+{
+public:
+    LicensePanel (std::function<void()> closed, const juce::String& note = {});
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseUp (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    void focusCode() { code.grabKeyboardFocus(); }
+
+private:
+    void activate();
+    void refreshState();
+    juce::Rectangle<int> card() const;
+    std::function<void()> onClosed;
+    juce::String note, message;
+    bool messageBad = false, licensed = false;
+    juce::TextEditor code;
+    juce::TextButton activateBtn { "Activate" }, buyBtn { "Buy" }, closeBtn { "Close" };
+    juce::Rectangle<int> closeX, lostLink;
+};
+
 class SongPanel : public juce::Component
 {
 public:
@@ -252,6 +276,7 @@ private:
     juce::Rectangle<float> scanLink, folderLink, sourcesLink;
     juce::Rectangle<float> licenseLink;
     void showActivate (const juce::String& message);
+    std::unique_ptr<LicensePanel> licensePanel;
 public:
     std::function<void()> onShowSources;
     juce::Rectangle<int> heroArea() const { return hero; }

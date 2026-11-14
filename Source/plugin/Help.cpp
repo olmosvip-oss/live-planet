@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "License.h"
 
 using namespace juce;
 using lp::ui::font;
@@ -161,4 +162,224 @@ void Tour::paint (Graphics& g)
         g.setColour (i == at ? t.grass : Colours::white.withAlpha (0.18f));
         g.fillEllipse (c.getX() + 22.0f + (float) i * 12.0f, dy, 6.0f, 6.0f);
     }
+}
+
+// ---- the license window
+
+namespace
+{
+    const lp::ui::Theme& themeOf (Component& c)
+    {
+        const auto* lnf = dynamic_cast<LivePlanetLookAndFeel*> (&c.getLookAndFeel());
+        return lnf != nullptr ? *lnf->th : currentTheme();
+    }
+    // the site's "get your code again" page, from the Buy link (https://site/api/checkout -> https://site/license)
+    String lostCodeUrl()
+    {
+        const auto buy = lp::license::buyUrl();
+        if (buy.isEmpty()) return {};
+        const URL u (buy);
+        return u.getOrigin() + "/license";
+    }
+}
+
+LicensePanel::LicensePanel (std::function<void()> closed, const String& n) : onClosed (std::move (closed)), note (n)
+{
+    setWantsKeyboardFocus (true);
+    code.setFont (lp::ui::mono (13.0f, false, 0.02f));
+    code.setIndents (14, 0);
+    code.setJustification (Justification::centredLeft);
+    code.setSelectAllWhenFocused (true);
+    code.setColour (TextEditor::backgroundColourId, Colours::black.withAlpha (0.42f));
+    code.setColour (TextEditor::outlineColourId, Colours::white.withAlpha (0.14f));
+    code.setColour (TextEditor::textColourId, Colours::white);
+    code.setTextToShowWhenEmpty ("Paste your code: LW1-...", Colours::white.withAlpha (0.32f));
+    code.onReturnKey = [this] { activate(); };
+    code.onTextChange = [this] { if (message.isNotEmpty()) { message = {}; repaint(); } };
+    addAndMakeVisible (code);
+    activateBtn.getProperties().set ("primary", true);
+    activateBtn.onClick = [this] { activate(); };
+    buyBtn.setButtonText ("Buy " + lp::license::price());
+    buyBtn.onClick = [] { URL (lp::license::buyUrl()).launchInDefaultBrowser(); };
+    closeBtn.getProperties().set ("primary", true);
+    closeBtn.onClick = [this] { if (onClosed) onClosed(); };
+    for (auto* b : { &activateBtn, &buyBtn, &closeBtn }) { b->setWantsKeyboardFocus (false); addAndMakeVisible (*b); }
+    refreshState();
+}
+
+void LicensePanel::refreshState()
+{
+    licensed = lp::license::activatedTo().isNotEmpty();
+    code.setVisible (! licensed);
+    activateBtn.setVisible (! licensed);
+    buyBtn.setVisible (! licensed && lp::license::buyUrl().isNotEmpty());
+    closeBtn.setVisible (licensed);
+    resized();
+    repaint();
+}
+
+void LicensePanel::activate()
+{
+    const auto c = code.getText().trim();
+    if (c.isEmpty()) { message = "Paste the code from your email or the thank-you page."; messageBad = true; repaint(); return; }
+    if (! lp::license::activate (c)) { message = "That code didn't work. Copy the whole thing, starting with LW1-"; messageBad = true; repaint(); return; }
+    message = {};
+    refreshState();
+}
+
+Rectangle<int> LicensePanel::card() const
+{
+    const int w = juce::jmin (500, getWidth() - 40), h = licensed ? 300 : 438;
+    return Rectangle<int> (w, h).withCentre (getLocalBounds().getCentre());
+}
+
+void LicensePanel::resized()
+{
+    auto c = card().reduced (34, 30);
+    closeX = Rectangle<int> (card().getRight() - 50, card().getY() + 18, 30, 30);
+    auto bottom = c.removeFromBottom (licensed ? 46 : 74);
+    if (licensed) { closeBtn.setBounds (bottom.withSizeKeepingCentre (180, 44)); return; }
+    lostLink = bottom.removeFromBottom (18);
+    bottom.removeFromBottom (12);
+    auto row = bottom.removeFromTop (44);
+    if (buyBtn.isVisible())
+    {
+        activateBtn.setBounds (row.removeFromLeft (row.getWidth() / 2 - 6));
+        row.removeFromLeft (12);
+        buyBtn.setBounds (row);
+    }
+    else activateBtn.setBounds (row);
+    c.removeFromBottom (36); // the message line
+    code.setBounds (c.removeFromBottom (48));
+}
+
+void LicensePanel::paint (Graphics& g)
+{
+    const auto& t = themeOf (*this);
+    g.fillAll (Colours::black.withAlpha (0.66f));
+    const auto cf = card().toFloat();
+    // the card: dark, a soft glow of the theme colour from the top corner
+    {
+        Graphics::ScopedSaveState s (g);
+        Path clip; clip.addRoundedRectangle (cf, 20.0f);
+        g.reduceClipRegion (clip);
+        g.setColour (t.bodyDark.interpolatedWith (Colour (0xff0d0d11), 0.6f));
+        g.fillRect (cf);
+        ColourGradient glow (t.grass.withAlpha (0.32f), cf.getRight() - 40.0f, cf.getY(), t.grass.withAlpha (0.0f), cf.getRight() - 300.0f, cf.getY() + 260.0f, true);
+        g.setGradientFill (glow);
+        g.fillRect (cf);
+    }
+    g.setColour (Colours::white.withAlpha (0.1f));
+    g.drawRoundedRectangle (cf.reduced (0.5f), 20.0f, 1.0f);
+
+    auto r = cf.reduced (34.0f, 30.0f);
+    // the label, and a close cross
+    g.setFont (lp::ui::mono (10.0f, true, 0.18f));
+    g.setColour (t.grassLight);
+    g.drawText ("LOOPWRIGHT LICENSE", r.removeFromTop (14.0f), Justification::centredLeft, false);
+    {
+        auto x = closeX.toFloat().reduced (9.0f);
+        g.setColour (Colours::white.withAlpha (isMouseOver() && closeX.contains (getMouseXYRelative()) ? 0.9f : 0.45f));
+        g.drawLine (x.getX(), x.getY(), x.getRight(), x.getBottom(), 1.6f);
+        g.drawLine (x.getRight(), x.getY(), x.getX(), x.getBottom(), 1.6f);
+    }
+    r.removeFromTop (14.0f);
+
+    if (licensed)
+    {
+        g.setFont (font (30.0f, lp::ui::Medium, -0.02f));
+        g.setColour (t.ink);
+        g.drawText ("You're all set.", r.removeFromTop (38.0f), Justification::centredLeft, false);
+        r.removeFromTop (8.0f);
+        g.setFont (font (14.5f));
+        g.setColour (t.ink.withAlpha (0.75f));
+        g.drawText ("Licensed to " + lp::license::activatedTo(), r.removeFromTop (22.0f), Justification::centredLeft, true);
+        g.drawText ("Yours forever, with free updates. Thank you!", r.removeFromTop (22.0f), Justification::centredLeft, true);
+        return;
+    }
+
+    const int left = lp::license::trialDaysLeft();
+    const bool ended = left <= 0;
+    g.setFont (font (30.0f, lp::ui::Medium, -0.02f));
+    g.setColour (t.ink);
+    g.drawText (ended ? "Your free trial has ended." : "Make it yours.", r.removeFromTop (38.0f), Justification::centredLeft, false);
+    r.removeFromTop (4.0f);
+    g.setFont (font (14.5f));
+    g.setColour (t.ink.withAlpha (0.7f));
+    g.drawText (ended ? "Activate Loopwright to keep writing songs." : "You're on the free trial. Everything is unlocked.", r.removeFromTop (22.0f), Justification::centredLeft, false);
+    r.removeFromTop (18.0f);
+
+    // the price, and what you get
+    auto priceRow = r.removeFromTop (70.0f);
+    g.setColour (Colours::white.withAlpha (0.045f));
+    g.fillRoundedRectangle (priceRow, 14.0f);
+    g.setColour (Colours::white.withAlpha (0.08f));
+    g.drawRoundedRectangle (priceRow.reduced (0.5f), 14.0f, 1.0f);
+    auto pr = priceRow.reduced (18.0f, 0.0f);
+    g.setFont (font (36.0f, lp::ui::Medium, -0.03f));
+    g.setColour (t.ink);
+    const auto price = lp::license::price();
+    const float pw = GlyphArrangement::getStringWidth (g.getCurrentFont(), price) + 10.0f;
+    g.drawText (price, pr.removeFromLeft (pw), Justification::centredLeft, false);
+    pr.removeFromLeft (14.0f);
+    g.setFont (lp::ui::mono (10.0f, false, 0.12f));
+    g.setColour (t.ink.withAlpha (0.8f));
+    const char* perks[] = { "ONE-TIME PAYMENT", "YOURS FOREVER", "FREE UPDATES" };
+    auto perkArea = pr.withSizeKeepingCentre (pr.getWidth(), 48.0f);
+    for (auto* p : perks)
+    {
+        auto line = perkArea.removeFromTop (16.0f);
+        g.setColour (t.grass);
+        g.fillEllipse (line.getX(), line.getCentreY() - 2.5f, 5.0f, 5.0f);
+        g.setColour (t.ink.withAlpha (0.8f));
+        g.drawText (p, line.withTrimmedLeft (13.0f), Justification::centredLeft, false);
+    }
+    // the trial, as a little pill on the right of the price
+    {
+        const String txt = ended ? "TRIAL ENDED" : String (left) + (left == 1 ? " DAY LEFT" : " DAYS LEFT");
+        g.setFont (lp::ui::mono (9.5f, true, 0.12f));
+        const float w = GlyphArrangement::getStringWidth (g.getCurrentFont(), txt) + 22.0f;
+        auto pill = Rectangle<float> (priceRow.getRight() - 16.0f - w, priceRow.getCentreY() - 12.0f, w, 24.0f);
+        const auto col = ended ? Colour (0xfff2a33a) : t.grass;
+        g.setColour (col.withAlpha (0.16f));
+        g.fillRoundedRectangle (pill, 12.0f);
+        g.setColour (col.withAlpha (0.9f));
+        g.drawText (txt, pill, Justification::centred, false);
+    }
+
+    // the message under the box (wrong code, empty box)
+    if (message.isNotEmpty())
+    {
+        auto m = code.getBounds().toFloat().translated (0.0f, (float) code.getHeight() + 8.0f).withHeight (20.0f);
+        g.setFont (font (13.0f));
+        g.setColour (messageBad ? Colour (0xfff2a33a) : t.grassLight);
+        g.drawText (message, m, Justification::centredLeft, true);
+    }
+    // lost your code?
+    const auto lost = lostCodeUrl();
+    if (lost.isNotEmpty())
+    {
+        g.setFont (font (12.5f));
+        g.setColour (t.ink.withAlpha (lostLink.contains (getMouseXYRelative()) ? 0.9f : 0.5f));
+        g.drawText ("Lost your code? Get it again", lostLink, Justification::centred, false);
+    }
+    else
+    {
+        g.setFont (font (12.5f));
+        g.setColour (t.ink.withAlpha (0.45f));
+        g.drawText ("Your code is in your purchase email.", lostLink, Justification::centred, false);
+    }
+}
+
+void LicensePanel::mouseUp (const MouseEvent& e)
+{
+    const auto p = e.getPosition();
+    if (closeX.contains (p) || ! card().contains (p)) { if (onClosed) onClosed(); return; }
+    if (! licensed && lostLink.contains (p) && lostCodeUrl().isNotEmpty()) URL (lostCodeUrl()).launchInDefaultBrowser();
+}
+
+bool LicensePanel::keyPressed (const KeyPress& k)
+{
+    if (k == KeyPress::escapeKey) { if (onClosed) onClosed(); return true; }
+    return false;
 }
