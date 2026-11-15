@@ -320,7 +320,25 @@ void LicensePanel::paint (Graphics& g)
     g.setColour (t.ink);
     const auto price = lp::license::price();
     const float pw = GlyphArrangement::getStringWidth (g.getCurrentFont(), price) + 10.0f;
-    g.drawText (price, pr.removeFromLeft (pw), Justification::centredLeft, false);
+    auto priceArea = pr.removeFromLeft (pw);
+    if (lp::license::onSale())
+    {
+        // Black Friday: the sale price, the regular one crossed out under it, and when it ends above the box
+        g.drawText (price, priceArea.withTrimmedBottom (14.0f), Justification::centredLeft, false);
+        g.setFont (font (14.0f, lp::ui::Medium));
+        g.setColour (t.ink.withAlpha (0.45f));
+        const auto reg = lp::license::regularPrice();
+        auto regArea = Rectangle<float> (priceArea.getX() + 2.0f, priceArea.getBottom() - 24.0f, GlyphArrangement::getStringWidth (g.getCurrentFont(), reg) + 2.0f, 16.0f);
+        g.drawText (reg, regArea, Justification::centredLeft, false);
+        g.drawLine (regArea.getX(), regArea.getCentreY(), regArea.getRight(), regArea.getCentreY(), 1.2f);
+        g.setFont (lp::ui::mono (9.0f, true, 0.14f));
+        g.setColour (t.grassLight);
+        g.drawText (lp::license::saleName(), priceRow.translated (0.0f, -15.0f).withHeight (12.0f).reduced (4.0f, 0.0f), Justification::centredLeft, false);
+        g.setFont (font (36.0f, lp::ui::Medium, -0.03f));
+        g.setColour (t.ink);
+    }
+    else
+        g.drawText (price, priceArea, Justification::centredLeft, false);
     pr.removeFromLeft (14.0f);
     g.setFont (lp::ui::mono (10.0f, false, 0.12f));
     g.setColour (t.ink.withAlpha (0.8f));

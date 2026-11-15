@@ -24,10 +24,10 @@ just include their notices.
 Windows: an EV / OV code-signing certificate stops SmartScreen warnings (later).
 
 ## 4. Selling and license codes (Stripe + the website)
-Price: **$39 one-time** (the launch price), yours forever, free updates, with a **7-day free trial**.
+Price: **$49 one-time** ($29 for Black Friday until the end of Dec 1; the plugin and site switch back by themselves), yours forever, free updates, with a **7-day free trial**.
 
 How a sale works:
-1. "buy now" on the website goes to `/api/checkout`, which opens a Stripe checkout for $39.
+1. "buy now" on the website goes to `/api/checkout`, which opens a Stripe checkout ($29 until Dec 1, then $49).
 2. After paying, Stripe sends the buyer to `/thanks`: the site checks the payment with Stripe and shows their
    license code (made from their email, so the same buyer always gets the same code). It's emailed to them too.
 3. In the plugin they click **TRIAL** at the top of Settings, paste the code and press **Activate**. It's checked
@@ -43,7 +43,7 @@ Setup, once:
 - **Stripe webhook**: Developers > Webhooks > add `https://your-site/api/stripe-webhook`, event
   `checkout.session.completed`; its signing secret is `STRIPE_WEBHOOK_SECRET`.
 - **GitHub variable** (Settings > Secrets and variables > Actions > Variables): `LOOPWRIGHT_BUY_URL` =
-  `https://your-site/api/checkout`, for the plugin's **Buy $39** button.
+  `https://your-site/api/checkout`, for the plugin's **Buy** button.
 - **The version you sell**: push a tag like `v1.0.0` (or run the workflow by hand with "licensed" ticked). Those builds
   have the trial and need a code; every other build stays unlocked for testing.
 

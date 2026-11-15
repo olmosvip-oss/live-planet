@@ -19,8 +19,12 @@ inline juce::String publicKey() { return {}; }
 
 inline bool required() { return publicKey().isNotEmpty(); }
 constexpr int trialDays = 7;
-// what it costs: one payment, yours forever, free updates (the launch price; it goes up later)
-inline juce::String price() { return "$39"; }
+// what it costs: one payment, yours forever, free updates. $49, or $29 for Black Friday until the end of
+// December 1 (California time); after that the window shows $49 by itself.
+inline bool onSale() { return juce::Time::getCurrentTime() < juce::Time (2026, 11, 2, 8, 0, 0, 0, false); } // (Dec 2, 00:00 PST, in UTC)
+inline juce::String regularPrice() { return "$49"; }
+inline juce::String saleName() { return juce::String (juce::CharPointer_UTF8 ("BLACK FRIDAY \xc2\xb7 UNTIL DEC 1")); }
+inline juce::String price() { return onSale() ? "$29" : regularPrice(); }
 inline juce::String priceLine() { return price() + " one-time. Yours forever, with free updates."; }
 #ifdef LOOPWRIGHT_BUY_URL
 inline juce::String buyUrl() { return LOOPWRIGHT_BUY_URL; }
