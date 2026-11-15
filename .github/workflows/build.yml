@@ -44,7 +44,7 @@ jobs:
         shell: bash
         run: |
           EXTRA=()
-          if [[ "${{ github.ref }}" == refs/tags/v* || "${{ inputs.licensed }}" == "true" ]]; then
+          if [[ "${{ github.ref }}" == refs/tags/v* || "${{ github.ref }}" == refs/heads/release || "${{ inputs.licensed }}" == "true" ]]; then
             EXTRA+=("-DLOOPWRIGHT_PUBLIC_KEY=$(tr -d '\r\n' < packaging/license-public-key.txt)")
             BUY="${{ vars.LOOPWRIGHT_BUY_URL }}"
             EXTRA+=("-DLOOPWRIGHT_BUY_URL=${BUY:-https://loop-wright.com/api/checkout}")
@@ -117,11 +117,12 @@ jobs:
           name: Loopwright-${{ matrix.name }}
           path: dist
 
-  # A release tag (v1.0.0 ...): one Loopwright.zip with everything, published as a GitHub release.
+  # A push to the "release" branch (or a release tag): one Loopwright.zip with everything, published as a
+  # GitHub release (version 0.9.<run number>).
   # The website serves it at loop-wright.com/api/download, so buyers never leave the site.
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/release'
     needs: build
     runs-on: ubuntu-22.04
     permissions:
@@ -150,5 +151,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" Loopwright.zip --repo "${GITHUB_REPOSITORY}" \
-            --title "Loopwright ${GITHUB_REF_NAME}" --notes "Mac installer, Mac plugins, and the Windows plugins and app. 7-day free trial; activate with your license code."
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then TAG="v0.9.${GITHUB_RUN_NUMBER}"; fi
+          gh release create "$TAG" Loopwright.zip --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --latest \
+            --title "Loopwright $TAG" --notes "Mac installer, Mac plugins, and the Windows plugins and app. 7-day free trial; activate with your license code."
