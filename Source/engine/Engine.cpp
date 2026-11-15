@@ -1047,8 +1047,9 @@ void Engine::renderChunk (float* outL, float* outR, int n, const EngineParams& p
         // remove DC, then a soft limiter so it never clips harshly
         dcL = yl - dcInL + 0.9995f * dcL; dcInL = yl;
         dcR = yr - dcInR + 0.9995f * dcR; dcInR = yr;
-        outL[i] = std::tanh (dcL * outGain * 1.9f);
-        outR[i] = std::tanh (dcR * outGain * 1.9f);
+        // (the Output knob turns it down after the limiter, so it really gets quieter; turned up past 0 dB it pushes into it)
+        outL[i] = outGain <= 1.0f ? std::tanh (dcL * 1.9f) * outGain : std::tanh (dcL * outGain * 1.9f);
+        outR[i] = outGain <= 1.0f ? std::tanh (dcR * 1.9f) * outGain : std::tanh (dcR * outGain * 1.9f);
     }
 }
 
