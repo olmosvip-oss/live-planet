@@ -210,6 +210,7 @@ LicensePanel::LicensePanel (std::function<void()> closed, const String& n) : onC
 void LicensePanel::refreshState()
 {
     licensed = lp::license::activatedTo().isNotEmpty();
+    if (! licensed && message.isEmpty() && lp::license::refusal().isNotEmpty()) { message = lp::license::refusal(); messageBad = true; }
     code.setVisible (! licensed);
     activateBtn.setVisible (! licensed);
     buyBtn.setVisible (! licensed && lp::license::buyUrl().isNotEmpty());
@@ -220,11 +221,58 @@ void LicensePanel::refreshState()
 
 void LicensePanel::activate()
 {
+    if (busy) return;
     const auto c = code.getText().trim();
     if (c.isEmpty()) { message = "Paste the code from your email or the thank-you page."; messageBad = true; repaint(); return; }
-    if (! lp::license::activate (c)) { message = "That code didn't work. Copy the whole thing, starting with LW1-"; messageBad = true; repaint(); return; }
+    if (lp::license::ownerOf (c).isEmpty()) { message = "That code didn't work. Copy the whole thing, starting with LW1-"; messageBad = true; repaint(); return; }
+    // the website checks how many computers it's on (a few seconds at most)
+    busy = true;
+    activateBtn.setButtonText ("Checking...");
+    activateBtn.setEnabled (false);
     message = {};
-    refreshState();
+    repaint();
+    SafePointer<LicensePanel> self (this);
+    Thread::launch ([self, c]
+    {
+        const auto result = lp::license::activate (c);
+        MessageManager::callAsync ([self, result]
+        {
+            if (self == nullptr) return;
+            self->busy = false;
+            self->activateBtn.setButtonText ("Activate");
+            self->activateBtn.setEnabled (true);
+            self->message = result;
+            self->messageBad = result.isNotEmpty();
+            self->refreshState();
+        });
+    });
+}
+
+void LicensePanel::deactivate()
+{
+    if (busy) return;
+    SafePointer<LicensePanel> self (this);
+    AlertWindow::showOkCancelBox (MessageBoxIconType::NoIcon, "Deactivate this computer?",
+        "Loopwright stops working here and one of your 2 computers is freed, so you can activate it on another one. "
+        "You can activate this computer again any time with your code.",
+        "Deactivate", "Cancel", this, ModalCallbackFunction::create ([self] (int r)
+    {
+        if (r != 1 || self == nullptr) return;
+        self->busy = true;
+        self->repaint();
+        Thread::launch ([self]
+        {
+            const bool ok = lp::license::deactivate();
+            MessageManager::callAsync ([self, ok]
+            {
+                if (self == nullptr) return;
+                self->busy = false;
+                self->message = ok ? String ("This computer is deactivated.") : String ("Couldn't reach loop-wright.com. Check your internet and try again.");
+                self->messageBad = ! ok;
+                self->refreshState();
+            });
+        });
+    }));
 }
 
 Rectangle<int> LicensePanel::card() const
@@ -238,7 +286,12 @@ void LicensePanel::resized()
     auto c = card().reduced (34, 30);
     closeX = Rectangle<int> (card().getRight() - 50, card().getY() + 18, 30, 30);
     auto bottom = c.removeFromBottom (licensed ? 46 : 74);
-    if (licensed) { closeBtn.setBounds (bottom.withSizeKeepingCentre (180, 44)); return; }
+    if (licensed)
+    {
+        closeBtn.setBounds (bottom.withSizeKeepingCentre (180, 44));
+        deactivateLink = Rectangle<int> (c.getX(), c.getBottom() - 26, 220, 18);
+        return;
+    }
     lostLink = bottom.removeFromBottom (18);
     bottom.removeFromBottom (12);
     auto row = bottom.removeFromTop (44);
@@ -295,6 +348,15 @@ void LicensePanel::paint (Graphics& g)
         g.setColour (t.ink.withAlpha (0.75f));
         g.drawText ("Licensed to " + lp::license::activatedTo(), r.removeFromTop (22.0f), Justification::centredLeft, true);
         g.drawText ("Yours forever, with free updates. Thank you!", r.removeFromTop (22.0f), Justification::centredLeft, true);
+        // works on 2 computers: free this one to move it
+        g.setFont (font (12.5f));
+        g.setColour (t.ink.withAlpha (deactivateLink.contains (getMouseXYRelative()) ? 0.9f : 0.5f));
+        g.drawText (busy ? String ("Deactivating...") : String ("Deactivate this computer"), deactivateLink.toFloat(), Justification::centredLeft, false);
+        if (message.isNotEmpty())
+        {
+            g.setColour (messageBad ? Colour (0xfff2a33a) : t.grassLight);
+            g.drawText (message, deactivateLink.toFloat().translated (0.0f, -22.0f).withWidth (r.getWidth()), Justification::centredLeft, true);
+        }
         return;
     }
 
@@ -368,10 +430,10 @@ void LicensePanel::paint (Graphics& g)
     // the message under the box (wrong code, empty box)
     if (message.isNotEmpty())
     {
-        auto m = code.getBounds().toFloat().translated (0.0f, (float) code.getHeight() + 8.0f).withHeight (20.0f);
-        g.setFont (font (13.0f));
+        auto m = code.getBounds().translated (0, code.getHeight() + 4).withHeight (32);
+        g.setFont (font (12.5f));
         g.setColour (messageBad ? Colour (0xfff2a33a) : t.grassLight);
-        g.drawText (message, m, Justification::centredLeft, true);
+        g.drawFittedText (message, m, Justification::centredLeft, 2, 1.0f);
     }
     // lost your code?
     const auto lost = lostCodeUrl();
@@ -394,6 +456,7 @@ void LicensePanel::mouseUp (const MouseEvent& e)
     const auto p = e.getPosition();
     if (closeX.contains (p) || ! card().contains (p)) { if (onClosed) onClosed(); return; }
     if (! licensed && lostLink.contains (p) && lostCodeUrl().isNotEmpty()) URL (lostCodeUrl()).launchInDefaultBrowser();
+    if (licensed && deactivateLink.contains (p)) deactivate();
 }
 
 bool LicensePanel::keyPressed (const KeyPress& k)

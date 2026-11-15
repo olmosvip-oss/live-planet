@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "License.h"
 #include "AppFolder.h"
 #include "PluginEditor.h"
 #include "Presets.h"
@@ -114,6 +115,7 @@ LivePlanetProcessor::LivePlanetProcessor()
     engine.jumpToWeather (getManualWeather());
     weatherService.requestCoordinates (city, lat, lon);
     startTimerHz (2);
+    lp::license::checkInBackground(); // (a license code without this computer's activation asks the website once)
     songJob.writeAbletonSet = [] (const lp::song::Song&, const lp::song::Rendered&)
     {
         return lp::ableton::installHelper (SongJob::latestPointer());

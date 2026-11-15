@@ -242,10 +242,11 @@ private:
     juce::Rectangle<int> card() const;
     std::function<void()> onClosed;
     juce::String note, message;
-    bool messageBad = false, licensed = false;
+    bool messageBad = false, licensed = false, busy = false;
     juce::TextEditor code;
     juce::TextButton activateBtn { "Activate" }, buyBtn { "Buy" }, closeBtn { "Close" };
-    juce::Rectangle<int> closeX, lostLink;
+    juce::Rectangle<int> closeX, lostLink, deactivateLink;
+    void deactivate();
 };
 
 // DAWs that can't import markers (FL Studio, Bitwig): the song's sections and their bars, to add by hand
