@@ -1123,8 +1123,6 @@ void SongPanel::showActivate (const String& message)
 
 void SongPanel::refresh()
 {
-;
-    }
     const auto st = proc.songJob.getStatus();
     // a new reference: describe it in the box (unless you've typed your own words there)
     if (st.haveReference && st.profile.valid && st.referenceName != describedRef && st.stage != SongJob::Stage::Listening)
