@@ -26,9 +26,13 @@ done
 
 Then rescan plugins in your DAW (Ableton: Settings > Plug-Ins, hold Option and click Rescan).
 
+Finding it: it's an instrument. Logic: Software Instrument track > AU Instruments > Loopwright (after an update:
+Logic Pro > Settings > Plug-in Manager > Reset & Rescan Selection). FL Studio: Options > Manage plugins > Find installed
+plugins, then add it from the Channel Rack's + (it's a generator, not an effect). Pro Tools isn't supported yet (AAX).
+
 ## Using it
 1. Put Loopwright on a track. Drop a song you love on it, and/or type a description ("dark trap in F minor with flute").
-2. Press **Write a song**. It's made from your Splice / WAVS samples, at your project's tempo, all in one key.
+2. Press **Write a song**. It's made from your own sample folders, at your project's tempo, all in one key.
 3. **STUDIO** and **EDIT**: mix, swap, re-pitch, grain and add effects to each track. **Love it / Not this** teaches it your taste.
 4. Drag **stems** (or one track, with **Print FX** on to keep its effects) into your DAW. Drag **locators** onto a track in
    Ableton Live Suite to set the tempo and a locator at every section.
