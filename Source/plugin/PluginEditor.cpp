@@ -1804,8 +1804,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     else if (PluginHostType().isFruityLoops() || PluginHostType().isBitwigStudio())
     {
         pillHelper.setTooltip (PluginHostType().isFruityLoops()
-            ? "Your song's tempo and every section as FL time markers, in a small FL project. Add them to the project you have open: "
-              "File > Import > Project data file (or drag it into FL to start a new project with them). Click to see the sections and their bars."
+            ? "Drag onto FL Studio (save your project first): a new project opens with your song's tempo and every section as a time marker. "
+              "Then drag your stems or MIDI in. Click to see the sections and their bars instead."
             : "Your song's sections and the bar each one starts on, to add as markers (this DAW can't import them from a file). Click to see them.");
         pillHelper.onClick = [this]
         {
