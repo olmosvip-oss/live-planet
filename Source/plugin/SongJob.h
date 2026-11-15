@@ -67,6 +67,7 @@ public:
         int take = -1;                  // which of them is open
         juce::String undoWhat;          // what "undo" takes back (empty: nothing to undo)
         int mixInsertAt = -1, mixInsertSerial = 0; // an undone delete: its mixer row comes back here
+        juce::File renamedFrom, renamedTo;     // the song's folder before and after its last rename (the same song: the mixer stays)
     };
 
     SongJob() : juce::Thread ("Live Planet song mode", 16 * 1024 * 1024) { startThread (juce::Thread::Priority::low); } // loads your sample library right away
@@ -80,6 +81,18 @@ public:
             if (status.haveSong && currentFolder == folder) return; // already open
             pendingReference = folder;
             task = Task::Open;
+        }
+        notify();
+    }
+
+    // give the open song a new name: its folder and files are renamed too, and everything that points at them
+    void renameSong (const juce::String& newTitle)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong) return;
+            pendingTitle = newTitle;
+            task = Task::Rename;
         }
         notify();
     }
@@ -888,6 +901,19 @@ public:
         return lp::appFolder().getChildFile ("Songs");
     }
 
+    // a song's folder after any renames (a project saved before a rename still finds its song)
+    static juce::File followRenames (juce::File folder)
+    {
+        const auto map = juce::JSON::parse (lp::appFolder().getChildFile ("renamed-songs.json"));
+        for (int hop = 0; hop < 20 && ! folder.getChildFile ("song.json").existsAsFile(); ++hop)
+        {
+            const auto next = map.getProperty (juce::Identifier (folder.getFullPathName().toLowerCase()), {}).toString();
+            if (next.isEmpty() || ! juce::File::isAbsolutePath (next)) break;
+            folder = juce::File (next);
+        }
+        return folder;
+    }
+
     // the Ableton helper device reads this to find the newest song
     static juce::File latestPointer()
     {
@@ -897,7 +923,7 @@ public:
     std::function<juce::File (const lp::song::Song&, const lp::song::Rendered&)> writeAbletonSet; // set by the processor
 
 private:
-    enum class Task { None, Listen, Write, Open };
+    enum class Task { None, Listen, Write, Open, Rename };
 
     void startIfNeeded()
     {
@@ -1016,6 +1042,7 @@ private:
                 if (t == Task::Listen) listen (ref);
                 else if (t == Task::Write) writeTakes (o, rs, sky);
                 else if (t == Task::Open) openSaved (ref);
+                else if (t == Task::Rename) renameOpenSong();
                 else wait (-1);
             }
             catch (const std::bad_alloc&)
@@ -3302,6 +3329,100 @@ private:
         currentFolder.getChildFile ("song.json").replaceWithText (juce::JSON::toString (juce::var (o)));
     }
 
+    // job thread: the open song gets a new name. Its folder and the files named after it are renamed,
+    // and every saved path (song.json, the Ableton helper's plan, the other takes) points at the new place.
+    void renameOpenSong()
+    {
+        juce::String title, oldTitle;
+        juce::File oldFolder;
+        juce::Array<juce::File> takes;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong) return;
+            title = pendingTitle.trim().replaceCharacters ("/\\:", "---").substring (0, 60).trim();
+            oldTitle = current.title;
+            oldFolder = currentFolder;
+            takes = status.takes;
+        }
+        if (title.isEmpty() || title == oldTitle || ! oldFolder.isDirectory()) return;
+        const auto base = juce::File::createLegalFileName (title);
+        auto newFolder = oldFolder.getSiblingFile (base);
+        for (int n = 2; newFolder.exists() && newFolder != oldFolder; ++n)
+            newFolder = oldFolder.getSiblingFile (base + " " + juce::String (n));
+        if (newFolder != oldFolder && ! oldFolder.moveFileTo (newFolder))
+        {
+            const juce::ScopedLock sl (lock);
+            status.message = "couldn't rename it: is one of its files open in another app?";
+            return;
+        }
+        // the files named after the song ("old name - full mix.wav", "old name.mid", ...)
+        const auto oldFileStart = juce::File::createLegalFileName (oldTitle);
+        for (const auto& f : newFolder.findChildFiles (juce::File::findFiles, false))
+            if (f.getFileName().startsWith (oldFileStart))
+                f.moveFileTo (newFolder.getChildFile (juce::File::createLegalFileName (title) + f.getFileName().substring (oldFileStart.length())));
+        auto moved = [&] (const juce::File& f) -> juce::File
+        {
+            if (! f.isAChildOf (oldFolder)) return f;
+            auto g = newFolder.getChildFile (f.getRelativePathFrom (oldFolder));
+            if (g.getParentDirectory() == newFolder && f.getFileName().startsWith (oldFileStart))
+                g = newFolder.getChildFile (juce::File::createLegalFileName (title) + f.getFileName().substring (oldFileStart.length()));
+            return g;
+        };
+        lp::song::Song song;
+        lp::song::Rendered files;
+        bool hadSet = false;
+        {
+            const juce::ScopedLock sl (lock);
+            current.title = title;
+            status.song.title = title;
+            currentFolder = newFolder;
+            for (auto& t : status.tracks) t.stem = moved (t.stem);
+            status.files.folder = newFolder;
+            for (auto& st : status.files.stems) st = moved (st);
+            status.files.midiFile = moved (status.files.midiFile);
+            status.files.mixFile = moved (status.files.mixFile);
+            status.files.planFile = moved (status.files.planFile);
+            status.abletonSet = moved (status.abletonSet);
+            hadSet = status.abletonSet.existsAsFile();
+            for (auto& t : status.takes) if (t == oldFolder) t = newFolder;
+            status.renamedFrom = oldFolder;
+            status.renamedTo = newFolder;
+            {
+                const auto mapFile = lp::appFolder().getChildFile ("renamed-songs.json");
+                auto map = juce::JSON::parse (mapFile);
+                if (! map.isObject()) map = juce::var (new juce::DynamicObject());
+                map.getDynamicObject()->setProperty (juce::Identifier (oldFolder.getFullPathName().toLowerCase()), newFolder.getFullPathName());
+                mapFile.replaceWithText (juce::JSON::toString (map));
+            }
+            saveSession();
+            song = current; files = status.files;
+            status.message = "renamed to \"" + title + "\"";
+        }
+        // the other takes of this song know it by its new folder
+        for (auto& f : takes)
+        {
+            if (f == oldFolder) continue;
+            auto v = juce::JSON::parse (f.getChildFile ("song.json"));
+            if (auto* obj = v.getDynamicObject())
+            {
+                juce::StringArray paths;
+                for (auto& t : lp::song::file::readStrings (v["takes"])) paths.add (t == oldFolder.getFullPathName() ? newFolder.getFullPathName() : t);
+                obj->setProperty ("takes", lp::song::file::strings (paths));
+                f.getChildFile ("song.json").replaceWithText (juce::JSON::toString (v));
+            }
+        }
+        // the Ableton set points at the tracks' files: write it again with their new place
+        if (hadSet && writeAbletonSet)
+            if (const auto als = writeAbletonSet (song, files); als.existsAsFile())
+            {
+                const juce::ScopedLock sl (lock);
+                status.abletonSet = als;
+                saveSession();
+            }
+        const juce::ScopedLock sl (lock);
+        ++status.version; // (the locators, markers and MIDI files are made again under the new name)
+    }
+
     // job thread: bring a saved song back (no re-recording: its tracks are already on disk)
     void openSaved (const juce::File& folder)
     {
@@ -3726,6 +3847,7 @@ private:
     int drumSwapCount = 0;
     Task task = Task::None;
     juce::File pendingReference;
+    juce::String pendingTitle;
     lp::song::Options options;
     lp::song::RenderSettings settings;
     lp::Weather weather;

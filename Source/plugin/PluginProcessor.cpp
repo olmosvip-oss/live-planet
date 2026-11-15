@@ -596,7 +596,8 @@ void LivePlanetProcessor::timerCallback()
     {
         lastSongChecked = true;
         const auto st = songJob.getStatus();
-        const auto path = lp::appFolder().getChildFile ("last-song.txt").loadFileAsString().trim();
+        auto path = lp::appFolder().getChildFile ("last-song.txt").loadFileAsString().trim();
+        if (juce::File::isAbsolutePath (path)) path = SongJob::followRenames (juce::File (path)).getFullPathName();
         if (! st.haveSong && st.stage == SongJob::Stage::Idle && ! restoredFromProject && juce::File::isAbsolutePath (path)
             && juce::File (path).getChildFile ("song.json").existsAsFile())
             songJob.openSong (juce::File (path));
@@ -610,6 +611,12 @@ void LivePlanetProcessor::timerCallback()
             // an undone delete: its track comes back, and so does a row in the mixer for it
             seenMixInserts = st.mixInsertSerial;
             studio.insertTrackMix (st.mixInsertAt);
+        }
+        // a renamed song is the same song in a new folder: it keeps its mixer
+        if (st.haveSong && st.renamedTo == st.files.folder && loadedSongFolder == st.renamedFrom && loadedSongFolder != st.renamedTo)
+        {
+            loadedSongFolder = st.renamedTo;
+            lp::appFolder().getChildFile ("last-song.txt").replaceWithText (st.renamedTo.getFullPathName());
         }
         if (st.haveSong && st.version != loadedStudioVersion)
         {
@@ -1157,7 +1164,8 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
         loadSamplerInstrument (juce::File (sp));
 
     // the song this project was using: open it again, with its mixer as you left it
-    const juce::File songFolder (state.getProperty ("songFolder", "").toString());
+    const auto savedFolder = state.getProperty ("songFolder", "").toString();
+    const juce::File songFolder = juce::File::isAbsolutePath (savedFolder) ? SongJob::followRenames (juce::File (savedFolder)) : juce::File();
     if (songFolder.getChildFile ("song.json").existsAsFile())
     {
         restoredFromProject = true; // (the project's own song wins over "the last song")

@@ -1188,6 +1188,7 @@ void SongPanel::mouseUp (const MouseEvent& e)
         m.addSectionHeader ("SONGS");
         m.addSubMenu ("Open Recent Song", recentMenu, ! recent.empty());
         m.addItem (PopupMenu::Item ("Open Song...").setID (2).setEnabled (! busy));
+        m.addItem (PopupMenu::Item (open.haveSong ? "Rename \"" + open.song.title + "\"..." : String ("Rename Song...")).setID (3).setEnabled (open.haveSong && ! busy));
         m.addSeparator();
         m.addItem (1, "Storage & cleanup...");
         SafePointer<SongPanel> self (this);
@@ -1206,6 +1207,22 @@ void SongPanel::mouseUp (const MouseEvent& e)
                     if (f.existsAsFile()) f = f.getParentDirectory(); // (song.json or any file inside it)
                     if (f.getChildFile ("song.json").existsAsFile()) self->proc.songJob.openSong (f);
                 });
+                return;
+            }
+            if (id == 3)
+            {
+                const auto title = self->proc.songJob.getStatus().song.title;
+                auto* w = new AlertWindow ("Rename song", "A new name for \"" + title + "\". Its folder and files get the new name too.",
+                                           MessageBoxIconType::NoIcon, self.getComponent());
+                w->addTextEditor ("name", title);
+                w->addButton ("Rename", 1, KeyPress (KeyPress::returnKey));
+                w->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+                if (auto* ed = w->getTextEditor ("name")) { ed->setInputRestrictions (60); ed->selectAll(); }
+                w->enterModalState (true, ModalCallbackFunction::create ([self, w] (int r)
+                {
+                    if (r == 1 && self != nullptr) self->proc.songJob.renameSong (w->getTextEditorContents ("name"));
+                }), true);
+                if (auto* ed = w->getTextEditor ("name")) ed->grabKeyboardFocus();
                 return;
             }
             if (id == 1)
