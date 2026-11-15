@@ -590,6 +590,16 @@ void LivePlanetProcessor::searchCity (const juce::String& name)
 void LivePlanetProcessor::timerCallback()
 {
     if (! isTimerRunning()) return;
+    // the app opens with the song you were last on (if the saved app state didn't bring one back)
+    if (wrapperType == wrapperType_Standalone && ! lastSongChecked && ++startTicks >= 3)
+    {
+        lastSongChecked = true;
+        const auto st = songJob.getStatus();
+        const auto path = lp::appFolder().getChildFile ("last-song.txt").loadFileAsString().trim();
+        if (! st.haveSong && st.stage == SongJob::Stage::Idle && juce::File::isAbsolutePath (path)
+            && juce::File (path).getChildFile ("song.json").existsAsFile())
+            songJob.openSong (juce::File (path));
+    }
     {
         double bpm = 90.0;
         songJob.takeFinishedMix (bpm); // (the studio plays the tracks themselves now)
@@ -609,6 +619,9 @@ void LivePlanetProcessor::timerCallback()
             // and for songs made of your samples the master knobs start at zero (turn them up if you like)
             bool newSong = st.files.folder != loadedSongFolder;
             loadedSongFolder = st.files.folder;
+            // the app remembers the song you're on right away, so it comes back even after a crash or force quit
+            if (newSong && wrapperType == wrapperType_Standalone)
+                lp::appFolder().getChildFile ("last-song.txt").replaceWithText (st.files.folder.getFullPathName());
             juce::ValueTree restore;
             if (newSong)
             {

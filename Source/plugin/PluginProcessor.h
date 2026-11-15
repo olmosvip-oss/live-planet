@@ -136,6 +136,8 @@ public:
     std::atomic<float> outPeakL { 0.0f }, outPeakR { 0.0f }; // everything the plugin plays (the master meter)
     std::atomic<float> songMakeupDb { 0.0f };
     juce::File loadedSongFolder;
+    bool lastSongChecked = false; // (the app) reopened the last song yet?
+    int startTicks = 0;
     // the key boxes changed: move the current song to that key (Auto = the reference's key)
     void applyChosenKey()
     {
