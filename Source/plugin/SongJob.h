@@ -642,7 +642,7 @@ public:
             const auto at = (juce::int64) std::llround (sec.startBar * 4.0 * 60.0 / song.bpm * sr);
             const juce::String c = "Cue" + juce::String (n), l = "CueLabel" + juce::String (n);
             meta.set (c + "Identifier", juce::String (n + 1));
-            meta.set (c + "Order", juce::String (n));
+            meta.set (c + "Order", juce::String (at)); // (the cue's "position": Logic reads this one, so it's the sample too)
             meta.set (c + "Offset", juce::String (at));
             meta.set (c + "BlockStart", "0");
             meta.set (c + "ChunkStart", "0");
