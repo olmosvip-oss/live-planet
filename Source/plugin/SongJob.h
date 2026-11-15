@@ -577,6 +577,42 @@ public:
         return file;
     }
 
+    // the song's tempo and its sections as markers, in a MIDI file: "locators" for DAWs other than Ableton
+    // (Logic, FL Studio, Cubase, Studio One, Reaper read markers and tempo from a MIDI file)
+    juce::File locatorsMidi()
+    {
+        lp::song::Song song;
+        juce::File folder;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong) return {};
+            song = current; folder = currentFolder;
+        }
+        const auto file = folder.getChildFile (song.title + " - locators.mid");
+        constexpr int tpq = 960;
+        juce::MidiFile mf;
+        mf.setTicksPerQuarterNote (tpq);
+        juce::MidiMessageSequence conductor;
+        conductor.addEvent (juce::MidiMessage::textMetaEvent (3, song.title + " sections"), 0);
+        conductor.addEvent (juce::MidiMessage::tempoMetaEvent ((int) (60000000.0 / song.bpm)), 0);
+        conductor.addEvent (juce::MidiMessage::timeSignatureMetaEvent (4, 4), 0);
+        conductor.addEvent (juce::MidiMessage::keySignatureMetaEvent (0, song.minor), 0);
+        for (auto& sec : song.sections)
+        {
+            juce::String name (sec.name);
+            name = name.substring (0, 1).toUpperCase() + name.substring (1);
+            conductor.addEvent (juce::MidiMessage::textMetaEvent (6, name), sec.startBar * 4.0 * tpq); // a marker
+            conductor.addEvent (juce::MidiMessage::textMetaEvent (7, name), sec.startBar * 4.0 * tpq); // (a cue point too)
+        }
+        conductor.addEvent (juce::MidiMessage::endOfTrack(), song.totalBars() * 4.0 * tpq);
+        mf.addTrack (conductor);
+        file.deleteFile();
+        juce::FileOutputStream os (file);
+        if (! os.openedOk()) return {};
+        mf.writeTo (os, 1);
+        return file;
+    }
+
     // one played part's notes as MIDI (EDIT's "drag midi"): the 808, the hook, a bass line, the drums
     juce::File partMidi (int track)
     {

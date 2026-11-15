@@ -300,6 +300,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const bool haveSong = studio.length() > 0;
     const bool preview = haveSong && previewPlaying.load();
     const bool playSong = haveSong && ! preview && t.hostPlaying && params.getRawParameterValue ("songplay")->load() > 0.5f;
+    if (! playSong) { wasFollowing = false; ppqCarry = 0.0; lastHostPpq = -1.0; } // stopped: the next play follows your DAW from where it starts
     songPlaying = playSong || preview;
     if (playSong || preview) t.shouldPlay = false; // the weather music steps aside while your song plays
     // your keys play the sample instrument (Play mode), or the built-in instrument
@@ -343,7 +344,22 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         {
             // bar 1 of your project = the start of the song
             const double hostBpm = t.bpm > 0.0 ? t.bpm : sbpm;
-            pos = std::max (0.0, t.ppq) * 60.0 / sbpm * StudioPlayer::fileRate;
+            // FL Studio in pattern mode loops a short pattern over and over: keep playing the song on instead
+            // of jumping back to its start every bar (a jump back of more than 8 bars is you moving the playhead)
+            double ppq = t.ppq;
+            if (isFL)
+            {
+                const double expected = lastHostPpq + lastBlockBeats;
+                if (wasFollowing && lastHostPpq >= 0.0 && ppq < expected - 0.25 && expected - ppq <= 32.5)
+                    ppqCarry += expected - ppq;
+                else if (wasFollowing && lastHostPpq >= 0.0 && std::abs (ppq - expected) > 0.25)
+                    ppqCarry = 0.0;
+                lastHostPpq = ppq;
+                wasFollowing = true;
+                lastBlockBeats = n / getSampleRate() * hostBpm / 60.0;
+                ppq += ppqCarry;
+            }
+            pos = std::max (0.0, ppq) * 60.0 / sbpm * StudioPlayer::fileRate;
             inc = StudioPlayer::fileRate / getSampleRate() * (hostBpm / sbpm);
         }
         // your samples go through the knobs (warmth, echo, space, shimmer, nostalgia, atmosphere, volume);

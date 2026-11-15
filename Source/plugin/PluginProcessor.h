@@ -173,6 +173,10 @@ public:
                                                      "Organ", "Cello", "Your Sample" }; }
     static constexpr int kSampleChoice = 18;
     std::atomic<bool> hostPlaying { false };
+    // following FL Studio's pattern loop (see processBlock)
+    const bool isFL = juce::PluginHostType().isFruityLoops();
+    bool wasFollowing = false;
+    double lastHostPpq = -1.0, lastBlockBeats = 0.0, ppqCarry = 0.0;
     bool canRecordMic() const; // only the standalone app has a mic input
     static BusesProperties lpBuses();
     juce::String getSampleInfo() const { return sampleInfo; }

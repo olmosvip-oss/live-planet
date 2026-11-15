@@ -1584,7 +1584,17 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
                                           return StringArray (f.existsAsFile() ? f.getFullPathName() : st.files.folder.getFullPathName()); }),
       pillStems ("drag stems", [&p] { auto st = p.songJob.getStatus(); StringArray a; if (st.haveSong) for (auto& t : st.tracks) a.add (t.stem.getFullPathName()); return a; }),
       pillMix ("drag mix", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray(); }),
-      pillHelper ("locators", [&p] { auto st = p.songJob.getStatus(); return st.abletonSet.existsAsFile() ? StringArray (st.abletonSet.getFullPathName()) : StringArray(); }),
+      pillHelper ("locators", [&p]
+      {
+          // Ableton: the helper device. Any other DAW: the tempo and the sections as markers in a MIDI file
+          if (! PluginHostType().isAbletonLive() && PluginHostType::getPluginLoadedAs() != AudioProcessor::wrapperType_Standalone)
+          {
+              const auto f = p.songJob.locatorsMidi();
+              return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray();
+          }
+          auto st = p.songJob.getStatus();
+          return st.abletonSet.existsAsFile() ? StringArray (st.abletonSet.getFullPathName()) : StringArray();
+      }),
       pillFolder ("folder", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.folder.getFullPathName()) : StringArray(); }),
       themeDots (p, [this] { applyTheme(); })
 {
@@ -1675,7 +1685,11 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     // one drag: every MIDI part (drums, 808, hook, bass lines, and the chords + bass your loops play)
     pillMidi.filesToDrag = [&p] { const auto f = p.songJob.allMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
     pillMidi.setTooltip ("Every MIDI part in one drag: drums, 808, hook, bass lines, and the chords + bass your loops play. Each lands on its own MIDI track, sections as markers.");
-    pillHelper.setTooltip ("Drag onto any track in Ableton once (Live Suite): it sets the tempo and places your song's sections as named locators, keeps them in step when you change sections here, and 'build song tracks' brings in every track.");
+    if (PluginHostType().isAbletonLive() || PluginHostType::getPluginLoadedAs() == AudioProcessor::wrapperType_Standalone)
+        pillHelper.setTooltip ("Drag onto any track in Ableton once (Live Suite): it sets the tempo and places your song's sections as named locators, keeps them in step when you change sections here, and 'build song tracks' brings in every track.");
+    else
+        pillHelper.setTooltip ("Your song's tempo and sections as markers, in a MIDI file. Drag it into your DAW at bar 1 (say yes if it asks to import the tempo). "
+                               "Logic: if the markers don't show, use File > Import > MIDI File with this file (it's in the song's folder).");
     for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
         addChildComponent (pill);
     addAndMakeVisible (themeDots);
