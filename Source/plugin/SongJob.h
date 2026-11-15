@@ -583,12 +583,14 @@ public:
     {
         lp::song::Song song;
         juce::File folder;
+        int version = 0;
         {
             const juce::ScopedLock sl (lock);
             if (! status.haveSong) return {};
-            song = current; folder = currentFolder;
+            song = current; folder = currentFolder; version = status.version;
         }
         const auto file = folder.getChildFile (song.title + " - locators.mid");
+        if (locatorsVersion == version && file.existsAsFile()) return file;
         constexpr int tpq = 960;
         juce::MidiFile mf;
         mf.setTicksPerQuarterNote (tpq);
@@ -610,6 +612,8 @@ public:
         juce::FileOutputStream os (file);
         if (! os.openedOk()) return {};
         mf.writeTo (os, 1);
+        os.flush();
+        locatorsVersion = version;
         return file;
     }
 
@@ -619,13 +623,16 @@ public:
     {
         lp::song::Song song;
         juce::File folder;
+        int version = 0;
         {
             const juce::ScopedLock sl (lock);
             if (! status.haveSong) return {};
-            song = current; folder = currentFolder;
+            song = current; folder = currentFolder; version = status.version;
         }
         const double sr = sampleRate > 8000.0 ? sampleRate : 48000.0;
         const auto file = folder.getChildFile (song.title + " - markers.wav");
+        // (the screen asks for it all the time: only make it again when the song or the rate changes)
+        if (markersVersion == version && markersRate == sr && file.existsAsFile()) return file;
         juce::StringPairArray meta;
         int n = 0;
         for (auto& sec : song.sections)
@@ -654,6 +661,8 @@ public:
         silence.clear();
         for (juce::int64 pos = 0; pos < total; pos += 8192)
             w->writeFromAudioSampleBuffer (silence, 0, (int) std::min<juce::int64> (8192, total - pos));
+        w.reset(); // (finished and closed before anyone drags it)
+        markersVersion = version; markersRate = sr;
         return file;
     }
 
@@ -3289,6 +3298,8 @@ private:
 
     int editCounter = 0;
     int allMidiVersion = -1;
+    int markersVersion = -1, locatorsVersion = -1;
+    double markersRate = 0.0;
 
     // ---------- the producer: which loop plays where, and what happens to it
     enum class Role { Main, Second, Third, Fourth, Bass, DrumLoop, Perc, Pad, Vocal, Fx };
