@@ -1085,22 +1085,33 @@ void SongPanel::paint (Graphics& g)
         const String count = st.scanning ? String ("SCANNING...")
                            : st.librarySounds > 0 ? String (st.librarySounds) + " SAMPLES"
                                                   : String ("NO LIBRARY YET");
+        // every word measured; SONGS keeps its place at the right end, and if the row is short of room
+        // the sample count goes first, then "ADD FOLDER" becomes "+ FOLDER"
+        const auto& f = g.getCurrentFont();
+        auto w = [&f] (const String& x) { return GlyphArrangement::getStringWidth (f, x); };
+        constexpr float gap = 14.0f;
+        const String songs ("SONGS");
+        songsLink = lib.removeFromRight (w (songs) + 4.0f);
         g.setColour (t.inkDim);
-        const float cw = GlyphArrangement::getStringWidth (g.getCurrentFont(), count);
-        g.drawText (count, lib.removeFromLeft (cw + 14.0f), Justification::centredLeft, false);
+        g.drawText (songs, songsLink, Justification::centredRight, false);
+        lib.removeFromRight (gap);
+        String folderText ("ADD FOLDER");
+        const float links = w ("SCAN") + w (folderText) + w ("SOURCES") + 2.0f * gap;
+        const bool showCount = w (count) + gap + links <= lib.getWidth();
+        if (! showCount && links > lib.getWidth()) folderText = "+ FOLDER";
+        if (showCount)
+        {
+            g.setColour (t.inkDim);
+            g.drawText (count, lib.removeFromLeft (w (count) + gap), Justification::centredLeft, false);
+        }
         g.setColour (t.ink);
-        scanLink = lib.removeFromLeft (44.0f);
+        scanLink = lib.removeFromLeft (w ("SCAN") + gap);
         g.drawText ("SCAN", scanLink, Justification::centredLeft, false);
-        folderLink = lib.removeFromLeft (90.0f);
-        g.drawText ("ADD FOLDER", folderLink, Justification::centredLeft, false);
-        sourcesLink = lib.removeFromLeft (70.0f);
+        folderLink = lib.removeFromLeft (w (folderText) + gap);
+        g.drawText (folderText, folderLink, Justification::centredLeft, false);
+        sourcesLink = lib.removeFromLeft (w ("SOURCES") + 4.0f);
         g.setColour (t.grassLight);
         g.drawText ("SOURCES", sourcesLink, Justification::centredLeft, false);
-        // your songs on disk: how much room they take (click to clear out old versions)
-        const String songs ("SONGS"); // (how much room they take: in the window it opens)
-        songsLink = lib.removeFromLeft (GlyphArrangement::getStringWidth (g.getCurrentFont(), songs) + 8.0f);
-        g.setColour (t.inkDim);
-        g.drawText (songs, songsLink, Justification::centredLeft, false);
 
     }
 }
