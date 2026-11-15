@@ -1149,16 +1149,67 @@ void SongPanel::mouseUp (const MouseEvent& e)
     if (sourcesLink.contains (e.position)) { if (onShowSources) onShowSources(); return; }
     if (songsLink.contains (e.position))
     {
-        auto* top = getTopLevelComponent();
-        if (top == nullptr) return;
-        SafePointer<SongPanel> self (this);
-        storagePanel = std::make_unique<StoragePanel> (proc.songJob.getStatus().files.folder, [self]
+        // like a DAW's File menu: your recent songs (newest first), any song folder, and storage
+        struct Recent { File folder; Time when; };
+        std::vector<Recent> recent;
+        for (const auto& f : SongJob::songsFolder().findChildFiles (File::findDirectories, false))
+            if (const auto j = f.getChildFile ("song.json"); j.existsAsFile())
+                recent.push_back ({ f, j.getLastModificationTime() });
+        std::sort (recent.begin(), recent.end(), [] (const Recent& a, const Recent& b) { return a.when > b.when; });
+        if (recent.size() > 15) recent.resize (15);
+
+        const auto open = proc.songJob.getStatus();
+        const bool busy = open.stage == SongJob::Stage::Listening || open.stage == SongJob::Stage::Writing || open.stage == SongJob::Stage::Rendering;
+        const auto today = Time::getCurrentTime();
+        PopupMenu recentMenu;
+        for (size_t i = 0; i < recent.size(); ++i)
         {
-            MessageManager::callAsync ([self] { if (self != nullptr) { self->storagePanel.reset(); self->songsSizeAt = 0; self->repaint(); } });
+            const auto& r = recent[i];
+            const auto days = (int) ((today - r.when).inDays());
+            const String when = days < 1 && r.when.getDayOfMonth() == today.getDayOfMonth() ? "today"
+                              : days < 2 ? "yesterday" : r.when.formatted ("%b %e").trim();
+            const bool isOpen = open.haveSong && open.files.folder == r.folder;
+            recentMenu.addItem (PopupMenu::Item (r.folder.getFileName() + "   ·   " + when).setID (100 + (int) i).setTicked (isOpen).setEnabled (! busy && ! isOpen));
+        }
+        if (recent.empty()) recentMenu.addItem (PopupMenu::Item ("No songs yet").setEnabled (false));
+
+        PopupMenu m;
+        m.addSectionHeader ("SONGS");
+        m.addSubMenu ("Open Recent Song", recentMenu, ! recent.empty());
+        m.addItem (PopupMenu::Item ("Open Song...").setID (2).setEnabled (! busy));
+        m.addSeparator();
+        m.addItem (1, "Storage & cleanup...");
+        SafePointer<SongPanel> self (this);
+        m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (songsLink.toNearestInt())), [self, recent] (int id)
+        {
+            if (self == nullptr || id == 0) return;
+            if (id >= 100 && id - 100 < (int) recent.size()) { self->proc.songJob.openSong (recent[(size_t) (id - 100)].folder); return; }
+            if (id == 2)
+            {
+                self->chooser = std::make_unique<FileChooser> ("Open a Loopwright song (its folder)", SongJob::songsFolder());
+                self->chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories | FileBrowserComponent::canSelectFiles,
+                                            [self] (const FileChooser& fc)
+                {
+                    if (self == nullptr) return;
+                    auto f = fc.getResult();
+                    if (f.existsAsFile()) f = f.getParentDirectory(); // (song.json or any file inside it)
+                    if (f.getChildFile ("song.json").existsAsFile()) self->proc.songJob.openSong (f);
+                });
+                return;
+            }
+            if (id == 1)
+            {
+                auto* top = self->getTopLevelComponent();
+                if (top == nullptr) return;
+                self->storagePanel = std::make_unique<StoragePanel> (self->proc.songJob.getStatus().files.folder, [self]
+                {
+                    MessageManager::callAsync ([self] { if (self != nullptr) { self->storagePanel.reset(); self->songsSizeAt = 0; self->repaint(); } });
+                });
+                top->addAndMakeVisible (*self->storagePanel);
+                self->storagePanel->setBounds (top->getLocalBounds());
+                self->storagePanel->toFront (true);
+            }
         });
-        top->addAndMakeVisible (*storagePanel);
-        storagePanel->setBounds (top->getLocalBounds());
-        storagePanel->toFront (true);
         return;
     }
     if (licenseLink.contains (e.position))
@@ -1607,8 +1658,13 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       pillHelper ("locators", [&p]
       {
           // Ableton: the helper device. Any other DAW: the tempo and the sections as markers in a MIDI file
-          if (PluginHostType().isFruityLoops() || PluginHostType().isBitwigStudio())
-              return StringArray(); // (they can't import markers: a click shows the sections instead)
+          if (PluginHostType().isFruityLoops())
+          {
+              const auto f = p.songJob.flpMarkers(); // FL: a small FL project with the tempo and the markers (a click lists the sections)
+              return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray();
+          }
+          if (PluginHostType().isBitwigStudio())
+              return StringArray(); // (it can't import markers: a click shows the sections instead)
           if (PluginHostType().isLogic() || PluginHostType().isGarageBand() || PluginHostType().isReaper())
           {
               const auto f = p.songJob.markersWav (p.getSampleRate()); // Logic reads markers from audio files
@@ -1719,7 +1775,10 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         pillHelper.setTooltip ("Drag onto any track in Ableton once (Live Suite): it sets the tempo and places your song's sections as named locators, keeps them in step when you change sections here, and 'build song tracks' brings in every track.");
     else if (PluginHostType().isFruityLoops() || PluginHostType().isBitwigStudio())
     {
-        pillHelper.setTooltip ("Your song's sections and the bar each one starts on, to add as markers (this DAW can't import them from a file). Click to see them.");
+        pillHelper.setTooltip (PluginHostType().isFruityLoops()
+            ? "Your song's tempo and every section as FL time markers, in a small FL project. Add them to the project you have open: "
+              "File > Import > Project data file (or drag it into FL to start a new project with them). Click to see the sections and their bars."
+            : "Your song's sections and the bar each one starts on, to add as markers (this DAW can't import them from a file). Click to see them.");
         pillHelper.onClick = [this]
         {
             auto secs = proc.songJob.sectionList();

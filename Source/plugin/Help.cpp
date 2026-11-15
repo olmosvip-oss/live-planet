@@ -602,7 +602,8 @@ void SectionsPanel::paint (Graphics& g)
     g.drawText ("Add them as markers in " + host, r.removeFromTop (32.0f), Justification::centredLeft, false);
     r.removeFromTop (6.0f);
     const String how = host == "FL Studio"
-        ? host + " can't import markers from a file, so here's where each section starts. In the Playlist, click the bar on the timeline, press Alt+T (add time marker) and type the name."
+        ? "Easiest: drag LOCATORS out to your desktop, then in FL choose File > Import > Project data file and pick it: the markers join the project "
+          "you have open. Or by hand: in the Playlist, click the bar on the timeline, press Alt+T and type the name."
         : host + " can't import markers from a file, so here's where each section starts. Right-click the timeline at that bar and add a cue marker, then name it.";
     AttributedString s;
     s.setLineSpacing (3.0f);

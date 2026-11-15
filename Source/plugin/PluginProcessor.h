@@ -138,6 +138,7 @@ public:
     juce::File loadedSongFolder;
     bool lastSongChecked = false; // (the app) reopened the last song yet?
     int startTicks = 0;
+    std::atomic<bool> restoredFromProject { false };
     // the key boxes changed: move the current song to that key (Auto = the reference's key)
     void applyChosenKey()
     {

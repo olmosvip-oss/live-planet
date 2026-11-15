@@ -631,6 +631,70 @@ public:
         return file;
     }
 
+    // FL Studio's markers: a tiny FL project (.flp) with the song's tempo and every section as a playlist time marker.
+    // FL can't read markers from MIDI or audio files, but dropping this on FL opens it as a project, ready for the stems.
+    // (the file is FL's own event format: a header chunk, then a list of id + value events; see PyFLP for the layout)
+    juce::File flpMarkers()
+    {
+        lp::song::Song song;
+        juce::File folder;
+        int version = 0;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong) return {};
+            song = current; folder = currentFolder; version = status.version;
+        }
+        const auto file = folder.getChildFile (song.title + " - FL markers.flp");
+        if (flpVersion == version && file.existsAsFile()) return file;
+
+        constexpr int ppq = 96;
+        juce::MemoryOutputStream ev;
+        auto u8  = [&ev] (int id, int v) { ev.writeByte ((char) id); ev.writeByte ((char) v); };
+        auto u16 = [&ev] (int id, int v) { ev.writeByte ((char) id); ev.writeShort ((short) v); };
+        auto u32 = [&ev] (int id, juce::uint32 v) { ev.writeByte ((char) id); ev.writeInt ((int) v); };
+        auto blob = [&ev] (int id, const juce::MemoryBlock& b)
+        {
+            ev.writeByte ((char) id);
+            auto n = (juce::uint32) b.getSize();
+            do { auto c = (juce::uint8) (n & 0x7f); n >>= 7; if (n) c |= 0x80; ev.writeByte ((char) c); } while (n); // (length as a varint)
+            ev.write (b.getData(), b.getSize());
+        };
+        auto ascii = [&blob] (int id, const juce::String& t) { blob (id, juce::MemoryBlock (t.toRawUTF8(), t.getNumBytesAsUTF8() + 1)); };
+        auto utf16 = [&blob] (int id, const juce::String& t)
+        {
+            const auto u = t.toUTF16();                                // (UTF-16, with its ending zero)
+            blob (id, juce::MemoryBlock (u.getAddress(), u.sizeInBytes()));
+        };
+        ascii (199, "20.8.4.2576");                                   // FL version that wrote it (any FL from 20.8 on opens it)
+        u32 (159, 2576);                                              // its build
+        u32 (156, (juce::uint32) std::llround (song.bpm * 1000.0));   // tempo
+        u8 (17, 4); u8 (18, 4);                                       // 4/4
+        utf16 (194, song.title);                                      // project title
+        u16 (99, 0);                                                  // arrangement 1 ...
+        utf16 (241, "Arrangement");
+        for (auto& sec : song.sections)
+        {
+            juce::String name (sec.name);
+            name = name.substring (0, 1).toUpperCase() + name.substring (1);
+            u32 (148, (juce::uint32) (sec.startBar * 4 * ppq));         // ... its time markers: where (ticks),
+            u8 (33, 4); u8 (34, 4);                                   // (a plain marker, 4/4)
+            utf16 (205, name);                                        // and the name
+        }
+        u16 (100, 0);                                                 // arrangement 1 is the one showing
+
+        juce::MemoryOutputStream out;
+        out.write ("FLhd", 4); out.writeInt (6);
+        out.writeShort (0);            // a project
+        out.writeShort (0);            // no channels
+        out.writeShort ((short) ppq);
+        out.write ("FLdt", 4); out.writeInt ((int) ev.getDataSize());
+        out.write (ev.getData(), ev.getDataSize());
+        file.deleteFile();
+        if (! file.replaceWithData (out.getData(), out.getDataSize())) return {};
+        flpVersion = version;
+        return file;
+    }
+
     // Logic's markers: a silent audio file the length of the song with every section as a marker inside it.
     // Dropped on an audio track, Logic offers to import its markers (or: Navigate > Other > Import Marker from Audio File).
     juce::File markersWav (double sampleRate)
@@ -3312,7 +3376,7 @@ private:
 
     int editCounter = 0;
     int allMidiVersion = -1;
-    int markersVersion = -1, locatorsVersion = -1;
+    int markersVersion = -1, locatorsVersion = -1, flpVersion = -1;
     double markersRate = 0.0;
 
     // ---------- the producer: which loop plays where, and what happens to it

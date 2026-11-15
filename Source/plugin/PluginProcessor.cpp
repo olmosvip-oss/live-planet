@@ -590,13 +590,14 @@ void LivePlanetProcessor::searchCity (const juce::String& name)
 void LivePlanetProcessor::timerCallback()
 {
     if (! isTimerRunning()) return;
-    // the app opens with the song you were last on (if the saved app state didn't bring one back)
-    if (wrapperType == wrapperType_Standalone && ! lastSongChecked && ++startTicks >= 3)
+    // the app opens with the song you were last on, unless its saved state brought one back
+    // (in a DAW a new Loopwright starts fresh: SONGS > Open Recent Song opens any of them)
+    if (wrapperType == wrapperType_Standalone && ! lastSongChecked && ++startTicks >= 4)
     {
         lastSongChecked = true;
         const auto st = songJob.getStatus();
         const auto path = lp::appFolder().getChildFile ("last-song.txt").loadFileAsString().trim();
-        if (! st.haveSong && st.stage == SongJob::Stage::Idle && juce::File::isAbsolutePath (path)
+        if (! st.haveSong && st.stage == SongJob::Stage::Idle && ! restoredFromProject && juce::File::isAbsolutePath (path)
             && juce::File (path).getChildFile ("song.json").existsAsFile())
             songJob.openSong (juce::File (path));
     }
@@ -619,8 +620,8 @@ void LivePlanetProcessor::timerCallback()
             // and for songs made of your samples the master knobs start at zero (turn them up if you like)
             bool newSong = st.files.folder != loadedSongFolder;
             loadedSongFolder = st.files.folder;
-            // the app remembers the song you're on right away, so it comes back even after a crash or force quit
-            if (newSong && wrapperType == wrapperType_Standalone)
+            // remember the song you're on right away: the app brings it back even after a crash
+            if (newSong)
                 lp::appFolder().getChildFile ("last-song.txt").replaceWithText (st.files.folder.getFullPathName());
             juce::ValueTree restore;
             if (newSong)
@@ -1159,6 +1160,7 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
     const juce::File songFolder (state.getProperty ("songFolder", "").toString());
     if (songFolder.getChildFile ("song.json").existsAsFile())
     {
+        restoredFromProject = true; // (the project's own song wins over "the last song")
         {
             const juce::SpinLock::ScopedLockType sl (restoreLock);
             restoredMix = state.getChildWithName ("studioMix").createCopy();
