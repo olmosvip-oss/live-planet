@@ -3428,16 +3428,22 @@ private:
     // ---------- which packs songs may use. WAVS packs start switched off (their licenses differ:
     // switch on the royalty-free ones); everything else starts on
 public:
-    struct PackRow { juce::String name; int source = 0; int count = 0; bool on = true; };
+    struct PackRow { juce::String name; int source = 0; int count = 0; bool on = true; juce::StringArray samples; }; // samples: its file names (for search)
 
     std::vector<PackRow> packRows()
     {
         const juce::ScopedLock sl (lock);
         loadSources();
         std::map<std::pair<int, juce::String>, int> counts;
-        for (auto& e : library.all()) ++counts[{ (int) lp::song::Library::sourceOf (e.path), e.pack }];
+        std::map<std::pair<int, juce::String>, juce::StringArray> names;
+        for (auto& e : library.all())
+        {
+            const std::pair<int, juce::String> k { (int) lp::song::Library::sourceOf (e.path), e.pack };
+            ++counts[k];
+            names[k].add (juce::File (e.path).getFileNameWithoutExtension());
+        }
         std::vector<PackRow> rows;
-        for (auto& [k, n] : counts) rows.push_back ({ k.second, k.first, n, packOn (k.first, k.second) });
+        for (auto& [k, n] : counts) rows.push_back ({ k.second, k.first, n, packOn (k.first, k.second), std::move (names[k]) });
         return rows;
     }
 

@@ -665,8 +665,9 @@ private:
 class SourcesPanel : public juce::Component
 {
 public:
-    SourcesPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme) {}
+    SourcesPanel (LivePlanetProcessor& p, const lp::ui::Theme*& theme);
     void open();
+    void resized() override;
     void paint (juce::Graphics&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
@@ -678,6 +679,8 @@ private:
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
     std::vector<SongJob::PackRow> rows;
+    juce::TextEditor search;    // pack, artist or sample names
+    juce::String matchIn (const SongJob::PackRow&) const; // the sample a search found in a pack ("" = its name matched)
     int filter = 2, scroll = 0; // filter: 0 all, 1 splice, 2 wavs, 3 folders
     double wheelRows = 0.0;     // scrolling, a bit at a time
 };
