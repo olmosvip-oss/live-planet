@@ -685,6 +685,8 @@ public:
         utf16 (194, song.title);                                      // project title
         u16 (99, 0);                                                  // arrangement 1 ...
         utf16 (241, "Arrangement");
+        u8 (36, 0);                                                   // (its flags,
+        blob (233, juce::MemoryBlock());                              //  and an empty playlist: FL reads the markers after these)
         for (auto& sec : song.sections)
         {
             juce::String name (sec.name);
