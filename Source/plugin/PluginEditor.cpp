@@ -1096,6 +1096,11 @@ void SongPanel::paint (Graphics& g)
         sourcesLink = lib.removeFromLeft (70.0f);
         g.setColour (t.grassLight);
         g.drawText ("SOURCES", sourcesLink, Justification::centredLeft, false);
+        // your songs on disk: how much room they take (click to clear out old versions)
+        const String songs ("SONGS"); // (how much room they take: in the window it opens)
+        songsLink = lib.removeFromLeft (GlyphArrangement::getStringWidth (g.getCurrentFont(), songs) + 8.0f);
+        g.setColour (t.inkDim);
+        g.drawText (songs, songsLink, Justification::centredLeft, false);
 
     }
 }
@@ -1118,6 +1123,8 @@ void SongPanel::showActivate (const String& message)
 
 void SongPanel::refresh()
 {
+;
+    }
     const auto st = proc.songJob.getStatus();
     // a new reference: describe it in the box (unless you've typed your own words there)
     if (st.haveReference && st.profile.valid && st.referenceName != describedRef && st.stage != SongJob::Stage::Listening)
@@ -1142,6 +1149,20 @@ void SongPanel::mouseUp (const MouseEvent& e)
 {
     if (scanLink.contains (e.position)) { proc.rescanLibrary(); repaint(); return; }
     if (sourcesLink.contains (e.position)) { if (onShowSources) onShowSources(); return; }
+    if (songsLink.contains (e.position))
+    {
+        auto* top = getTopLevelComponent();
+        if (top == nullptr) return;
+        SafePointer<SongPanel> self (this);
+        storagePanel = std::make_unique<StoragePanel> (proc.songJob.getStatus().files.folder, [self]
+        {
+            MessageManager::callAsync ([self] { if (self != nullptr) { self->storagePanel.reset(); self->songsSizeAt = 0; self->repaint(); } });
+        });
+        top->addAndMakeVisible (*storagePanel);
+        storagePanel->setBounds (top->getLocalBounds());
+        storagePanel->toFront (true);
+        return;
+    }
     if (licenseLink.contains (e.position))
     {
         showActivate ({});
@@ -1587,6 +1608,11 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       pillHelper ("locators", [&p]
       {
           // Ableton: the helper device. Any other DAW: the tempo and the sections as markers in a MIDI file
+          if (PluginHostType().isLogic() || PluginHostType().isGarageBand())
+          {
+              const auto f = p.songJob.markersWav (p.getSampleRate()); // Logic reads markers from audio files
+              return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray();
+          }
           if (! PluginHostType().isAbletonLive() && PluginHostType::getPluginLoadedAs() != AudioProcessor::wrapperType_Standalone)
           {
               const auto f = p.songJob.locatorsMidi();
@@ -1687,6 +1713,9 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     pillMidi.setTooltip ("Every MIDI part in one drag: drums, 808, hook, bass lines, and the chords + bass your loops play. Each lands on its own MIDI track, sections as markers.");
     if (PluginHostType().isAbletonLive() || PluginHostType::getPluginLoadedAs() == AudioProcessor::wrapperType_Standalone)
         pillHelper.setTooltip ("Drag onto any track in Ableton once (Live Suite): it sets the tempo and places your song's sections as named locators, keeps them in step when you change sections here, and 'build song tracks' brings in every track.");
+    else if (PluginHostType().isLogic() || PluginHostType().isGarageBand())
+        pillHelper.setTooltip ("Your song's sections as Logic markers: drag onto a new audio track at bar 1 and click Import when Logic asks about markers. "
+                               "If it doesn't ask: select the region, then Navigate > Other > Import Marker from Audio File. The region itself is silent: delete it after.");
     else
         pillHelper.setTooltip ("Your song's tempo and sections as markers, in a MIDI file. Drag it into your DAW at bar 1 (say yes if it asks to import the tempo). "
                                "Logic: if the markers don't show, use File > Import > MIDI File with this file (it's in the song's folder).");

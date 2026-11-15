@@ -613,6 +613,50 @@ public:
         return file;
     }
 
+    // Logic's markers: a silent audio file the length of the song with every section as a marker inside it.
+    // Dropped on an audio track, Logic offers to import its markers (or: Navigate > Other > Import Marker from Audio File).
+    juce::File markersWav (double sampleRate)
+    {
+        lp::song::Song song;
+        juce::File folder;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong) return {};
+            song = current; folder = currentFolder;
+        }
+        const double sr = sampleRate > 8000.0 ? sampleRate : 48000.0;
+        const auto file = folder.getChildFile (song.title + " - markers.wav");
+        juce::StringPairArray meta;
+        int n = 0;
+        for (auto& sec : song.sections)
+        {
+            juce::String name (sec.name);
+            name = name.substring (0, 1).toUpperCase() + name.substring (1);
+            const auto at = (juce::int64) std::llround (sec.startBar * 4.0 * 60.0 / song.bpm * sr);
+            const juce::String c = "Cue" + juce::String (n), l = "CueLabel" + juce::String (n);
+            meta.set (c + "Identifier", juce::String (n + 1));
+            meta.set (c + "Order", juce::String (n));
+            meta.set (c + "Offset", juce::String (at));
+            meta.set (c + "BlockStart", "0");
+            meta.set (c + "ChunkStart", "0");
+            meta.set (l + "Identifier", juce::String (n + 1));
+            meta.set (l + "Text", name);
+            ++n;
+        }
+        meta.set ("NumCuePoints", juce::String (n));
+        meta.set ("NumCueLabels", juce::String (n));
+        file.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), sr, 1, 16, meta, 0));
+        if (w == nullptr) return {};
+        const auto total = (juce::int64) std::llround (song.totalBars() * 4.0 * 60.0 / song.bpm * sr);
+        juce::AudioBuffer<float> silence (1, 8192);
+        silence.clear();
+        for (juce::int64 pos = 0; pos < total; pos += 8192)
+            w->writeFromAudioSampleBuffer (silence, 0, (int) std::min<juce::int64> (8192, total - pos));
+        return file;
+    }
+
     // one played part's notes as MIDI (EDIT's "drag midi"): the 808, the hook, a bass line, the drums
     juce::File partMidi (int track)
     {

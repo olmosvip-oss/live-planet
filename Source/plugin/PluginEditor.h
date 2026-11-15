@@ -248,6 +248,31 @@ private:
     juce::Rectangle<int> closeX, lostLink;
 };
 
+// your songs on disk: how much room they take, and clearing out old versions of tracks
+class StoragePanel : public juce::Component
+{
+public:
+    StoragePanel (juce::File currentSong, std::function<void()> closed);
+    ~StoragePanel() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseUp (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    struct Usage { juce::int64 total = 0, removable = 0; int songs = 0; bool done = false; };
+
+private:
+    void measure();
+    juce::Rectangle<int> card() const;
+    juce::File current;
+    std::function<void()> onClosed;
+    Usage usage;
+    juce::String message;
+    bool busy = false;
+    std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);
+    juce::TextButton cleanBtn { "Remove old versions" }, openBtn { "Open songs folder" };
+    juce::Rectangle<int> closeX;
+};
+
 class SongPanel : public juce::Component
 {
 public:
@@ -277,6 +302,10 @@ private:
     juce::Rectangle<float> licenseLink;
     void showActivate (const juce::String& message);
     std::unique_ptr<LicensePanel> licensePanel;
+    std::unique_ptr<StoragePanel> storagePanel;
+    juce::Rectangle<float> songsLink;
+    juce::String songsSize;                 // how much room your songs take (measured now and then)
+    juce::uint32 songsSizeAt = 0;
 public:
     std::function<void()> onShowSources;
     juce::Rectangle<int> heroArea() const { return hero; }

@@ -383,3 +383,173 @@ bool LicensePanel::keyPressed (const KeyPress& k)
     if (k == KeyPress::escapeKey) { if (onClosed) onClosed(); return true; }
     return false;
 }
+
+// ---- your songs on disk
+
+namespace
+{
+    // what in a song's folder can go: old versions of tracks that were replaced, and the "printed"
+    // copies (tracks with their effects recorded in, made again whenever you drag one)
+    std::vector<File> removableIn (const File& song)
+    {
+        std::vector<File> out;
+        const auto text = song.getChildFile ("song.json").loadFileAsString() + song.getChildFile ("plan.json").loadFileAsString();
+        if (text.isEmpty()) return out; // not a Loopwright song we understand: leave it alone
+        std::vector<File> unused;
+        bool anyUsed = false;
+        for (const auto& e : RangedDirectoryIterator (song.getChildFile ("stems"), false, "*.wav", File::findFiles))
+        {
+            if (text.contains (e.getFile().getFullPathName()) || text.contains (e.getFile().getFileName())) anyUsed = true;
+            else unused.push_back (e.getFile());
+        }
+        if (! anyUsed) return out; // its file doesn't name its tracks (an older song?): don't guess
+        out = std::move (unused);
+        for (const auto& e : RangedDirectoryIterator (song.getChildFile ("printed"), true, "*", File::findFiles))
+            out.push_back (e.getFile());
+        return out;
+    }
+    int64 sizeOf (const File& dir)
+    {
+        int64 b = 0;
+        for (const auto& e : RangedDirectoryIterator (dir, true, "*", File::findFiles)) b += e.getFileSize();
+        return b;
+    }
+    String gb (int64 bytes) { return File::descriptionOfSizeInBytes (bytes); }
+}
+
+StoragePanel::StoragePanel (File currentSong, std::function<void()> closed) : current (currentSong), onClosed (std::move (closed))
+{
+    setWantsKeyboardFocus (true);
+    cleanBtn.getProperties().set ("primary", true);
+    cleanBtn.onClick = [this]
+    {
+        if (busy || usage.removable <= 0) return;
+        busy = true;
+        message = "Clearing out old versions...";
+        repaint();
+        Component::SafePointer<StoragePanel> self (this);
+        Thread::launch ([self, cur = current, alive = alive]
+        {
+            int64 freed = 0;
+            for (const auto& e : RangedDirectoryIterator (SongJob::songsFolder(), false, "*", File::findDirectories))
+            {
+                if (e.getFile() == cur) continue; // the song that's open keeps everything (its undo needs them)
+                for (auto& f : removableIn (e.getFile())) { const auto sz = f.getSize(); if (f.deleteFile()) freed += sz; }
+            }
+            MessageManager::callAsync ([self, freed]
+            {
+                if (self == nullptr) return;
+                self->busy = false;
+                self->message = "Done: freed " + gb (freed) + ".";
+                self->measure();
+            });
+        });
+    };
+    openBtn.onClick = [] { SongJob::songsFolder().revealToUser(); };
+    for (auto* b : { &cleanBtn, &openBtn }) { b->setWantsKeyboardFocus (false); addAndMakeVisible (*b); }
+    measure();
+}
+
+StoragePanel::~StoragePanel() { *alive = false; }
+
+void StoragePanel::measure()
+{
+    Component::SafePointer<StoragePanel> self (this);
+    Thread::launch ([self, cur = current]
+    {
+        Usage u;
+        for (const auto& e : RangedDirectoryIterator (SongJob::songsFolder(), false, "*", File::findDirectories))
+        {
+            ++u.songs;
+            u.total += sizeOf (e.getFile());
+            if (e.getFile() != cur)
+                for (auto& f : removableIn (e.getFile())) u.removable += f.getSize();
+        }
+        u.done = true;
+        MessageManager::callAsync ([self, u] { if (self != nullptr) { self->usage = u; self->resized(); self->repaint(); } });
+    });
+}
+
+Rectangle<int> StoragePanel::card() const
+{
+    return Rectangle<int> (jmin (520, getWidth() - 40), 420).withCentre (getLocalBounds().getCentre());
+}
+
+void StoragePanel::resized()
+{
+    auto c = card().reduced (34, 30);
+    closeX = Rectangle<int> (card().getRight() - 50, card().getY() + 18, 30, 30);
+    auto row = c.removeFromBottom (44);
+    cleanBtn.setBounds (row.removeFromLeft (row.getWidth() / 2 - 6));
+    row.removeFromLeft (12);
+    openBtn.setBounds (row);
+    cleanBtn.setEnabled (usage.done && usage.removable > 1024 * 1024 && ! busy);
+    cleanBtn.setButtonText (usage.done && usage.removable > 1024 * 1024 ? "Free " + gb (usage.removable) : String ("Nothing to clear"));
+}
+
+void StoragePanel::paint (Graphics& g)
+{
+    const auto* lnf = dynamic_cast<LivePlanetLookAndFeel*> (&getLookAndFeel());
+    const auto& t = lnf != nullptr ? *lnf->th : currentTheme();
+    g.fillAll (Colours::black.withAlpha (0.66f));
+    const auto cf = card().toFloat();
+    {
+        Graphics::ScopedSaveState s (g);
+        Path clip; clip.addRoundedRectangle (cf, 20.0f);
+        g.reduceClipRegion (clip);
+        g.setColour (t.bodyDark.interpolatedWith (Colour (0xff0d0d11), 0.6f));
+        g.fillRect (cf);
+        ColourGradient glow (t.grass.withAlpha (0.28f), cf.getRight() - 40.0f, cf.getY(), t.grass.withAlpha (0.0f), cf.getRight() - 300.0f, cf.getY() + 260.0f, true);
+        g.setGradientFill (glow);
+        g.fillRect (cf);
+    }
+    g.setColour (Colours::white.withAlpha (0.1f));
+    g.drawRoundedRectangle (cf.reduced (0.5f), 20.0f, 1.0f);
+    {
+        auto x = closeX.toFloat().reduced (9.0f);
+        g.setColour (Colours::white.withAlpha (0.5f));
+        g.drawLine (x.getX(), x.getY(), x.getRight(), x.getBottom(), 1.6f);
+        g.drawLine (x.getRight(), x.getY(), x.getX(), x.getBottom(), 1.6f);
+    }
+    auto r = cf.reduced (34.0f, 30.0f);
+    g.setFont (lp::ui::mono (10.0f, true, 0.18f));
+    g.setColour (t.grassLight);
+    g.drawText ("YOUR SONGS ON THIS COMPUTER", r.removeFromTop (14.0f), Justification::centredLeft, false);
+    r.removeFromTop (14.0f);
+    g.setFont (font (30.0f, lp::ui::Medium, -0.02f));
+    g.setColour (t.ink);
+    g.drawText (usage.done ? gb (usage.total) : String ("Measuring..."), r.removeFromTop (38.0f), Justification::centredLeft, false);
+    g.setFont (font (14.5f));
+    g.setColour (t.ink.withAlpha (0.7f));
+    g.drawText (usage.done ? String (usage.songs) + (usage.songs == 1 ? " song, " : " songs, ") + "kept so you can open them again from your DAW projects" : String(),
+                r.removeFromTop (22.0f), Justification::centredLeft, true);
+    r.removeFromTop (16.0f);
+    AttributedString s;
+    s.setLineSpacing (3.0f);
+    s.append ("Every song keeps its tracks as audio, plus the older versions of tracks you swapped or edited. "
+              "Clearing them keeps every song's current tracks: only the replaced versions go, and the copies with "
+              "effects recorded in (made again when you drag a track). The song you have open isn't touched.\n\n"
+              "Heads up: a DAW project that uses an older version of a track, and didn't keep its own copy "
+              "(in Ableton: File > Collect All and Save), would lose it. To remove whole songs, open the folder.",
+              font (13.0f), t.ink.withAlpha (0.78f));
+    TextLayout tl;
+    tl.createLayout (s, r.getWidth());
+    tl.draw (g, r.removeFromTop (tl.getHeight()));
+    if (message.isNotEmpty())
+    {
+        g.setFont (font (13.0f));
+        g.setColour (t.grassLight);
+        g.drawText (message, Rectangle<float> (cf.getX() + 34.0f, (float) cleanBtn.getY() - 28.0f, cf.getWidth() - 68.0f, 20.0f), Justification::centredLeft, false);
+    }
+}
+
+void StoragePanel::mouseUp (const MouseEvent& e)
+{
+    if (closeX.contains (e.getPosition()) || ! card().contains (e.getPosition())) { if (onClosed) onClosed(); }
+}
+
+bool StoragePanel::keyPressed (const KeyPress& k)
+{
+    if (k == KeyPress::escapeKey) { if (onClosed) onClosed(); return true; }
+    return false;
+}
