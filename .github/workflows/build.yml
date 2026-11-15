@@ -72,13 +72,17 @@ jobs:
       # executable permissions that GitHub's own artifact zip throws away.
       - name: Sign and package (macOS)
         if: runner.os == 'macOS'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_DEV_ID_APP: ${{ secrets.MACOS_DEV_ID_APP }}
+          MACOS_DEV_ID_INSTALLER: ${{ secrets.MACOS_DEV_ID_INSTALLER }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
         run: |
-          cd dist
-          lipo -info "Loopwright.vst3/Contents/MacOS/Loopwright"   # should list x86_64 and arm64
-          for b in *.vst3 *.component *.clap *.app; do
-            [ -e "$b" ] && codesign --force --deep -s - "$b"
-          done
-          cd ..
+          lipo -info "dist/Loopwright.vst3/Contents/MacOS/Loopwright"   # should list x86_64 and arm64
+          bash packaging/mac/sign.sh
           mkdir -p package
           ditto -c -k --keepParent dist "package/Loopwright-macOS.zip"
 

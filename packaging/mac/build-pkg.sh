@@ -17,7 +17,9 @@ cp -R dist/Loopwright.clap "$ROOT/Library/Audio/Plug-Ins/CLAP/"
 [ -d dist/Loopwright.app ] && cp -R dist/Loopwright.app "$ROOT/Applications/"
 
 SIGN=0
-if [ -n "${MACOS_CERT_P12:-}" ] && [ -n "${MACOS_DEV_ID_APP:-}" ]; then
+if [ -f .signed ]; then
+  SIGN=1   # sign.sh already set up the keychain and signed (and notarized) every bundle
+elif [ -n "${MACOS_CERT_P12:-}" ] && [ -n "${MACOS_DEV_ID_APP:-}" ]; then
   SIGN=1
   KC=build.keychain
   security create-keychain -p ci "$KC"
@@ -32,6 +34,7 @@ fi
 # every bundle signed: properly (hardened runtime, for notarization) or ad-hoc
 for b in "$ROOT"/Library/Audio/Plug-Ins/*/Loopwright.* "$ROOT"/Applications/Loopwright.app; do
   [ -e "$b" ] || continue
+  [ -f .signed ] && continue   # already signed and stapled: leave them as they are
   if [ $SIGN = 1 ]; then codesign --force --deep --options runtime --timestamp -s "$MACOS_DEV_ID_APP" "$b"
   else codesign --force --deep -s - "$b"; fi
 done

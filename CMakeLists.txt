@@ -45,7 +45,8 @@ juce_add_plugin(LivePlanet
     COPY_PLUGIN_AFTER_BUILD FALSE
     VST3_CATEGORIES Instrument Synth Generator
     AU_MAIN_TYPE kAudioUnitType_MusicDevice
-    MICROPHONE_PERMISSION_ENABLED FALSE)
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Loopwright records your voice or an instrument to chop into the song, only when you press Record.")
 
 juce_add_binary_data(LivePlanetAssets SOURCES
     Resources/fonts/SpaceGrotesk-Light.ttf
