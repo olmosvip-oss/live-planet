@@ -20,7 +20,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -186,6 +186,42 @@ public:
         startIfNeeded();
     }
 
+    // one drum sound's own mix and effects (the kick, the snare...): the drum track is re-recorded with it
+    void setVoiceFx (int track, int note, lp::song::VoiceFx fx)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingVoiceFx[track][note] = fx;
+            // only the newest settings matter: drop older ones still waiting
+            edits.erase (std::remove_if (edits.begin(), edits.end(), [track] (const std::pair<int, EditOp>& e)
+                                         { return e.first == track && e.second == EditOp::VoiceFx; }), edits.end());
+            edits.push_back ({ track, EditOp::VoiceFx });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    lp::song::VoiceFx voiceFxOf (int track, int note) const
+    {
+        const juce::ScopedLock sl (lock);
+        if (auto pt = pendingVoiceFx.find (track); pt != pendingVoiceFx.end())
+            if (auto pn = pt->second.find (note); pn != pt->second.end()) return pn->second;
+        if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return {};
+        const auto& vf = current.parts[(size_t) track].voiceFx;
+        auto it = vf.find (note);
+        return it != vf.end() ? it->second : lp::song::VoiceFx {};
+    }
+    // which drums have their own effects (for marking them in the drum editor)
+    std::set<int> notesWithFx (int track) const
+    {
+        const juce::ScopedLock sl (lock);
+        std::set<int> r;
+        if (status.haveSong && track >= 0 && track < (int) current.parts.size())
+            for (auto& [n, f] : current.parts[(size_t) track].voiceFx) if (! f.isDefault()) r.insert (n);
+        if (auto pt = pendingVoiceFx.find (track); pt != pendingVoiceFx.end())
+            for (auto& [n, f] : pt->second) { if (f.isDefault()) r.erase (n); else r.insert (n); }
+        return r;
+    }
+
     // swap just one drum sound of the kit (the kick, the snare...) for another from your library.
     // dir +1 = next, -1 = back
     void swapDrum (int track, int note, int dir)
@@ -314,6 +350,9 @@ public:
         v.kitKey << p.variant << "|" << p.pitchSemis;
         v.name = juce::String (p.name); v.samplePath = p.samplePath; v.key = current.key; v.minor = current.minor;
         for (auto& [n, f] : p.kitIn (current)) v.kitKey << "|" << n << f;
+        for (auto& [n, f] : p.voiceFx) // a drum's own effects: the editor's sounds load again
+            v.kitKey << "|fx" << n << ":" << f.gainDb << "," << f.pan << "," << f.tone << "," << f.space << "," << f.echo
+                     << "," << f.warmth << "," << f.nostalgia << "," << f.chorus;
         return v;
     }
     // a played track's sound on every note from lo to hi, to hear notes in the note editor before the track
@@ -2356,6 +2395,7 @@ private:
             case EditOp::Key: return "key change";
             case EditOp::Notes: return on ("notes of");
             case EditOp::SwapDrum: return on ("drum swap in");
+            case EditOp::VoiceFx: return on ("drum effects in");
             case EditOp::Feel: return "drum feel";
             case EditOp::AddHook: return "add hook";
             case EditOp::AddChops: return "add vocal chops";
@@ -2861,6 +2901,16 @@ private:
                 }
                 part.source = sourceLabel (all[(size_t) nextIndex]->path) + "your own kit (mixed)";
             }
+        }
+        if (op == EditOp::VoiceFx)
+        {
+            const juce::ScopedLock sl (lock);
+            for (auto& [note, f] : pendingVoiceFx[tr])
+            {
+                if (f.isDefault()) part.voiceFx.erase (note);
+                else part.voiceFx[note] = f;
+            }
+            pendingVoiceFx.erase (tr);
         }
         if (op == EditOp::Feel)
         {
@@ -3489,6 +3539,7 @@ private:
     std::map<int, GrainSettings> pendingGrains;
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
     std::map<int, std::pair<int, int>> pendingDrumSwap;
+    std::map<int, std::map<int, lp::song::VoiceFx>> pendingVoiceFx; // track -> note -> settings, waiting to be recorded
     int chordsVersion = -1;
     std::pair<int, int> pendingFromTake { -1, -1 };
     std::vector<lp::song::arrange::Item> pendingPlan;

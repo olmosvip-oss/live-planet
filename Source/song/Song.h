@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <string>
 #include <vector>
@@ -221,6 +222,18 @@ inline int loopTune (const KeyReading& r, bool clear, int nameKey, bool nameMino
 
 enum class PartKind { Chords, Melody, Counter, Pad, Bass, Drums, Loop, Fx };
 
+// One drum sound's own mix and effects (the kick, the snare...), on top of the drum track's knobs
+struct VoiceFx
+{
+    float gainDb = 0.0f, pan = 0.0f, tone = 0.0f;                                       // like the track's dials
+    float space = 0.0f, echo = 0.0f, warmth = 0.0f, nostalgia = 0.0f, chorus = 0.0f;   // 0..1
+    bool isDefault() const
+    {
+        return std::abs (gainDb) < 0.05f && std::abs (pan) < 0.005f && std::abs (tone) < 0.005f && space < 0.002f
+            && echo < 0.002f && warmth < 0.002f && nostalgia < 0.002f && chorus < 0.002f;
+    }
+};
+
 // One transition sound placed in the song (a riser, an impact...)
 struct FxHit
 {
@@ -305,6 +318,7 @@ struct Part
     int grainRate = 2;               // 0 = 1/4, 1 = 1/8, 2 = 1/16, 3 = 1/32 notes
     float pan = 0.0f;                // -1 left .. 0 centre .. +1 right
     std::map<int, juce::String> kit; // a drum part with its own sounds (a sliced drum loop); empty = the song's kit
+    std::map<int, VoiceFx> voiceFx; // drums: a sound's own mix and effects (note -> settings; only the changed ones)
     const std::map<int, juce::String>& kitIn (const struct Song& s) const;
 };
 

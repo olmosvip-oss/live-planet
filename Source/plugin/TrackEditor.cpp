@@ -48,14 +48,20 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     addChildComponent (sliceBtn);
     drumGrid.onToggleBig = [this] { drumBig = ! drumBig; drumGrid.setBig (drumBig); resized(); repaint(); };
     auto mixOf = [this] (int t) -> StudioPlayer::Mix& { return proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, t)]; };
-    addDial ("volume", -30.0, 6.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).gainDb; }, 72);
-    addDial ("pan", -1.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).pan; }, 64);
-    addDial ("tone", -1.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).tone; }, 64);
-    addDial ("space", 0.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).space; }, 64);
-    addDial ("echo", 0.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).echo; }, 64);
-    addDial ("warmth", 0.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).warmth; }, 64);
-    addDial ("nostalgia", 0.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).nostalgia; }, 64);
-    addDial ("chorus", 0.0, 1.0, [mixOf] (int t) -> std::atomic<float>& { return mixOf (t).chorus; }, 64);
+    // (with a drum picked in the drum editor, they're that drum's own settings instead)
+    addDial ("volume", -30.0, 6.0, [this, mixOf] (int t) -> std::atomic<float>& { return voice >= 0 ? voiceVals[0] : mixOf (t).gainDb; }, 72);
+    addDial ("pan", -1.0, 1.0, [this, mixOf] (int t) -> std::atomic<float>& { return voice >= 0 ? voiceVals[1] : mixOf (t).pan; }, 64);
+    addDial ("tone", -1.0, 1.0, [this, mixOf] (int t) -> std::atomic<float>& { return voice >= 0 ? voiceVals[2] : mixOf (t).tone; }, 64);
+    addDial ("space", 0.0, 1.0, [this, mixOf] (int t) -> std::atomic<float>& { return voice >= 0 ? voiceVals[3] : mixOf (t).space; }, 64);
+    addDial ("echo", 0.0, 1.0, [this, mixOf] (int t) -> std::atomic<float>& { return voice >= 0 ? voiceVals[4] : mixOf (t).echo; }, 64);
+    addDial ("warmth", 0.0, 1.0, [this, mixOf] (int t) -> std::atomic<float>& { return voice >= 0 ? voiceVals[5] : mixOf (t).warmth; }, 64);
+    addDial ("nostalgia", 0.0, 1.0, [this, mixOf] (int t) -> std::atomic<float>& { return voice >= 0 ? voiceVals[6] : mixOf (t).nostalgia; }, 64);
+    addDial ("chorus", 0.0, 1.0, [this, mixOf] (int t) -> std::atomic<float>& { return voice >= 0 ? voiceVals[7] : mixOf (t).chorus; }, 64);
+    drumGrid.onPickVoice = [this] (int note) { pickVoice (note); };
+    voiceChip.getProperties().set ("primary", true);
+    voiceChip.setWantsKeyboardFocus (false);
+    voiceChip.onClick = [this] { pickVoice (-1); };
+    addChildComponent (voiceChip);
     // the grains row: re-records the track when you let go of a dial
     addGrainDial ("grains", 0.0, 1.0, &grains.amount, 76);
     addGrainDial ("size", 10.0, 500.0, &grains.sizeMs, 64);
@@ -130,16 +136,56 @@ TrackEditor::Dial& TrackEditor::addDial (const char* name, double lo, double hi,
         return String (roundToInt (v * 100.0)) + " %";
     };
     auto* raw = d.get();
-    s.onValueChange = [this, raw] { if (raw->value) raw->value (track).store ((float) raw->s.getValue()); };
+    s.onValueChange = [this, raw]
+    {
+        if (! raw->value) return;
+        raw->value (track).store ((float) raw->s.getValue());
+        if (voice >= 0) { voiceDirty = true; voiceChangedAt = Time::getMillisecondCounter(); } // a drum's own: re-recorded once you pause
+    };
     s.setWantsKeyboardFocus (false);
     addAndMakeVisible (s);
     dials.push_back (std::move (d));
     return *dials.back();
 }
 
+// pick one drum of the kit (-1: back to the whole track): the mix dials show its own effects
+void TrackEditor::pickVoice (int note)
+{
+    sendVoice(); // the drum you were shaping keeps what you set
+    voice = note;
+    drumGrid.setPickedVoice (note);
+    if (note >= 0)
+    {
+        const auto f = proc.songJob.voiceFxOf (track, note);
+        const float v[] = { f.gainDb, f.pan, f.tone, f.space, f.echo, f.warmth, f.nostalgia, f.chorus };
+        for (size_t i = 0; i < voiceVals.size(); ++i) voiceVals[i] = v[i];
+        static const std::map<int, const char*> names = { { 49, "CRASH" }, { 46, "OPEN HAT" }, { 42, "HAT" }, { 39, "CLAP" }, { 38, "SNARE" },
+                                                          { 45, "TOM" }, { 70, "PERC" }, { 37, "RIM" }, { 36, "KICK" } };
+        auto it = names.find (note);
+        voiceChip.setButtonText (String (it != names.end() ? it->second : "DRUM") + "  x");
+        voiceChip.setTooltip ("These knobs shape only this drum. Click to go back to the whole drum track.");
+    }
+    voiceChip.setVisible (note >= 0);
+    bypassFx.setVisible (note < 0);
+    for (auto& d : dials)
+        if (d->value && d->local == nullptr) d->s.setValue ((double) d->value (track).load(), dontSendNotification);
+    repaint();
+}
+
+void TrackEditor::sendVoice()
+{
+    if (! voiceDirty || voice < 0) return;
+    voiceDirty = false;
+    lp::song::VoiceFx f;
+    f.gainDb = voiceVals[0]; f.pan = voiceVals[1]; f.tone = voiceVals[2]; f.space = voiceVals[3];
+    f.echo = voiceVals[4]; f.warmth = voiceVals[5]; f.nostalgia = voiceVals[6]; f.chorus = voiceVals[7];
+    proc.songJob.setVoiceFx (track, voice, f);
+}
+
 void TrackEditor::select (int t)
 {
     if (t != track) { drumGrid.stopLoop(); noteGrid.stopLoop(); drumGrid.forgetKit(); noteGrid.forgetSound(); } // another track: the loop stops, its sounds load again
+    if (t != track && voice >= 0) pickVoice (-1); // (before the track changes: what you set goes to the old one)
     const int n = (int) proc.songJob.getStatus().tracks.size();
     track = n > 0 ? jlimit (0, n - 1, t) : 0;
     const auto st = proc.songJob.getStatus();
@@ -167,6 +213,11 @@ bool TrackEditor::showingDrums() const
 
 void TrackEditor::refresh()
 {
+    // a drum's own effects: re-recorded a moment after you stop turning
+    if (voiceDirty && Time::getMillisecondCounter() - voiceChangedAt > 300
+        && std::none_of (dials.begin(), dials.end(), [] (const std::unique_ptr<Dial>& d) { return d->s.isMouseButtonDown(); }))
+        sendVoice();
+    if (voice >= 0 && ! showingDrums()) pickVoice (-1);
     const auto st = proc.songJob.getStatus();
     if (st.version != version) { version = st.version; select (track); }
     if (showingDrums()) drumGrid.refresh();
@@ -306,6 +357,7 @@ void TrackEditor::resized()
     // left of the effects: switch them off, print them into the dragged track, and the track to drag
     const int bh = gridBig ? 28 : 36; // (four buttons fit beside the knobs: bypass, fx, drag track, drag midi)
     bypassFx.setBounds (0, rows.getY() + 4, 100, bh - 6);
+    voiceChip.setBounds (bypassFx.getBounds());
     printFx.setBounds (0, rows.getY() + 4 + bh, 100, bh - 6);
     dragTrack.setBounds (0, rows.getY() + 4 + 2 * bh, 100, bh - 6);
     dragMidi.setBounds (0, rows.getY() + 4 + 3 * bh, 100, bh - 6);
@@ -353,6 +405,8 @@ void TrackEditor::paint (Graphics& g)
             want = ! showingDrums() && (nm.contains ("drum") || nm.contains ("perc"));
         }
         else if (c == &hGrains) want = ! big;
+        else if (c == &voiceChip) want = voice >= 0 && showingDrums();   // one drum picked: its chip instead of Bypass
+        else if (c == &bypassFx) want = voice < 0;
         else if (big && std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s && d->row == 1; }))
             want = false;
         if (c->isVisible() != want) c->setVisible (want);

@@ -59,6 +59,13 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("mixDb", p.mixDb); o->setProperty ("regionStart", p.regionStart); o->setProperty ("regionBars", p.regionBars);
     o->setProperty ("grainAmount", p.grainAmount); o->setProperty ("grainSizeMs", p.grainSizeMs); o->setProperty ("grainChaos", p.grainChaos);
     o->setProperty ("grainPosition", p.grainPosition); o->setProperty ("grainRate", p.grainRate); o->setProperty ("pan", p.pan);
+    if (! p.voiceFx.empty())
+    {
+        juce::Array<juce::var> vf;
+        for (auto& [note, f] : p.voiceFx)
+            vf.add (juce::Array<juce::var> { note, f.gainDb, f.pan, f.tone, f.space, f.echo, f.warmth, f.nostalgia, f.chorus });
+        o->setProperty ("voiceFx", vf);
+    }
     if (! p.kit.empty())
     {
         juce::Array<juce::var> kit;
@@ -90,6 +97,13 @@ inline Part partFromVar (const juce::var& v)
     p.grainAmount = v["grainAmount"]; p.grainSizeMs = v.getProperty ("grainSizeMs", 120.0f); p.grainChaos = v["grainChaos"];
     p.grainPosition = v["grainPosition"]; p.grainRate = v.getProperty ("grainRate", 2); p.pan = v["pan"];
     if (auto* a = v["kit"].getArray()) for (auto& e : *a) p.kit[(int) e[0]] = e[1].toString();
+    if (auto* a = v["voiceFx"].getArray())
+        for (auto& e : *a)
+        {
+            VoiceFx f;
+            f.gainDb = e[1]; f.pan = e[2]; f.tone = e[3]; f.space = e[4]; f.echo = e[5]; f.warmth = e[6]; f.nostalgia = e[7]; f.chorus = e[8];
+            if (! f.isDefault()) p.voiceFx[(int) e[0]] = f;
+        }
     return p;
 }
 

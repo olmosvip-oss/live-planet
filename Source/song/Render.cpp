@@ -923,6 +923,105 @@ void writeMidi (const Song& song, const juce::File& file)
     if (os.openedOk()) mf.writeTo (os, 1);
 }
 
+// One drum sound's own mix and effects, applied to its audio (the same sound as the studio's dials:
+// volume, pan, tone, nostalgia, warmth, chorus, and its own echo and room). The buffer should have room
+// at the end for the echo and the room to ring out.
+void applyVoiceFx (juce::AudioBuffer<float>& buf, const VoiceFx& v, double sr, double bpm)
+{
+    juce::ScopedNoDenormals noDenormals;
+    const int n = buf.getNumSamples();
+    if (n < 2 || v.isDefault()) return;
+    if (buf.getNumChannels() < 2) { buf.setSize (2, n, true); buf.copyFrom (1, 0, buf, 0, 0, n); }
+    float* L = buf.getWritePointer (0);
+    float* R = buf.getWritePointer (1);
+    const float fsr = (float) sr;
+    lp::dsp::SVF toneL, toneR, lpL, lpR, hpL, hpR;
+    const float tone = v.tone, warm = v.warmth, nost = v.nostalgia, cho = v.chorus;
+    if (std::abs (tone) > 0.005f)
+    {
+        const float hz = tone < 0 ? 18000.0f * std::pow (0.015f, -tone) : 20.0f * std::pow (60.0f, tone);
+        toneL.setup (hz, 0.7f, fsr); toneR.setup (hz, 0.7f, fsr);
+    }
+    const float lpHz = 20000.0f * std::pow (0.3f, warm) * std::pow (0.2f, nost);
+    lpL.setup (lpHz, 0.6f, fsr); lpR.setup (lpHz, 0.6f, fsr);
+    hpL.setup (20.0f + 260.0f * nost, 0.6f, fsr); hpR.setup (20.0f + 260.0f * nost, 0.6f, fsr);
+    lp::dsp::Delay wobL, wobR, chL, chR;
+    wobL.prepare ((int) (0.02 * sr)); wobR.prepare ((int) (0.02 * sr));
+    chL.prepare ((int) (0.03 * sr)); chR.prepare ((int) (0.03 * sr));
+    const float drive = 1.0f + 2.2f * warm + 1.2f * nost, wobDepth = nost * 0.0028f * fsr;
+    float phase = 0.0f, chPhase = 0.0f;
+    const float g = juce::Decibels::decibelsToGain (v.gainDb);
+    const float gl = g * std::min (1.0f, 1.0f - v.pan), gr = g * std::min (1.0f, 1.0f + v.pan);
+    std::vector<float> verbL ((size_t) n, 0.0f), verbR ((size_t) n, 0.0f), delL ((size_t) n, 0.0f), delR ((size_t) n, 0.0f);
+    for (int i = 0; i < n; ++i)
+    {
+        float xl = L[i], xr = R[i];
+        if (tone < -0.005f) { toneL.tick (xl); toneR.tick (xr); xl = toneL.lp; xr = toneR.lp; }
+        else if (tone > 0.005f) { toneL.tick (xl); toneR.tick (xr); xl = toneL.hp; xr = toneR.hp; }
+        if (nost > 0.002f)
+        {
+            phase += 0.5f * 6.2831853f / fsr;
+            if (phase > 6.2831853f) phase -= 6.2831853f;
+            const float d = 0.002f * fsr + wobDepth * (0.5f + 0.5f * std::sin (phase));
+            wobL.push (xl); wobR.push (xr);
+            xl = wobL.read (d); xr = wobR.read (d);
+            hpL.tick (xl); hpR.tick (xr);
+            xl = hpL.hp; xr = hpR.hp;
+            const float mid = 0.5f * (xl + xr), side = 0.5f * (xl - xr) * (1.0f - 0.6f * nost);
+            xl = mid + side; xr = mid - side;
+        }
+        if (warm > 0.002f || nost > 0.002f)
+        {
+            lpL.tick (xl); lpR.tick (xr);
+            xl = std::tanh (lpL.lp * drive) / drive;
+            xr = std::tanh (lpR.lp * drive) / drive;
+        }
+        if (cho > 0.002f)
+        {
+            chPhase += 0.7f * 6.2831853f / fsr;
+            if (chPhase > 6.2831853f) chPhase -= 6.2831853f;
+            const float base = 0.012f * fsr, depth = 0.004f * fsr;
+            chL.push (xl); chR.push (xr);
+            const float wl = chL.read (base + depth * std::sin (chPhase));
+            const float wr = chR.read (base + depth * std::cos (chPhase * 1.13f));
+            xl = xl * (1.0f - 0.35f * cho) + wl * 0.75f * cho;
+            xr = xr * (1.0f - 0.35f * cho) + wr * 0.75f * cho;
+        }
+        xl *= gl; xr *= gr;
+        L[i] = xl; R[i] = xr;
+        verbL[(size_t) i] = xl * v.space; verbR[(size_t) i] = xr * v.space;
+        delL[(size_t) i] = xl * v.echo;   delR[(size_t) i] = xr * v.echo;
+    }
+    if (v.echo > 0.002f)
+    {
+        // the studio's echo: a dotted 8th at the song's tempo, bouncing left / right
+        lp::dsp::Delay dL, dR;
+        lp::dsp::SVF fL, fR;
+        dL.prepare ((int) (2.6 * sr)); dR.prepare ((int) (2.6 * sr));
+        fL.setup (3500.0f, 0.6f, fsr); fR.setup (3500.0f, 0.6f, fsr);
+        const float dTime = juce::jlimit (100.0f, (float) (2.5 * sr), (float) (0.75 * 60.0 / std::max (40.0, bpm) * sr));
+        for (int i = 0; i < n; ++i)
+        {
+            const float eL = dL.read (dTime), eR = dR.read (dTime);
+            fL.tick (eL); fR.tick (eR);
+            dL.push (delL[(size_t) i] + fR.lp * 0.42f);
+            dR.push (delR[(size_t) i] * 0.3f + fL.lp * 0.42f);
+            L[i] += eL * 0.8f; R[i] += eR * 0.8f;
+            verbL[(size_t) i] += eL * 0.25f; verbR[(size_t) i] += eR * 0.25f;
+        }
+    }
+    if (v.space > 0.002f || v.echo > 0.002f)
+    {
+        juce::Reverb room;
+        room.setSampleRate (sr);
+        juce::Reverb::Parameters rp;
+        rp.roomSize = 0.82f; rp.damping = 0.45f; rp.wetLevel = 1.0f; rp.dryLevel = 0.0f; rp.width = 1.0f;
+        room.setParameters (rp);
+        room.processStereo (verbL.data(), verbR.data(), n);
+        for (int i = 0; i < n; ++i) { L[i] += verbL[(size_t) i] * 0.55f; R[i] += verbR[(size_t) i] * 0.55f; }
+    }
+}
+
 // Renders one part on its own (also used when you swap, reverse or re-pitch a track in the studio).
 // one hit of a drum track's kit, on its own (for hearing it while you edit the pattern)
 juce::AudioBuffer<float> renderDrumHit (const Song& song, const Part& part, int note, double sr)
@@ -954,6 +1053,13 @@ juce::AudioBuffer<float> renderDrumHit (const Song& song, const Part& part, int 
         }
     }
     if (part.pitchSemis != 0) pitchShiftSimple (out, part.pitchSemis, sr);
+    if (auto vf = part.voiceFx.find (note); vf != part.voiceFx.end() && ! vf->second.isDefault())
+    {
+        // its own effects, with room for the echo and the room to ring
+        const bool tail = vf->second.space > 0.002f || vf->second.echo > 0.002f;
+        if (tail) out.setSize (2, out.getNumSamples() + (int) (2.5 * sr), true, true);
+        applyVoiceFx (out, vf->second, sr, song.bpm);
+    }
     return out;
 }
 
@@ -1236,45 +1342,53 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
             }
         }
     }
-    else if (part.kind == PartKind::Drums && ! part.kitIn (song).empty())
-    {
-        SampleKit kit;
-        for (auto& [note, path] : part.kitIn (song))
-        {
-            auto a = loadAudio (path, sr);
-            if (a.getNumSamples() > 0) kit.sounds[note] = std::move (a);
-        }
-        for (int pos = 0; pos < total; pos += block)
-        {
-            const int n = std::min (block, total - pos);
-            int done = 0;
-            while (next < events.size() && events[next].sample < pos + n)
-            {
-                const int at = (int) std::max<long> (0, events[next].sample - pos);
-                if (at > done) { kit.render (L + pos + done, R + pos + done, at - done); done = at; }
-                if (events[next].on) kit.hit (events[next].note, events[next].vel);
-                ++next;
-            }
-            kit.render (L + pos + done, R + pos + done, n - done);
-        }
-    }
     else if (part.kind == PartKind::Drums)
     {
-        DrumKit kit;
-        kit.prepare (sr, part.variant);
-        for (int pos = 0; pos < total; pos += block)
-        {
-            const int n = std::min (block, total - pos);
-            int done = 0;
-            while (next < events.size() && events[next].sample < pos + n)
+        // the kit: your samples (or a sliced loop), or the built-in drum machine
+        const bool sampled = ! part.kitIn (song).empty();
+        std::map<int, juce::AudioBuffer<float>> sounds;
+        if (sampled)
+            for (auto& [note, path] : part.kitIn (song))
             {
-                const int at = (int) std::max<long> (0, events[next].sample - pos);
-                if (at > done) { kit.render (L + pos + done, R + pos + done, at - done); done = at; }
-                if (events[next].on) kit.hit (events[next].note, events[next].vel);
-                ++next;
+                auto a = loadAudio (path, sr);
+                if (a.getNumSamples() > 0) sounds[note] = std::move (a);
             }
-            kit.render (L + pos + done, R + pos + done, n - done);
+        // plays the hits that `want` picks into L / R
+        auto playHits = [&] (float* oL, float* oR, std::function<bool (int)> want)
+        {
+            SampleKit sk;
+            DrumKit dk;
+            if (sampled) sk.sounds = sounds; else dk.prepare (sr, part.variant);
+            size_t e = 0;
+            for (int pos = 0; pos < total; pos += block)
+            {
+                const int n = std::min (block, total - pos);
+                int done = 0;
+                auto play = [&] (int from, int count) { if (sampled) sk.render (oL + pos + from, oR + pos + from, count); else dk.render (oL + pos + from, oR + pos + from, count); };
+                while (e < events.size() && events[e].sample < pos + n)
+                {
+                    const int at = (int) std::max<long> (0, events[e].sample - pos);
+                    if (at > done) { play (done, at - done); done = at; }
+                    if (events[e].on && want (events[e].note)) { if (sampled) sk.hit (events[e].note, events[e].vel); else dk.hit (events[e].note, events[e].vel); }
+                    ++e;
+                }
+                play (done, n - done);
+            }
+        };
+        // a drum with its own effects plays on its own, through them, then joins the rest
+        std::set<int> own;
+        for (auto& [note, f] : part.voiceFx) if (! f.isDefault()) own.insert (note);
+        playHits (L, R, [&own] (int note) { return own.count (note) == 0; });
+        for (int note : own)
+        {
+            juce::AudioBuffer<float> v (2, total);
+            v.clear();
+            playHits (v.getWritePointer (0), v.getWritePointer (1), [note] (int x) { return x == note; });
+            applyVoiceFx (v, part.voiceFx.at (note), sr, song.bpm);
+            buf.addFrom (0, 0, v, 0, 0, total);
+            buf.addFrom (1, 0, v, 1, 0, total);
         }
+        next = events.size();
     }
     else if (part.kind == PartKind::Bass)
     {

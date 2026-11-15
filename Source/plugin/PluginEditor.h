@@ -420,6 +420,10 @@ public:
     void forgetKit() { kitKey.clear(); } // another editor used the live player: load the kit again next time
     std::function<void()> onToggleBig; // the "bigger" button: the grid takes the whole editor
     void setBig (bool b) { bigBtn.setToggleState (b, juce::dontSendNotification); }
+    // click a drum's name: its own effects on the knobs below (-1: the whole drum track)
+    std::function<void (int note)> onPickVoice;
+    void setPickedVoice (int note) { if (picked != note) { picked = note; repaint(); } }
+    int pickedVoice() const { return picked; }
 
 private:
     // the timeline
@@ -436,6 +440,8 @@ private:
     void loopRange (double& a, double& b) const; // the bars that play / get copied / cleared
 
     void loadKit();
+    int picked = -1;          // the drum whose effects the knobs show (-1: all of them)
+    std::set<int> withFx;     // drums with their own effects (marked with a dot)
     juce::Rectangle<float> swapArrow (size_t row, int which) const;
     bool canSwapRows = false;
     int auditionAfterSwap = -1, kitReloadsAtSwap = 0, seenSwaps = 0;
@@ -596,6 +602,14 @@ private:
     bool bigNow() const { return notesTrack && ! showingDrums() ? noteBig : drumBig; }  // a played part (808, hook, bass line): its notes can be edited
     juce::TextButton sliceBtn { "Slice into hits" }; // a drum loop -> a drum track you can edit
     bool drumBig = false;
+    // one drum's own effects (picked by clicking its name in the drum editor): the mix dials show it instead
+    int voice = -1;
+    std::array<std::atomic<float>, 8> voiceVals {}; // volume, pan, tone, space, echo, warmth, nostalgia, chorus
+    bool voiceDirty = false;
+    juce::uint32 voiceChangedAt = 0;
+    juce::TextButton voiceChip;
+    void pickVoice (int note);
+    void sendVoice();
     bool showingDrums() const;
 };
 

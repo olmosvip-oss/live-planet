@@ -255,6 +255,7 @@ void DrumGrid::mouseMove (const MouseEvent&) { repaint(); } // hover highlights 
 void DrumGrid::refresh()
 {
     canSwapRows = proc.songJob.kitIsSamples (track);
+    if (auto fx = proc.songJob.notesWithFx (track); fx != withFx) { withFx = std::move (fx); repaint(); }
     // a drum sound was swapped: show its name, and play it once its new sound is loaded
     const auto [swapName, swapCount] = proc.songJob.lastDrumSwap();
     if (swapCount != seenSwaps)
@@ -408,11 +409,15 @@ void DrumGrid::mouseDown (const MouseEvent& e)
                     kitReloadsAtSwap = kitReloads.load();
                     return;
                 }
-    // a row's name: hear that drum
+    // a row's name: hear that drum, and put its own effects on the knobs (click it again: the whole track)
     if (e.position.x < ga.getX() && e.position.y >= ga.getY() && e.position.y < ga.getBottom() && ! rows.empty())
     {
         const int row = jlimit (0, (int) rows.size() - 1, (int) ((e.position.y - ga.getY()) / (ga.getHeight() / (float) rows.size())));
-        proc.liveDrums.audition (rows[(size_t) row], 0.9f);
+        const int note = rows[(size_t) row];
+        proc.liveDrums.audition (note, 0.9f);
+        picked = picked == note ? -1 : note;
+        if (onPickVoice) onPickVoice (picked);
+        repaint();
         return;
     }
     int row;
@@ -703,8 +708,19 @@ void DrumGrid::paint (Graphics& g)
         for (size_t i = 0; i < rows.size(); ++i)
         {
             const float y = ga.getY() + (float) i * rowH;
-            g.setColour (t.inkDim);
+            const bool isPicked = rows[i] == picked, hasFx = withFx.count (rows[i]) > 0;
+            if (isPicked)
+            {
+                g.setColour (t.grass.withAlpha (0.28f));
+                g.fillRoundedRectangle (Rectangle<float> (6.0f, y + 1.0f, 80.0f, rowH - 2.0f), 4.0f);
+            }
+            g.setColour (isPicked ? Colours::white : hasFx ? t.grassLight : t.inkDim);
             g.drawText (rowName (rows[i]), Rectangle<float> (12.0f, y, 70.0f, rowH), Justification::centredLeft, false);
+            if (hasFx) // a little dot: this drum has its own effects
+            {
+                g.setColour (t.grassLight);
+                g.fillEllipse (2.5f, y + rowH * 0.5f - 2.0f, 4.0f, 4.0f);
+            }
             if (! canSwapRows) continue;
             for (int k = 0; k < 2; ++k)
             {
