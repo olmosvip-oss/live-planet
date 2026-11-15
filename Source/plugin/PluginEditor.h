@@ -248,6 +248,22 @@ private:
     juce::Rectangle<int> closeX, lostLink;
 };
 
+// DAWs that can't import markers (FL Studio, Bitwig): the song's sections and their bars, to add by hand
+class SectionsPanel : public juce::Component
+{
+public:
+    SectionsPanel (std::vector<std::pair<juce::String, int>> sections, juce::String daw, std::function<void()> closed);
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+
+private:
+    juce::Rectangle<int> card() const;
+    std::vector<std::pair<juce::String, int>> secs;
+    juce::String host;
+    std::function<void()> onClosed;
+};
+
 // your songs on disk: how much room they take, and clearing out old versions of tracks
 class StoragePanel : public juce::Component
 {
@@ -415,6 +431,7 @@ public:
     FilePill (juce::String text, std::function<juce::StringArray()> files) : label (std::move (text)), getFiles (std::move (files)) {}
     // optional: the files actually handed over when dragged (e.g. recorded with effects), if not getFiles
     std::function<juce::StringArray()> filesToDrag;
+    std::function<void()> onClick; // optional: a click does this (instead of showing the file in Finder)
     void setLabel (const juce::String& t) { if (label != t) { label = t; repaint(); } }
     void paint (juce::Graphics&) override;
     void mouseDrag (const juce::MouseEvent&) override;
@@ -771,6 +788,7 @@ private:
             hStems { "Drag stems or the mix", "Stems: every track as its own audio file, at bar 1, as you hear it (a track's effects are recorded in when it has any). Mix: the whole song in one file; with a master picked, it's the mastered version." },
             hLocators { "Locators", "DAWs can't take locators from a dropped file, so this is a small helper device for Ableton Live Suite. Drag it onto any track once and press 'place song locators': your sections appear as named locators, and they follow when you change sections here. 'build song tracks' brings every track into Live." };
     std::unique_ptr<Tour> tour;
+    std::unique_ptr<SectionsPanel> sectionsPanel;
     void startTour();
     std::unique_ptr<Stepper> keyStepper, scaleStepper;
     ThemeDots themeDots;

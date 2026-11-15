@@ -577,6 +577,20 @@ public:
         return file;
     }
 
+    // the song's sections: name and the bar it starts on (1 = the first bar)
+    std::vector<std::pair<juce::String, int>> sectionList() const
+    {
+        const juce::ScopedLock sl (lock);
+        std::vector<std::pair<juce::String, int>> r;
+        if (! status.haveSong) return r;
+        for (auto& sec : current.sections)
+        {
+            juce::String name (sec.name);
+            r.push_back ({ name.substring (0, 1).toUpperCase() + name.substring (1), sec.startBar + 1 });
+        }
+        return r;
+    }
+
     // the song's tempo and its sections as markers, in a MIDI file: "locators" for DAWs other than Ableton
     // (Logic, FL Studio, Cubase, Studio One, Reaper read markers and tempo from a MIDI file)
     juce::File locatorsMidi()

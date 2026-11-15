@@ -1514,7 +1514,7 @@ void SongView::paint (Graphics& g)
 void FilePill::paint (Graphics& g)
 {
     auto r = getLocalBounds().toFloat().reduced (2.0f);
-    const bool ready = ! getFiles().isEmpty();
+    const bool ready = onClick ? (bool) isEnabled() : ! getFiles().isEmpty();
     const bool over = isMouseOver() && ready;
     g.setColour (Colour (over ? 0xff2e2e33 : 0xff232326).withAlpha (ready ? 1.0f : 0.5f));
     g.fillRoundedRectangle (r, 7.0f);
@@ -1540,6 +1540,7 @@ void FilePill::mouseDrag (const MouseEvent& e)
 
 void FilePill::mouseUp (const MouseEvent&)
 {
+    if (! dragged && onClick) { onClick(); dragged = false; return; }
     if (! dragged)
     {
         const auto files = getFiles();
@@ -1606,12 +1607,14 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       pillHelper ("locators", [&p]
       {
           // Ableton: the helper device. Any other DAW: the tempo and the sections as markers in a MIDI file
-          if (PluginHostType().isLogic() || PluginHostType().isGarageBand())
+          if (PluginHostType().isFruityLoops() || PluginHostType().isBitwigStudio())
+              return StringArray(); // (they can't import markers: a click shows the sections instead)
+          if (PluginHostType().isLogic() || PluginHostType().isGarageBand() || PluginHostType().isReaper())
           {
               const auto f = p.songJob.markersWav (p.getSampleRate()); // Logic reads markers from audio files
               return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray();
           }
-          if (! PluginHostType().isAbletonLive() && PluginHostType::getPluginLoadedAs() != AudioProcessor::wrapperType_Standalone)
+          if (! PluginHostType().isAbletonLive())
           {
               const auto f = p.songJob.locatorsMidi();
               return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray();
@@ -1709,8 +1712,32 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     // one drag: every MIDI part (drums, 808, hook, bass lines, and the chords + bass your loops play)
     pillMidi.filesToDrag = [&p] { const auto f = p.songJob.allMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
     pillMidi.setTooltip ("Every MIDI part in one drag: drums, 808, hook, bass lines, and the chords + bass your loops play. Each lands on its own MIDI track, sections as markers.");
-    if (PluginHostType().isAbletonLive() || PluginHostType::getPluginLoadedAs() == AudioProcessor::wrapperType_Standalone)
+    if (PluginHostType::getPluginLoadedAs() == AudioProcessor::wrapperType_Standalone)
+        pillHelper.setTooltip ("Your song's tempo and sections as markers, in a MIDI file. Pro Tools: File > Import > MIDI and keep its markers and tempo. "
+                               "Cubase, Reaper and others: drag it in at bar 1. (Using Ableton? Load Loopwright as a plugin there: Locators sets everything up.)");
+    else if (PluginHostType().isAbletonLive())
         pillHelper.setTooltip ("Drag onto any track in Ableton once (Live Suite): it sets the tempo and places your song's sections as named locators, keeps them in step when you change sections here, and 'build song tracks' brings in every track.");
+    else if (PluginHostType().isFruityLoops() || PluginHostType().isBitwigStudio())
+    {
+        pillHelper.setTooltip ("Your song's sections and the bar each one starts on, to add as markers (this DAW can't import them from a file). Click to see them.");
+        pillHelper.onClick = [this]
+        {
+            auto secs = proc.songJob.sectionList();
+            if (secs.empty()) return;
+            SafePointer<LivePlanetEditor> self (this);
+            sectionsPanel = std::make_unique<SectionsPanel> (std::move (secs), PluginHostType().isFruityLoops() ? "FL Studio" : "Bitwig",
+                                                             [self] { MessageManager::callAsync ([self] { if (self != nullptr) self->sectionsPanel.reset(); }); });
+            addAndMakeVisible (*sectionsPanel);
+            sectionsPanel->setBounds (getLocalBounds());
+            sectionsPanel->toFront (true);
+        };
+    }
+    else if (PluginHostType().isReaper())
+        pillHelper.setTooltip ("Your song's sections as markers inside an audio file: drag it onto a track at the start. If the markers don't appear, "
+                               "select the item and run the action \"Item: Import item media cues as project markers\". The item is silent: delete it after.");
+    else if (PluginHostType().isStudioOne())
+        pillHelper.setTooltip ("Your song's tempo and sections as markers, in a MIDI file. Studio One reads the markers when the file is opened as a new song "
+                               "(drag it onto the Start page); copy them from there into your song.");
     else if (PluginHostType().isLogic() || PluginHostType().isGarageBand())
         pillHelper.setTooltip ("Your song's sections as Logic markers: drag onto a new audio track at bar 1 and click Import when Logic asks about markers. "
                                "If it doesn't ask: select the region, then Navigate > Other > Import Marker from Audio File. The region itself is silent: delete it after.");
@@ -1848,6 +1875,10 @@ void LivePlanetEditor::startTour()
           "click to add, drag to move, and hear it as you go." },
         { Sound, [=] { return cardInstrument; }, "7. Sound",
           "Play any sound on your keyboard: pick one of your one-shots or drop a sample, or drop your own vocal and it's chopped onto the keys." },
+        { Write, [=] { return cardTimeline; }, "8. Your DAW",
+          "Stems, MIDI and the mix drag into any DAW. Section markers: one drag in Ableton (Live Suite), Logic, Reaper and Cubase. "
+          "FL Studio and Bitwig can't import markers, so LOCATORS lists each section's bar for you. "
+          "Pro Tools: use the Loopwright app (not a plugin there yet) and drag the files in." },
         { Write, [=] { return tourBtn.getBounds().expanded (10, 8); }, "That's it",
           "Changed something you don't like? Undo is in the top bar (or Cmd+Z). This ? takes the tour again any time. Have fun." },
     };

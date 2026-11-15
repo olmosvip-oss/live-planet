@@ -92,7 +92,7 @@ void Tour::go (int i)
 // the card sits beside what's lit up (below it if there's room, else above; the middle when nothing is)
 Rectangle<int> Tour::card() const
 {
-    const int w = 440, h = 210;
+    const int w = 460, h = 244;
     if (spotNow.isEmpty()) return Rectangle<int> (w, h).withCentre (getLocalBounds().getCentre());
     int y = spotNow.getBottom() + 18;
     if (y + h > getHeight() - 12) y = spotNow.getY() - h - 18;
@@ -549,6 +549,93 @@ void StoragePanel::mouseUp (const MouseEvent& e)
 }
 
 bool StoragePanel::keyPressed (const KeyPress& k)
+{
+    if (k == KeyPress::escapeKey) { if (onClosed) onClosed(); return true; }
+    return false;
+}
+
+// ---- the sections, for DAWs that can't import markers
+
+SectionsPanel::SectionsPanel (std::vector<std::pair<String, int>> sections, String daw, std::function<void()> closed)
+    : secs (std::move (sections)), host (std::move (daw)), onClosed (std::move (closed))
+{
+    setWantsKeyboardFocus (true);
+}
+
+Rectangle<int> SectionsPanel::card() const
+{
+    const int rows = ((int) secs.size() + 1) / 2;
+    return Rectangle<int> (jmin (560, getWidth() - 40), jmin (getHeight() - 40, 250 + rows * 40)).withCentre (getLocalBounds().getCentre());
+}
+
+void SectionsPanel::paint (Graphics& g)
+{
+    const auto* lnf = dynamic_cast<LivePlanetLookAndFeel*> (&getLookAndFeel());
+    const auto& t = lnf != nullptr ? *lnf->th : currentTheme();
+    g.fillAll (Colours::black.withAlpha (0.66f));
+    const auto cf = card().toFloat();
+    {
+        Graphics::ScopedSaveState s (g);
+        Path clip; clip.addRoundedRectangle (cf, 20.0f);
+        g.reduceClipRegion (clip);
+        g.setColour (t.bodyDark.interpolatedWith (Colour (0xff0d0d11), 0.6f));
+        g.fillRect (cf);
+        ColourGradient glow (t.grass.withAlpha (0.28f), cf.getRight() - 40.0f, cf.getY(), t.grass.withAlpha (0.0f), cf.getRight() - 300.0f, cf.getY() + 260.0f, true);
+        g.setGradientFill (glow);
+        g.fillRect (cf);
+    }
+    g.setColour (Colours::white.withAlpha (0.1f));
+    g.drawRoundedRectangle (cf.reduced (0.5f), 20.0f, 1.0f);
+    {
+        auto x = Rectangle<float> (cf.getRight() - 50.0f, cf.getY() + 18.0f, 30.0f, 30.0f).reduced (9.0f);
+        g.setColour (Colours::white.withAlpha (0.5f));
+        g.drawLine (x.getX(), x.getY(), x.getRight(), x.getBottom(), 1.6f);
+        g.drawLine (x.getRight(), x.getY(), x.getX(), x.getBottom(), 1.6f);
+    }
+    auto r = cf.reduced (34.0f, 30.0f);
+    g.setFont (lp::ui::mono (10.0f, true, 0.18f));
+    g.setColour (t.grassLight);
+    g.drawText ("YOUR SONG'S SECTIONS", r.removeFromTop (14.0f), Justification::centredLeft, false);
+    r.removeFromTop (12.0f);
+    g.setFont (font (24.0f, lp::ui::Medium, -0.02f));
+    g.setColour (t.ink);
+    g.drawText ("Add them as markers in " + host, r.removeFromTop (32.0f), Justification::centredLeft, false);
+    r.removeFromTop (6.0f);
+    const String how = host == "FL Studio"
+        ? host + " can't import markers from a file, so here's where each section starts. In the Playlist, click the bar on the timeline, press Alt+T (add time marker) and type the name."
+        : host + " can't import markers from a file, so here's where each section starts. Right-click the timeline at that bar and add a cue marker, then name it.";
+    AttributedString s;
+    s.setLineSpacing (3.0f);
+    s.append (how, font (13.0f), t.ink.withAlpha (0.75f));
+    TextLayout tl;
+    tl.createLayout (s, r.getWidth());
+    tl.draw (g, r.removeFromTop (tl.getHeight()));
+    r.removeFromTop (18.0f);
+    // two columns: name, and its bar
+    const float colW = r.getWidth() / 2.0f - 8.0f;
+    for (size_t i = 0; i < secs.size(); ++i)
+    {
+        const int col = i < (secs.size() + 1) / 2 ? 0 : 1, row = col == 0 ? (int) i : (int) (i - (secs.size() + 1) / 2);
+        auto cell = Rectangle<float> (r.getX() + (float) col * (colW + 16.0f), r.getY() + (float) row * 40.0f, colW, 34.0f);
+        g.setColour (Colours::white.withAlpha (0.045f));
+        g.fillRoundedRectangle (cell, 10.0f);
+        g.setFont (font (14.5f, lp::ui::Medium));
+        g.setColour (t.ink);
+        g.drawText (secs[i].first, cell.reduced (14.0f, 0.0f), Justification::centredLeft, true);
+        g.setFont (lp::ui::mono (11.0f, true, 0.12f));
+        g.setColour (t.grassLight);
+        g.drawText ("BAR " + String (secs[i].second), cell.reduced (14.0f, 0.0f), Justification::centredRight, false);
+    }
+}
+
+void SectionsPanel::mouseUp (const MouseEvent& e)
+{
+    const auto c = card();
+    if (! c.contains (e.getPosition()) || Rectangle<int> (c.getRight() - 50, c.getY() + 18, 30, 30).contains (e.getPosition()))
+        if (onClosed) onClosed();
+}
+
+bool SectionsPanel::keyPressed (const KeyPress& k)
 {
     if (k == KeyPress::escapeKey) { if (onClosed) onClosed(); return true; }
     return false;
