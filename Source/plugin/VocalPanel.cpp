@@ -849,6 +849,6 @@ void VocalPanel::mouseUp (const MouseEvent& e)
 bool VocalPanel::keyPressed (const KeyPress& k)
 {
     if (k == KeyPress::escapeKey) { if (onClosed) onClosed(); return true; }
-    if (k == KeyPress::spaceKey) { if (proc.studio.length() > 0) proc.previewPlaying = ! proc.previewPlaying.load(); return true; }
+    // (the space bar is left to your DAW: its transport and Loopwright's preview playing at once fight over the track)
     return false;
 }

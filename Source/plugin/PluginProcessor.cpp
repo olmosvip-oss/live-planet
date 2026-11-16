@@ -624,8 +624,9 @@ void LivePlanetProcessor::timerCallback()
         if (st.haveSong && (st.vocalSerial != seenVocalSerial || st.version != loadedStudioVersion))
         {
             seenVocalSerial = st.vocalSerial;
+            // (from the song itself: a section change or a new arrangement keeps each vocal's chain)
             for (int i = 0; i < StudioPlayer::maxTracks; ++i)
-                studio.setVocalChain (i, i < (int) st.song.parts.size() ? st.song.parts[(size_t) i].vocal : lp::song::VocalChain {});
+                studio.setVocalChain (i, songJob.vocalChainOf (i));
         }
         if (st.haveSong && st.version != loadedStudioVersion)
         {
