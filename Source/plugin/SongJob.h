@@ -1,4 +1,5 @@
 #pragma once
+#include "../song/Vocal.h"
 #include "AppFolder.h"
 #include "StudioPlayer.h"
 #include "../song/OneNote.h"
@@ -20,7 +21,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -41,6 +42,7 @@ public:
         GrainSettings grains;
         juce::String keyText; // e.g. "G# major to C minor, down 5 st"
         bool locked = false;  // kept when the rest is written again
+        bool vocal = false;   // a vocal track (it has the Vocal chain)
     };
 
     struct Status
@@ -194,6 +196,37 @@ public:
             edits.erase (std::remove_if (edits.begin(), edits.end(), [track] (const std::pair<int, EditOp>& e)
                                          { return e.first == track && e.second == EditOp::Notes; }), edits.end());
             edits.push_back ({ track, EditOp::Notes });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
+    // a vocal track's chain (the Vocal chain window): the track is recorded again with it
+    void setVocalChain (int track, const lp::song::VocalChain& c)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingVocal[track] = c;
+            edits.erase (std::remove_if (edits.begin(), edits.end(), [track] (const std::pair<int, EditOp>& e)
+                                         { return e.first == track && e.second == EditOp::VocalChain; }), edits.end());
+            edits.push_back ({ track, EditOp::VocalChain });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    lp::song::VocalChain vocalChainOf (int track) const
+    {
+        const juce::ScopedLock sl (lock);
+        if (auto it = pendingVocal.find (track); it != pendingVocal.end()) return it->second;
+        if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return {};
+        return current.parts[(size_t) track].vocal;
+    }
+    // Analyze: listens to the vocal (without the chain) and sets the chain up for it
+    void analyzeVocal (int track)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            edits.push_back ({ track, EditOp::VocalAnalyze });
             status.editing = true;
         }
         startIfNeeded();
@@ -2075,6 +2108,10 @@ private:
         t.candidates = p.candidates.size();
         t.candidate = p.candidate;
         t.sample = isLibrarySource (p.source);
+        {
+            const auto lower = juce::String (p.name).toLowerCase() + " " + p.source.toLowerCase();
+            t.vocal = p.vocal.on || lower.contains ("vocal") || lower.contains ("vox") || lower.contains ("chop");
+        }
         const juce::String n (p.name);
         if (p.kind == lp::song::PartKind::Drums || p.kind == lp::song::PartKind::Fx || n.contains ("drum") || n == "percussion") t.group = 4;
         else if (p.kind == lp::song::PartKind::Bass || n.contains ("bass"))                t.group = 3;
@@ -2592,6 +2629,8 @@ private:
             case EditOp::Notes: return on ("notes of");
             case EditOp::SwapDrum: return on ("drum swap in");
             case EditOp::VoiceFx: return on ("drum effects in");
+            case EditOp::VocalChain: return on ("vocal chain on");
+            case EditOp::VocalAnalyze: return on ("vocal analysis of");
             case EditOp::Feel: return "drum feel";
             case EditOp::AddHook: return "add hook";
             case EditOp::AddChops: return "add vocal chops";
@@ -3097,6 +3136,22 @@ private:
                 }
                 part.source = sourceLabel (all[(size_t) nextIndex]->path) + "your own kit (mixed)";
             }
+        }
+        if (op == EditOp::VocalChain)
+        {
+            const juce::ScopedLock sl (lock);
+            if (auto it = pendingVocal.find (tr); it != pendingVocal.end()) { part.vocal = it->second; pendingVocal.erase (it); }
+        }
+        if (op == EditOp::VocalAnalyze)
+        {
+            // the vocal as it is without the chain, listened to
+            auto dry = part;
+            dry.vocal.on = false;
+            juce::AudioBuffer<float> raw;
+            if (! lp::song::renderPart (song, dry, currentRs, raw, [this] { return threadShouldExit(); })) return;
+            part.vocal = lp::song::vocal::analyze (raw, currentRs.sampleRate, part.vocal);
+            const juce::ScopedLock sl (lock);
+            pendingVocal.erase (tr);
         }
         if (op == EditOp::VoiceFx)
         {
@@ -3838,6 +3893,7 @@ private:
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
     std::map<int, std::pair<int, int>> pendingDrumSwap;
     std::map<int, std::map<int, lp::song::VoiceFx>> pendingVoiceFx; // track -> note -> settings, waiting to be recorded
+    std::map<int, lp::song::VocalChain> pendingVocal; // track -> its vocal chain, waiting to be recorded
     int chordsVersion = -1;
     std::pair<int, int> pendingFromTake { -1, -1 };
     std::vector<lp::song::arrange::Item> pendingPlan;

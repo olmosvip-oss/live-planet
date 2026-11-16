@@ -46,6 +46,23 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     sliceBtn.onClick = [this] { proc.songJob.editTrack (track, SongJob::EditOp::SliceDrums); };
     sliceBtn.setWantsKeyboardFocus (false);
     addChildComponent (sliceBtn);
+    vocalBtn.setTooltip ("This vocal's chain: EQ, compress, saturate, de-ess, air & width, delay and reverb. Analyze sets it up for you.");
+    vocalBtn.getProperties().set ("primary", true);
+    vocalBtn.setWantsKeyboardFocus (false);
+    vocalBtn.onClick = [this]
+    {
+        auto* top = getTopLevelComponent();
+        if (top == nullptr) return;
+        SafePointer<TrackEditor> self (this);
+        vocalPanel = std::make_unique<VocalPanel> (proc, track, [self]
+        {
+            MessageManager::callAsync ([self] { if (self != nullptr) self->vocalPanel.reset(); });
+        });
+        top->addAndMakeVisible (*vocalPanel);
+        vocalPanel->setBounds (top->getLocalBounds());
+        vocalPanel->toFront (true);
+    };
+    addChildComponent (vocalBtn);
     drumGrid.onToggleBig = [this] { drumBig = ! drumBig; drumGrid.setBig (drumBig); resized(); repaint(); };
     auto mixOf = [this] (int t) -> StudioPlayer::Mix& { return proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, t)]; };
     // (with a drum picked in the drum editor, they're that drum's own settings instead)
@@ -350,6 +367,7 @@ void TrackEditor::resized()
     drumGrid.setBounds (drumBig ? bigGrid : screen().toNearestInt());
     noteGrid.setBounds (noteBig ? bigGrid : screen().toNearestInt());
     sliceBtn.setBounds ((int) screen().getRight() - 150, (int) screen().getY() + 10, 138, 28);
+    vocalBtn.setBounds ((int) screen().getRight() - 150, (int) screen().getY() + 10, 138, 28);
     // two rows of dials: the track's sound and space, then its grains
     auto rows = gridBig ? Rectangle<int> (0, getHeight() - knobRowH, getWidth(), knobRowH * 2)
                         : getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
@@ -404,6 +422,7 @@ void TrackEditor::paint (Graphics& g)
             const auto nm = String (tr0name).toLowerCase();
             want = ! showingDrums() && (nm.contains ("drum") || nm.contains ("perc"));
         }
+        else if (c == &vocalBtn) want = ! showingDrums() && track < (int) st.tracks.size() && st.tracks[(size_t) track].vocal;
         else if (c == &hGrains) want = ! big;
         else if (c == &voiceChip) want = voice >= 0 && showingDrums();   // one drum picked: its chip instead of Bypass
         else if (c == &bypassFx) want = voice < 0;

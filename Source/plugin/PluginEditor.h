@@ -249,6 +249,37 @@ private:
     void deactivate();
 };
 
+// A vocal track's chain (EQ, compress, saturate, de-ess, air & width, delay, reverb) with Analyze (VocalPanel.cpp)
+class VocalPanel : public juce::Component, private juce::Timer
+{
+public:
+    VocalPanel (LivePlanetProcessor&, int track, std::function<void()> closed);
+    ~VocalPanel() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+
+private:
+    struct Knob { juce::Slider s; int module = 0; juce::String label; float* value = nullptr; };
+    void timerCallback() override;
+    void buildKnobs();
+    void layoutDetail();
+    void changed();
+    void flush();
+    juce::Rectangle<int> card() const, rowArea (int) const, detailArea() const;
+    LivePlanetProcessor& proc;
+    int track = 0, picked = 0, seenVersion = -1;
+    std::function<void()> onClosed;
+    lp::song::VocalChain chain;
+    std::vector<std::unique_ptr<Knob>> knobs;
+    juce::TextButton analyzeBtn { "Analyze" }, powerBtn { "Chain: on" }, noteBtns[3];
+    juce::Rectangle<int> closeX;
+    bool dirty = false, analyzing = false, editing = false;
+    juce::uint32 changedAt = 0;
+};
+
 // DAWs that can't import markers (FL Studio, Bitwig): the song's sections and their bars, to add by hand
 class SectionsPanel : public juce::Component
 {
@@ -648,6 +679,8 @@ private:
     bool noteBig = true;      // the note editor opens big (notes need the room); "bigger" toggles it
     bool bigNow() const { return notesTrack && ! showingDrums() ? noteBig : drumBig; }  // a played part (808, hook, bass line): its notes can be edited
     juce::TextButton sliceBtn { "Slice into hits" }; // a drum loop -> a drum track you can edit
+    juce::TextButton vocalBtn { "Vocal chain" };     // a vocal track: its chain, in its own window
+    std::unique_ptr<VocalPanel> vocalPanel;
     bool drumBig = false;
     // one drum's own effects (picked by clicking its name in the drum editor): the mix dials show it instead
     int voice = -1;

@@ -234,6 +234,24 @@ struct VoiceFx
     }
 };
 
+// A vocal track's chain (the Vocal chain window): seven modules in order, each on or off, recorded into the track
+struct VocalChain
+{
+    bool on = false;                       // off: the vocal as it was
+    bool eqOn = true, compOn = true, satOn = false, deessOn = true, airOn = true, delayOn = false, verbOn = true;
+    float lowCutHz = 90.0f;                // EQ: rumble below this goes
+    float mudDb = 0.0f;                    //     -12..0 at ~300 Hz (boxy, muddy)
+    float presenceDb = 0.0f;               //     -6..+8 at ~3 kHz (words up front)
+    float airDb = 0.0f;                    //     -6..+8 shelf from 10 kHz (sheen)
+    float compAmount = 0.4f;               // compress: 0..1 (gentle .. pinned)
+    float drive = 0.2f;                    // saturate: 0..1 (warmth .. grit)
+    float deess = 0.35f;                   // de-ess: 0..1 (how hard S sounds are held back)
+    float width = 0.25f;                   // air & width: 0..1 (a soft double out to the sides)
+    float delayMix = 0.18f; int delayNote = 1; // delay: 0..1 level; 0 = 1/4, 1 = dotted 1/8, 2 = 1/8
+    float verbSize = 0.5f, verbMix = 0.16f; // reverb: 0..1 each
+    juce::String analysis;                 // what Analyze found, in plain words (one finding per line)
+};
+
 // One transition sound placed in the song (a riser, an impact...)
 struct FxHit
 {
@@ -319,6 +337,7 @@ struct Part
     float pan = 0.0f;                // -1 left .. 0 centre .. +1 right
     std::map<int, juce::String> kit; // a drum part with its own sounds (a sliced drum loop); empty = the song's kit
     std::map<int, VoiceFx> voiceFx; // drums: a sound's own mix and effects (note -> settings; only the changed ones)
+    VocalChain vocal;               // a vocal track's chain (off unless you turn it on)
     const std::map<int, juce::String>& kitIn (const struct Song& s) const;
 };
 

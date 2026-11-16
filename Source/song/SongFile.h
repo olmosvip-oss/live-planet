@@ -66,6 +66,17 @@ inline juce::var partToVar (const Part& p)
             vf.add (juce::Array<juce::var> { note, f.gainDb, f.pan, f.tone, f.space, f.echo, f.warmth, f.nostalgia, f.chorus });
         o->setProperty ("voiceFx", vf);
     }
+    if (p.vocal.on || p.vocal.analysis.isNotEmpty())
+    {
+        const auto& c = p.vocal;
+        auto* vc = new juce::DynamicObject();
+        vc->setProperty ("on", c.on);
+        vc->setProperty ("mods", juce::Array<juce::var> { c.eqOn, c.compOn, c.satOn, c.deessOn, c.airOn, c.delayOn, c.verbOn });
+        vc->setProperty ("vals", juce::Array<juce::var> { c.lowCutHz, c.mudDb, c.presenceDb, c.airDb, c.compAmount, c.drive, c.deess,
+                                                          c.width, c.delayMix, c.delayNote, c.verbSize, c.verbMix });
+        vc->setProperty ("analysis", c.analysis);
+        o->setProperty ("vocal", vc);
+    }
     if (! p.kit.empty())
     {
         juce::Array<juce::var> kit;
@@ -97,6 +108,21 @@ inline Part partFromVar (const juce::var& v)
     p.grainAmount = v["grainAmount"]; p.grainSizeMs = v.getProperty ("grainSizeMs", 120.0f); p.grainChaos = v["grainChaos"];
     p.grainPosition = v["grainPosition"]; p.grainRate = v.getProperty ("grainRate", 2); p.pan = v["pan"];
     if (auto* a = v["kit"].getArray()) for (auto& e : *a) p.kit[(int) e[0]] = e[1].toString();
+    if (const auto vc = v["vocal"]; vc.isObject())
+    {
+        auto& c = p.vocal;
+        c.on = vc["on"];
+        if (auto* m = vc["mods"].getArray(); m != nullptr && m->size() == 7)
+        {
+            c.eqOn = (*m)[0]; c.compOn = (*m)[1]; c.satOn = (*m)[2]; c.deessOn = (*m)[3]; c.airOn = (*m)[4]; c.delayOn = (*m)[5]; c.verbOn = (*m)[6];
+        }
+        if (auto* a = vc["vals"].getArray(); a != nullptr && a->size() == 12)
+        {
+            c.lowCutHz = (*a)[0]; c.mudDb = (*a)[1]; c.presenceDb = (*a)[2]; c.airDb = (*a)[3]; c.compAmount = (*a)[4]; c.drive = (*a)[5];
+            c.deess = (*a)[6]; c.width = (*a)[7]; c.delayMix = (*a)[8]; c.delayNote = (*a)[9]; c.verbSize = (*a)[10]; c.verbMix = (*a)[11];
+        }
+        c.analysis = vc["analysis"].toString();
+    }
     if (auto* a = v["voiceFx"].getArray())
         for (auto& e : *a)
         {
