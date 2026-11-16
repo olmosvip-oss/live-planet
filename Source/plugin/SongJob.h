@@ -215,6 +215,7 @@ public:
         ++status.vocalSerial;
         saveSession();
     }
+    int vocalSerialNow() const { const juce::ScopedLock sl (lock); return status.vocalSerial; }
     lp::song::VocalChain vocalChainOf (int track) const
     {
         const juce::ScopedLock sl (lock);
