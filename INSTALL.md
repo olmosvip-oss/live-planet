@@ -3,10 +3,16 @@
 ## Mac (easiest): the installer
 Open **Loopwright.pkg** and click through. It puts the VST3, Audio Unit and CLAP plugins and the
 Loopwright app in the right folders, and removes the old Live Planet plugins.
-If macOS says it can't check the developer (test builds aren't signed by Apple yet):
-right-click the .pkg > **Open** > **Open**.
+It's signed and notarized by Apple, so it opens with no warning.
+
+## Windows (easiest): the installer
+Open **Windows > Loopwright-Setup.exe** and click through. It puts the VST3 and CLAP plugins in the
+folders every DAW looks in, and installs the Loopwright app with a Start menu shortcut.
+If Windows shows "Windows protected your PC": click **More info** > **Run anyway**.
+To remove it later: Settings > Apps > Loopwright > Uninstall.
 
 ## By hand
+(Windows: copy with File Explorer, not 7-Zip, so Windows can ask for permission to write to Program Files.)
 | File | Mac | Windows |
 |---|---|---|
 | `Loopwright.vst3` | `/Library/Audio/Plug-Ins/VST3/` | `C:\Program Files\Common Files\VST3\` |

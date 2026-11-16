@@ -117,6 +117,23 @@ jobs:
           name: Loopwright-macOS
           path: package/Loopwright-macOS.zip
 
+      # Windows: one installer (plugins where every DAW looks, the app with a Start menu shortcut)
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y; }
+          & $iscc "/DAppVersion=0.9.${{ github.run_number }}" "/DSrc=$PWD\dist" "/O$PWD\package" packaging\windows\loopwright.iss
+          Get-ChildItem package
+
+      - name: Upload installer (Windows)
+        if: runner.os == 'Windows' && hashFiles('package/Loopwright-Setup.exe') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: Loopwright-Windows-Installer
+          path: package/Loopwright-Setup.exe
+
       - name: Upload
         if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
@@ -148,8 +165,15 @@ jobs:
           fi
           # the plugins on their own too, for installing by hand
           (cd Loopwright/Mac && unzip -q ../../art/Loopwright-macOS/Loopwright-macOS.zip && mv dist "Plugins (install by hand)")
-          cp -R art/Loopwright-Windows/. Loopwright/Windows/
-          rm -f Loopwright/Windows/INSTALL.md "Loopwright/Mac/Plugins (install by hand)/INSTALL.md"
+          # Windows: the installer, and the plugins and app on their own for installing by hand
+          if [ -f art/Loopwright-Windows-Installer/Loopwright-Setup.exe ]; then
+            cp art/Loopwright-Windows-Installer/Loopwright-Setup.exe Loopwright/Windows/
+            mkdir -p "Loopwright/Windows/Plugins (install by hand)"
+            cp -R art/Loopwright-Windows/. "Loopwright/Windows/Plugins (install by hand)/"
+          else
+            cp -R art/Loopwright-Windows/. Loopwright/Windows/
+          fi
+          rm -f Loopwright/Windows/INSTALL.md "Loopwright/Windows/Plugins (install by hand)/INSTALL.md" "Loopwright/Mac/Plugins (install by hand)/INSTALL.md"
           cp INSTALL.md Loopwright/INSTALL.md
           cp THIRD_PARTY_NOTICES.md Loopwright/ 2>/dev/null || true
           zip -q -r -y Loopwright.zip Loopwright
@@ -161,4 +185,4 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           if [ "${GITHUB_REF_TYPE}" != "tag" ]; then TAG="v0.9.${GITHUB_RUN_NUMBER}"; fi
           gh release create "$TAG" Loopwright.zip --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --latest \
-            --title "Loopwright $TAG" --notes "Mac installer, Mac plugins, and the Windows plugins and app. 7-day free trial; activate with your license code."
+            --title "Loopwright $TAG" --notes "Mac installer, Windows installer, and the plugins on their own. 7-day free trial; activate with your license code."
