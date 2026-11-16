@@ -367,7 +367,7 @@ void TrackEditor::resized()
     drumGrid.setBounds (drumBig ? bigGrid : screen().toNearestInt());
     noteGrid.setBounds (noteBig ? bigGrid : screen().toNearestInt());
     sliceBtn.setBounds ((int) screen().getRight() - 150, (int) screen().getY() + 10, 138, 28);
-    vocalBtn.setBounds ((int) screen().getRight() - 150, (int) screen().getY() + 10, 138, 28);
+
     // two rows of dials: the track's sound and space, then its grains
     auto rows = gridBig ? Rectangle<int> (0, getHeight() - knobRowH, getWidth(), knobRowH * 2)
                         : getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
@@ -379,6 +379,7 @@ void TrackEditor::resized()
     printFx.setBounds (0, rows.getY() + 4 + bh, 100, bh - 6);
     dragTrack.setBounds (0, rows.getY() + 4 + 2 * bh, 100, bh - 6);
     dragMidi.setBounds (0, rows.getY() + 4 + 3 * bh, 100, bh - 6);
+    vocalBtn.setBounds (dragMidi.getBounds()); // (a vocal has no midi: its chain takes that place)
     hFx.setTopLeftPosition (104, rows.getY() + 4 + (bh - 6) / 2 - 8);
     {
         // by the "Grains" title (the second row)
@@ -434,7 +435,9 @@ void TrackEditor::paint (Graphics& g)
     const auto& tr = st.tracks[(size_t) track];
 
     // ---- header: which track, where its sound came from
-    auto head = getLocalBounds().removeFromTop (54).toFloat().withTrimmedLeft (54.0f).withTrimmedRight (520.0f);
+    // (the name and where it came from stop before the buttons, at any window size)
+    auto head = getLocalBounds().removeFromTop (54).toFloat().withTrimmedLeft (54.0f);
+    head = head.withRight (jmin (head.getRight(), (float) love.getX() - 14.0f));
     g.setFont (font (24.0f, lp::ui::Medium, -0.01f));
     g.setColour (t.ink);
     g.drawText (String (tr.name).substring (0, 1).toUpperCase() + String (tr.name).substring (1), head.removeFromTop (30.0f), Justification::centredLeft, true);

@@ -251,7 +251,7 @@ private:
 
 // A vocal track's chain (EQ, compress, saturate, de-ess, air & width, delay, reverb) with Analyze (VocalPanel.cpp).
 // It plays live: every knob is heard at once; each module has its own live picture.
-class VocalPanel : public juce::Component, private juce::Timer
+class VocalPanel : public juce::Component, private juce::Timer, private juce::AsyncUpdater
 {
 public:
     VocalPanel (LivePlanetProcessor&, int track, std::function<void()> closed);
@@ -267,12 +267,18 @@ public:
 private:
     struct Knob { juce::Slider s; int module = 0; float* value = nullptr; };
     void timerCallback() override;
+    void handleAsyncUpdate() override;
+    void takeAnalysis();
     void buildKnobs();
     void layoutDetail();
     void changed();
     void save();
     void readScope();
     void paintVisual (juce::Graphics&, juce::Rectangle<float>);
+    void paintStatic (juce::Graphics&);
+    juce::Image bg;
+    bool bgDirty = true, hoverClose = false;
+    int hoverRow = -1;
     juce::Rectangle<int> card() const, rowArea (int) const, detailArea() const;
     juce::Rectangle<float> visualArea() const;
     LivePlanetProcessor& proc;

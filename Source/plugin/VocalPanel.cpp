@@ -82,7 +82,7 @@ VocalPanel::VocalPanel (LivePlanetProcessor& p, int trackIndex, std::function<vo
     lastScope = proc.studio.scopeWrite.load();
 
     analyzeBtn.getProperties().set ("primary", true);
-    analyzeBtn.onClick = [this] { save(); analyzing = true; proc.songJob.analyzeVocal (track); repaint(); };
+    analyzeBtn.onClick = [this] { save(); analyzing = true; bgDirty = true; proc.songJob.analyzeVocal (track); repaint(); };
     powerBtn.onClick = [this] { chain.on = ! chain.on; changed(); };
     playBtn.onClick = [this] { if (proc.studio.length() > 0) proc.previewPlaying = ! proc.previewPlaying.load(); };
     soloBtn.onClick = [this] { auto& m = proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, track)]; m.solo = ! m.solo.load(); };
@@ -161,6 +161,7 @@ void VocalPanel::buildKnobs()
 
 void VocalPanel::changed()
 {
+    bgDirty = true;
     proc.studio.setVocalChain (track, chain); // heard right away
     dirty = true;
     changedAt = Time::getMillisecondCounter();
@@ -172,7 +173,7 @@ void VocalPanel::save()
     if (! dirty) return;
     dirty = false;
     proc.songJob.setVocalChain (track, chain); // kept with the song
-    seenSerial = proc.songJob.getStatus().vocalSerial;
+    seenSerial = proc.songJob.vocalSerialNow();
 }
 
 void VocalPanel::readScope()
@@ -223,23 +224,29 @@ void VocalPanel::readScope()
     if (! proc.previewPlaying.load()) { compGr *= 0.85f; deessGr *= 0.85f; }
 }
 
+// Analyze finished: show (and play) what it set up (checked by the timer, and on every redraw, so a busy
+// screen can't make it miss it)
+void VocalPanel::takeAnalysis()
+{
+    const int serial = proc.songJob.vocalSerialNow();
+    if (serial == seenSerial) return;
+    seenSerial = serial;
+    if (! analyzing) return;
+    analyzing = false;
+    chain = proc.songJob.vocalChainOf (track);
+    for (auto& k : knobs) k->s.setValue (*k->value, dontSendNotification);
+    proc.studio.setVocalChain (track, chain);
+    bgDirty = true;
+    repaint();
+}
+
+void VocalPanel::handleAsyncUpdate() { takeAnalysis(); }
+
 void VocalPanel::timerCallback()
 {
     const bool turning = std::any_of (knobs.begin(), knobs.end(), [] (auto& k) { return k->s.isMouseButtonDown(); }) || dragPoint >= 0;
     if (dirty && ! turning && Time::getMillisecondCounter() - changedAt > 600) save();
-    const auto st = proc.songJob.getStatus();
-    if (st.vocalSerial != seenSerial)
-    {
-        seenSerial = st.vocalSerial;
-        if (analyzing) // Analyze finished: show (and play) what it set up
-        {
-            analyzing = false;
-            chain = proc.songJob.vocalChainOf (track);
-            for (auto& k : knobs) k->s.setValue (*k->value, dontSendNotification);
-            proc.studio.setVocalChain (track, chain);
-            repaint();
-        }
-    }
+    takeAnalysis();
     const bool wasPlaying = livePicture;
     readScope();
     livePicture = proc.previewPlaying.load();
@@ -283,6 +290,7 @@ void VocalPanel::resized()
     soloBtn.setBounds (c.getRight() - 438, c.getY() + 22, 116, 36);
     playBtn.setBounds (c.getRight() - 524, c.getY() + 22, 76, 36);
     layoutDetail();
+    bgDirty = true;
 }
 
 void VocalPanel::layoutDetail()
@@ -623,6 +631,24 @@ void VocalPanel::paintVisual (Graphics& g, Rectangle<float> v)
 
 void VocalPanel::paint (Graphics& g)
 {
+    if (analyzing && proc.songJob.vocalSerialNow() != seenSerial) triggerAsyncUpdate();
+    // the still parts are drawn once into a picture (redrawn only when something changes), the live picture on top
+    const float scale = g.getInternalContext().getPhysicalPixelScaleFactor();
+    const int w = roundToInt ((float) getWidth() * scale), h = roundToInt ((float) getHeight() * scale);
+    if (bgDirty || bg.getWidth() != w || bg.getHeight() != h)
+    {
+        bg = Image (Image::ARGB, jmax (1, w), jmax (1, h), true);
+        Graphics bgG (bg);
+        bgG.addTransform (AffineTransform::scale (scale));
+        paintStatic (bgG);
+        bgDirty = false;
+    }
+    g.drawImage (bg, getLocalBounds().toFloat());
+    paintVisual (g, visualArea());
+}
+
+void VocalPanel::paintStatic (Graphics& g)
+{
     const auto& t = themeOf (*this);
     g.fillAll (Colours::black.withAlpha (0.72f));
     const auto cf = card().toFloat();
@@ -659,7 +685,7 @@ void VocalPanel::paint (Graphics& g)
                 r.removeFromTop (16.0f), Justification::centredLeft, false);
     {
         auto x = closeX.toFloat().reduced (9.0f);
-        g.setColour (Colours::white.withAlpha (closeX.contains (getMouseXYRelative()) ? 0.9f : 0.45f));
+        g.setColour (Colours::white.withAlpha (hoverClose ? 0.9f : 0.45f));
         g.drawLine (x.getX(), x.getY(), x.getRight(), x.getBottom(), 1.6f);
         g.drawLine (x.getRight(), x.getY(), x.getX(), x.getBottom(), 1.6f);
     }
@@ -682,7 +708,7 @@ void VocalPanel::paint (Graphics& g)
             g.setColour (col.withAlpha (0.5f));
             g.drawRoundedRectangle (row.reduced (0.5f), 12.0f, 1.0f);
         }
-        else if (row.contains (getMouseXYRelative().toFloat()))
+        else if (i == hoverRow)
         {
             g.setColour (Colours::white.withAlpha (0.04f));
             g.fillRoundedRectangle (row, 12.0f);
@@ -719,7 +745,6 @@ void VocalPanel::paint (Graphics& g)
     g.setColour (moduleOn (chain, picked) && chain.on ? t.ink.withAlpha (0.6f) : Colour (0xfff2a33a));
     g.drawText (moduleOn (chain, picked) && chain.on ? String (modules[picked].what) : String ("Off: flip its switch on the left (or turn any knob) to hear it."),
                 head.removeFromTop (18.0f), Justification::centredLeft, true);
-    paintVisual (g, visualArea());
 
     // what Analyze found
     const float top = (float) (visualArea().getBottom() + 14.0f + 112.0f + (picked == 5 ? 44.0f : 8.0f));
@@ -758,7 +783,15 @@ void VocalPanel::paint (Graphics& g)
     }
 }
 
-void VocalPanel::mouseMove (const MouseEvent&) { repaint(); }
+void VocalPanel::mouseMove (const MouseEvent& e)
+{
+    // only redrawn when what's under the mouse changes
+    int row = -1;
+    for (int i = 0; i < 7; ++i) if (rowArea (i).contains (e.getPosition())) row = i;
+    const bool close = closeX.contains (e.getPosition());
+    if (row != hoverRow || close != hoverClose) { hoverRow = row; hoverClose = close; bgDirty = true; repaint(); }
+    else if (picked == 0 && visualArea().contains (e.position)) repaint (visualArea().expanded (4.0f).toNearestInt()); // (the EQ points light up)
+}
 
 void VocalPanel::mouseDown (const MouseEvent& e)
 {
@@ -807,6 +840,7 @@ void VocalPanel::mouseUp (const MouseEvent& e)
         }
         picked = i;
         layoutDetail();
+        bgDirty = true;
         repaint();
         return;
     }
