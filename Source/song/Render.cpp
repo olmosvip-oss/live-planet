@@ -1507,16 +1507,6 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
         buf.applyGain (1, 0, buf.getNumSamples(), std::min (1.0f, gr));
     }
     shapeForMix (song, part, buf, sr);
-    // a vocal track's chain (the Vocal chain window), at the same loudness so the mix stays balanced
-    if (part.vocal.on)
-    {
-        auto rms = [&] { double e = 0; for (int ch = 0; ch < 2; ++ch) { auto* d = buf.getReadPointer (ch); for (int i = 0; i < buf.getNumSamples(); i += 4) e += (double) d[i] * d[i]; }
-                         return std::sqrt (e / std::max (1, buf.getNumSamples() / 2)); };
-        const double before = rms();
-        vocal::apply (buf, part.vocal, sr, song.bpm);
-        const double after = rms();
-        if (before > 1e-7 && after > 1e-7) buf.applyGain ((float) juce::jlimit (0.25, 4.0, before / after));
-    }
     return true;
 }
 

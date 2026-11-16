@@ -136,6 +136,7 @@ public:
     std::atomic<float> outPeakL { 0.0f }, outPeakR { 0.0f }; // everything the plugin plays (the master meter)
     std::atomic<float> songMakeupDb { 0.0f };
     juce::File loadedSongFolder;
+    int seenVocalSerial = -1;     // the vocal chains the studio has
     bool lastSongChecked = false; // (the app) reopened the last song yet?
     int startTicks = 0;
     std::atomic<bool> restoredFromProject { false };

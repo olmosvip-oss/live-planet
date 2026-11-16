@@ -73,7 +73,10 @@ inline juce::var partToVar (const Part& p)
         vc->setProperty ("on", c.on);
         vc->setProperty ("mods", juce::Array<juce::var> { c.eqOn, c.compOn, c.satOn, c.deessOn, c.airOn, c.delayOn, c.verbOn });
         vc->setProperty ("vals", juce::Array<juce::var> { c.lowCutHz, c.mudDb, c.presenceDb, c.airDb, c.compAmount, c.drive, c.deess,
-                                                          c.width, c.delayMix, c.delayNote, c.verbSize, c.verbMix });
+                                                          c.width, c.delayMix, c.delayNote, c.verbSize, c.verbMix,
+                                                          c.compSpeed, c.satTone, c.satMix, c.deessHz, c.focusHz, c.delayFeedback,
+                                                          c.delayTone, c.delayDuck, c.delayPingPong, c.verbPredelayMs, c.verbTone, c.verbDuck,
+                                                          c.mudHz, c.presenceHz, c.airHz });
         vc->setProperty ("analysis", c.analysis);
         o->setProperty ("vocal", vc);
     }
@@ -116,10 +119,20 @@ inline Part partFromVar (const juce::var& v)
         {
             c.eqOn = (*m)[0]; c.compOn = (*m)[1]; c.satOn = (*m)[2]; c.deessOn = (*m)[3]; c.airOn = (*m)[4]; c.delayOn = (*m)[5]; c.verbOn = (*m)[6];
         }
-        if (auto* a = vc["vals"].getArray(); a != nullptr && a->size() == 12)
+        if (auto* a = vc["vals"].getArray(); a != nullptr && a->size() >= 12)
         {
             c.lowCutHz = (*a)[0]; c.mudDb = (*a)[1]; c.presenceDb = (*a)[2]; c.airDb = (*a)[3]; c.compAmount = (*a)[4]; c.drive = (*a)[5];
             c.deess = (*a)[6]; c.width = (*a)[7]; c.delayMix = (*a)[8]; c.delayNote = (*a)[9]; c.verbSize = (*a)[10]; c.verbMix = (*a)[11];
+        }
+        if (auto* a = vc["vals"].getArray(); a != nullptr && a->size() >= 24)
+        {
+            c.compSpeed = (*a)[12]; c.satTone = (*a)[13]; c.satMix = (*a)[14]; c.deessHz = (*a)[15]; c.focusHz = (*a)[16];
+            c.delayFeedback = (*a)[17]; c.delayTone = (*a)[18]; c.delayDuck = (*a)[19]; c.delayPingPong = (*a)[20];
+            c.verbPredelayMs = (*a)[21]; c.verbTone = (*a)[22]; c.verbDuck = (*a)[23];
+        }
+        if (auto* a = vc["vals"].getArray(); a != nullptr && a->size() >= 27)
+        {
+            c.mudHz = (*a)[24]; c.presenceHz = (*a)[25]; c.airHz = (*a)[26];
         }
         c.analysis = vc["analysis"].toString();
     }

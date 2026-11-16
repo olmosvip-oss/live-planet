@@ -249,7 +249,8 @@ private:
     void deactivate();
 };
 
-// A vocal track's chain (EQ, compress, saturate, de-ess, air & width, delay, reverb) with Analyze (VocalPanel.cpp)
+// A vocal track's chain (EQ, compress, saturate, de-ess, air & width, delay, reverb) with Analyze (VocalPanel.cpp).
+// It plays live: every knob is heard at once; each module has its own live picture.
 class VocalPanel : public juce::Component, private juce::Timer
 {
 public:
@@ -257,27 +258,37 @@ public:
     ~VocalPanel() override;
     void paint (juce::Graphics&) override;
     void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
     bool keyPressed (const juce::KeyPress&) override;
 
 private:
-    struct Knob { juce::Slider s; int module = 0; juce::String label; float* value = nullptr; };
+    struct Knob { juce::Slider s; int module = 0; float* value = nullptr; };
     void timerCallback() override;
     void buildKnobs();
     void layoutDetail();
     void changed();
-    void flush();
+    void save();
+    void readScope();
+    void paintVisual (juce::Graphics&, juce::Rectangle<float>);
     juce::Rectangle<int> card() const, rowArea (int) const, detailArea() const;
+    juce::Rectangle<float> visualArea() const;
     LivePlanetProcessor& proc;
-    int track = 0, picked = 0, seenVersion = -1;
+    int track = 0, picked = 0, seenSerial = -1, dragPoint = -1;
     std::function<void()> onClosed;
     lp::song::VocalChain chain;
     std::vector<std::unique_ptr<Knob>> knobs;
-    juce::TextButton analyzeBtn { "Analyze" }, powerBtn { "Chain: on" }, noteBtns[3];
+    juce::TextButton analyzeBtn { "Analyze" }, powerBtn { "Chain: on" }, playBtn { "Play" }, soloBtn { "Solo vocal" }, pingBtn { "Ping-pong" }, noteBtns[3];
     juce::Rectangle<int> closeX;
-    bool dirty = false, analyzing = false, editing = false;
+    bool dirty = false, analyzing = false;
     juce::uint32 changedAt = 0;
+    // what the chain sends out: the spectrum (smoothed), the stereo picture, the meters
+    std::vector<float> spectrum, scopeL, scopeR;
+    float compGr = 0.0f, deessGr = 0.0f, outDb = -90.0f;
+    int lastScope = 0;
+    bool livePicture = false;
 };
 
 // DAWs that can't import markers (FL Studio, Bitwig): the song's sections and their bars, to add by hand

@@ -620,6 +620,13 @@ void LivePlanetProcessor::timerCallback()
             loadedSongFolder = st.renamedTo;
             lp::appFolder().getChildFile ("last-song.txt").replaceWithText (st.renamedTo.getFullPathName());
         }
+        // the vocal chains play live in the studio: give it the song's (when a song opens, or a chain changes)
+        if (st.haveSong && (st.vocalSerial != seenVocalSerial || st.version != loadedStudioVersion))
+        {
+            seenVocalSerial = st.vocalSerial;
+            for (int i = 0; i < StudioPlayer::maxTracks; ++i)
+                studio.setVocalChain (i, i < (int) st.song.parts.size() ? st.song.parts[(size_t) i].vocal : lp::song::VocalChain {});
+        }
         if (st.haveSong && st.version != loadedStudioVersion)
         {
             loadedStudioVersion = st.version;
@@ -1077,6 +1084,11 @@ juce::File LivePlanetProcessor::fileToDrag (int t)
         key << juce::String (v, 3) << ",";
     key << stem.getLastModificationTime().toMilliseconds() << "," << songBpm << "," << studio.pumpDepth.load()
         << "," << studio.bright.load() << "," << studio.sparse.load() << "," << studio.punch.load() << "," << (int) studio.autoMix.load() << "," << t;
+    {
+        // its Vocal chain (a different chain is a different print)
+        const auto vp = studio.vocalParamsOf (t);
+        key << "," << vp.fingerprint().hashCode64();
+    }
     // (a folder per sound, so the file keeps the track's plain name when it lands in Ableton)
     const auto printed = st.files.folder.getChildFile ("printed");
     const auto out = printed.getChildFile (juce::String::toHexString (key.hashCode64()).substring (0, 8))

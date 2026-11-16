@@ -249,6 +249,13 @@ struct VocalChain
     float width = 0.25f;                   // air & width: 0..1 (a soft double out to the sides)
     float delayMix = 0.18f; int delayNote = 1; // delay: 0..1 level; 0 = 1/4, 1 = dotted 1/8, 2 = 1/8
     float verbSize = 0.5f, verbMix = 0.16f; // reverb: 0..1 each
+    float compSpeed = 0.5f;                // compress: 0 slow and smooth .. 1 fast and tight
+    float satTone = 0.0f, satMix = 1.0f;   // saturate: -1 dark .. +1 bright; how much of it (0..1)
+    float deessHz = 6500.0f;               // de-ess: where the S lives (4..10 kHz)
+    float focusHz = 220.0f;                // width: below this stays in the middle
+    float delayFeedback = 0.35f, delayTone = 0.0f, delayDuck = 0.5f; bool delayPingPong = true; // repeats, -1 dark..+1 bright, ducking
+    float verbPredelayMs = 20.0f, verbTone = 0.0f, verbDuck = 0.3f; // reverb: gap before it, -1 dark..+1 bright, ducking
+    float mudHz = 300.0f, presenceHz = 3000.0f, airHz = 10000.0f; // EQ: where its three bands sit (drag the points)
     juce::String analysis;                 // what Analyze found, in plain words (one finding per line)
 };
 

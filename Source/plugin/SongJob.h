@@ -69,6 +69,7 @@ public:
         int take = -1;                  // which of them is open
         juce::String undoWhat;          // what "undo" takes back (empty: nothing to undo)
         int mixInsertAt = -1, mixInsertSerial = 0; // an undone delete: its mixer row comes back here
+        int vocalSerial = 0;                   // goes up whenever a vocal chain changes (the studio plays it live)
         juce::File renamedFrom, renamedTo;     // the song's folder before and after its last rename (the same song: the mixer stays)
     };
 
@@ -201,23 +202,22 @@ public:
         startIfNeeded();
     }
 
-    // a vocal track's chain (the Vocal chain window): the track is recorded again with it
+    // a vocal track's chain (the Vocal chain window): it plays live in the studio, so nothing is recorded again;
+    // this just keeps it with the song (saved in song.json)
     void setVocalChain (int track, const lp::song::VocalChain& c)
     {
-        {
-            const juce::ScopedLock sl (lock);
-            pendingVocal[track] = c;
-            edits.erase (std::remove_if (edits.begin(), edits.end(), [track] (const std::pair<int, EditOp>& e)
-                                         { return e.first == track && e.second == EditOp::VocalChain; }), edits.end());
-            edits.push_back ({ track, EditOp::VocalChain });
-            status.editing = true;
-        }
-        startIfNeeded();
+        const juce::ScopedLock sl (lock);
+        if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return;
+        auto keep = c;
+        if (keep.analysis.isEmpty()) keep.analysis = current.parts[(size_t) track].vocal.analysis;
+        current.parts[(size_t) track].vocal = keep;
+        status.song.parts = current.parts;
+        ++status.vocalSerial;
+        saveSession();
     }
     lp::song::VocalChain vocalChainOf (int track) const
     {
         const juce::ScopedLock sl (lock);
-        if (auto it = pendingVocal.find (track); it != pendingVocal.end()) return it->second;
         if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return {};
         return current.parts[(size_t) track].vocal;
     }
@@ -2629,7 +2629,6 @@ private:
             case EditOp::Notes: return on ("notes of");
             case EditOp::SwapDrum: return on ("drum swap in");
             case EditOp::VoiceFx: return on ("drum effects in");
-            case EditOp::VocalChain: return on ("vocal chain on");
             case EditOp::VocalAnalyze: return on ("vocal analysis of");
             case EditOp::Feel: return "drum feel";
             case EditOp::AddHook: return "add hook";
@@ -3137,21 +3136,22 @@ private:
                 part.source = sourceLabel (all[(size_t) nextIndex]->path) + "your own kit (mixed)";
             }
         }
-        if (op == EditOp::VocalChain)
-        {
-            const juce::ScopedLock sl (lock);
-            if (auto it = pendingVocal.find (tr); it != pendingVocal.end()) { part.vocal = it->second; pendingVocal.erase (it); }
-        }
         if (op == EditOp::VocalAnalyze)
         {
-            // the vocal as it is without the chain, listened to
-            auto dry = part;
-            dry.vocal.on = false;
+            // the vocal as it is (its track has no chain recorded in), listened to; the chain is set up, nothing re-recorded
             juce::AudioBuffer<float> raw;
-            if (! lp::song::renderPart (song, dry, currentRs, raw, [this] { return threadShouldExit(); })) return;
-            part.vocal = lp::song::vocal::analyze (raw, currentRs.sampleRate, part.vocal);
+            if (! lp::song::renderPart (song, part, currentRs, raw, [this] { return threadShouldExit(); })) return;
+            auto chain = lp::song::vocal::analyze (raw, currentRs.sampleRate, part.vocal);
             const juce::ScopedLock sl (lock);
-            pendingVocal.erase (tr);
+            if (tr < (int) current.parts.size())
+            {
+                current.parts[(size_t) tr].vocal = chain;
+                status.song.parts = current.parts;
+                ++status.vocalSerial;
+                saveSession();
+            }
+            status.message = "vocal analysed: its chain is set up";
+            return;
         }
         if (op == EditOp::VoiceFx)
         {
@@ -3893,7 +3893,6 @@ private:
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
     std::map<int, std::pair<int, int>> pendingDrumSwap;
     std::map<int, std::map<int, lp::song::VoiceFx>> pendingVoiceFx; // track -> note -> settings, waiting to be recorded
-    std::map<int, lp::song::VocalChain> pendingVocal; // track -> its vocal chain, waiting to be recorded
     int chordsVersion = -1;
     std::pair<int, int> pendingFromTake { -1, -1 };
     std::vector<lp::song::arrange::Item> pendingPlan;

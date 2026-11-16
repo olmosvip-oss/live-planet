@@ -79,6 +79,7 @@ target_link_libraries(LivePlanet
     PRIVATE
         juce::juce_cryptography
         juce::juce_audio_utils
+        juce::juce_dsp
         juce::juce_audio_formats
         juce::juce_opengl
         LivePlanetAssets

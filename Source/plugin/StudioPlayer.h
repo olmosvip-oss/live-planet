@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "../engine/Dsp.h"
+#include "../song/Vocal.h"
 #include "Peak.h"
 
 // Plays a song's tracks (the stem files) with a live mixer: volume, pan, mute, solo and tone.
@@ -27,9 +28,10 @@ public:
         // the track's effects switched off for now (their settings kept), to compare with and without
         std::atomic<bool> fxBypass { false };
         std::atomic<bool> vocal { false }; // a voice (the auto mix makes room for it)
+        std::atomic<bool> vocalChain { false }; // its Vocal chain is on (played live, recorded in when dragged)
         bool hasFx() const
         {
-            return space.load() > 0.001f || echo.load() > 0.001f || warmth.load() > 0.001f || nostalgia.load() > 0.001f
+            return vocalChain.load() || space.load() > 0.001f || echo.load() > 0.001f || warmth.load() > 0.001f || nostalgia.load() > 0.001f
                 || chorus.load() > 0.001f || std::abs (tone.load()) > 0.01f;
         }
         // what you drag is what you hear: the effects are recorded in whenever the track has any (unless you chose dry)
@@ -139,6 +141,31 @@ public:
         const double d = since < 0.003 ? since / 0.003 : 1.0 - (since - 0.003) / 0.107;
         return (float) (1.0 - 0.37 * d);
     }
+
+    // message thread: a track's Vocal chain (played live from the next block)
+    void setVocalChain (int t, const lp::song::VocalChain& c)
+    {
+        if (t < 0 || t >= maxTracks) return;
+        {
+            const juce::SpinLock::ScopedLockType sl (vocalLock);
+            vocalParams[(size_t) t] = lp::song::vocal::Params::of (c);
+            ++vocalSerial;
+        }
+        mix[(size_t) t].vocalChain = c.on;
+    }
+    lp::song::vocal::Params vocalParamsOf (int t) const
+    {
+        const juce::SpinLock::ScopedLockType sl (vocalLock);
+        return t >= 0 && t < maxTracks ? vocalParams[(size_t) t] : lp::song::vocal::Params {};
+    }
+    // how hard a track's compressor and de-esser work right now (dB, <= 0), for the window's meters
+    float vocalCompGr (int t) const { return t >= 0 && t < maxTracks ? vocalProc[(size_t) t].compGrDb.load() : 0.0f; }
+    float vocalDeessGr (int t) const { return t >= 0 && t < maxTracks ? vocalProc[(size_t) t].deessGrDb.load() : 0.0f; }
+    // the window listens to one track (what comes out of its chain): the audio thread writes, the window reads
+    std::atomic<int> scopeTrack { -1 };
+    static constexpr int scopeSize = 8192;
+    std::array<float, scopeSize> scopeL {}, scopeR {};
+    std::atomic<int> scopeWrite { 0 };
 
     // message thread: (re)open the tracks' files
     // waitMs: how long a read may wait for the disk (0 while playing live; offline prints wait)
@@ -255,6 +282,10 @@ public:
         const int need = (int) std::ceil (n * inc) + 3;
         if (scratch.getNumSamples() < need || n > (int) verbL.size()) return; // prepare() makes them big enough
         if (sampleRate != fxRate) setupTrackFx (sampleRate);
+        {
+            const juce::SpinLock::ScopedTryLockType vl (vocalLock);
+            if (vl.isLocked() && liveVocalSerial != vocalSerial) { liveParams = vocalParams; liveVocalSerial = vocalSerial; }
+        }
         std::fill (verbL.begin(), verbL.begin() + n, 0.0f); std::fill (verbR.begin(), verbR.begin() + n, 0.0f);
         std::fill (delL.begin(), delL.begin() + n, 0.0f);  std::fill (delR.begin(), delR.begin() + n, 0.0f);
         bool anySends = false;
@@ -345,6 +376,7 @@ public:
             }
             const float sparseStep = (sparseTarget - mf.sparseG) / (float) std::max (1, n);
             const bool bassDuck = am && grp == 3 && ! kicks.empty();
+            const bool chainOn = ! byp && liveParams[t].on && (int) vocalTmpL.size() >= n;
             for (int i = 0; i < n; ++i, ph += inc)
             {
                 const int i0 = (int) ph;
@@ -388,6 +420,19 @@ public:
                         xr = xr * (1.0f - 0.35f * cho) + wr * 0.75f * cho;
                     }
                 }
+                vocalTmpL[(size_t) i] = xl; vocalTmpR[(size_t) i] = xr;
+            }
+            // this track's Vocal chain, live
+            if (chainOn) vocalProc[t].process (vocalTmpL.data(), vocalTmpR.data(), n, liveParams[t], bpm);
+            if ((int) t == scopeTrack.load())
+            {
+                int w = scopeWrite.load();
+                for (int i = 0; i < n; ++i) { scopeL[(size_t) w] = vocalTmpL[(size_t) i]; scopeR[(size_t) w] = vocalTmpR[(size_t) i]; w = (w + 1) & (scopeSize - 1); }
+                scopeWrite = w;
+            }
+            for (int i = 0; i < n; ++i)
+            {
+                float xl = vocalTmpL[(size_t) i], xr = vocalTmpR[(size_t) i];
                 if (pumped) { const float pg = pumpGain (pos + i * inc); xl *= pg; xr *= pg; }
                 if (mf.tilt) { xl = mf.hs[0].process (mf.ls[0].process (xl)); xr = mf.hs[1].process (mf.ls[1].process (xr)); }
                 if (mf.clean) { xl = mf.hp[0].process (xl); xr = mf.hp[1].process (xr); }
@@ -428,7 +473,7 @@ public:
     void prepare (int maxBlock)
     {
         scratch.setSize (2, maxBlock * 4 + 64);
-        for (auto* v : { &verbL, &verbR, &delL, &delR }) v->assign ((size_t) maxBlock + 16, 0.0f);
+        for (auto* v : { &verbL, &verbR, &delL, &delR, &vocalTmpL, &vocalTmpR }) v->assign ((size_t) maxBlock + 16, 0.0f);
         fxRate = 0; // set up on the first block, at the real rate
     }
 
@@ -439,6 +484,15 @@ public:
         { const juce::SpinLock::ScopedLockType sl (o.lock); k = o.kicks; b = o.kickBpm; }
         setKicks (std::move (k), b);
         pumpDepth = o.pumpDepth.load();
+        {
+            // the Vocal chains too (a print of one track takes its row's)
+            const juce::SpinLock::ScopedLockType sl (o.vocalLock);
+            auto vp = o.vocalParams;
+            if (copyRow >= 0) { vp = {}; vp[0] = copyRow < maxTracks ? o.vocalParams[(size_t) copyRow] : lp::song::vocal::Params {}; }
+            const juce::SpinLock::ScopedLockType sl2 (vocalLock);
+            vocalParams = vp;
+            ++vocalSerial;
+        }
         bright = o.bright.load(); sparse = o.sparse.load(); punch = o.punch.load(); autoMix = o.autoMix.load();
         std::vector<std::vector<unsigned char>> m;
         double sb;
@@ -466,6 +520,7 @@ private:
             tf.chL.prepare ((int) (0.03 * sr)); tf.chR.prepare ((int) (0.03 * sr));
             tf.lastWarm = tf.lastNost = -1;
         }
+        for (auto& vp : vocalProc) vp.prepare (sr);
         dLineL.prepare ((int) (2.6 * sr)); dLineR.prepare ((int) (2.6 * sr));
         dFiltL.setup (3500.0f, 0.6f, (float) sr); dFiltR.setup (3500.0f, 0.6f, (float) sr);
         trackVerb.setSampleRate (sr);
@@ -474,6 +529,12 @@ private:
         trackVerb.setParameters (rp);
     }
     std::array<TrackFx, maxTracks> trackFx;
+    // the Vocal chains: settings set on the message thread, copied for the audio thread at the start of a block
+    mutable juce::SpinLock vocalLock;
+    std::array<lp::song::vocal::Params, maxTracks> vocalParams {}, liveParams {};
+    int vocalSerial = 0, liveVocalSerial = -1;
+    std::array<lp::song::vocal::Processor, maxTracks> vocalProc;
+    std::vector<float> vocalTmpL, vocalTmpR;
     // a plain biquad (RBJ cookbook): 0 peak, 1 low shelf, 2 high shelf, 3 high-pass
     struct BQ
     {
