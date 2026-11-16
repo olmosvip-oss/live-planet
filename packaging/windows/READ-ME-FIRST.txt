@@ -1,0 +1,16 @@
+LOOPWRIGHT FOR WINDOWS - HOW TO INSTALL
+=======================================
+
+1. Double-click Loopwright-Setup.exe
+
+2. Windows may show a blue box: "Windows protected your PC".
+   This is normal for new software from a small developer.
+   Click  "More info"  and then  "Run anyway".
+
+3. Click Yes when Windows asks for permission, then Next / Install.
+
+4. Open your DAW, rescan plugins, and load Loopwright as an instrument
+   (VST3 or CLAP). Or open the Loopwright app from the Start menu.
+
+Your 7-day free trial starts the first time you open it.
+Help: https://loop-wright.com/support  or  support@loop-wright.com

@@ -8,7 +8,8 @@ It's signed and notarized by Apple, so it opens with no warning.
 ## Windows (easiest): the installer
 Open **Windows > Loopwright-Setup.exe** and click through. It puts the VST3 and CLAP plugins in the
 folders every DAW looks in, and installs the Loopwright app with a Start menu shortcut.
-If Windows shows "Windows protected your PC": click **More info** > **Run anyway**.
+**Windows will probably show a blue box, "Windows protected your PC".** That's normal for new software from a
+small developer: click **More info**, then **Run anyway**. Then click **Yes** when Windows asks for permission.
 To remove it later: Settings > Apps > Loopwright > Uninstall.
 
 ## By hand

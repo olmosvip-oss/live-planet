@@ -122,9 +122,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y; }
-          & $iscc "/DAppVersion=0.9.${{ github.run_number }}" "/DSrc=$PWD\dist" "/O$PWD\package" packaging\windows\loopwright.iss
+          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $nsis)) { choco install nsis --no-progress -y; }
+          New-Item -ItemType Directory -Force package | Out-Null
+          & $nsis "/DAPPVERSION=0.9.${{ github.run_number }}" "/DSRC=$PWD\dist" "/DOUTDIR=$PWD\package" packaging\windows\loopwright.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-ChildItem package
 
       - name: Upload installer (Windows)
@@ -168,6 +170,7 @@ jobs:
           # Windows: the installer, and the plugins and app on their own for installing by hand
           if [ -f art/Loopwright-Windows-Installer/Loopwright-Setup.exe ]; then
             cp art/Loopwright-Windows-Installer/Loopwright-Setup.exe Loopwright/Windows/
+            cp packaging/windows/READ-ME-FIRST.txt Loopwright/Windows/
             mkdir -p "Loopwright/Windows/Plugins (install by hand)"
             cp -R art/Loopwright-Windows/. "Loopwright/Windows/Plugins (install by hand)/"
           else
