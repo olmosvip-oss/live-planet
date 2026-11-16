@@ -1,8 +1,11 @@
 name: Build Loopwright
 
+# Builds only when asked (a test build) or for a release (the release branch or a v... tag),
+# not on every change: build minutes are limited while the repository is private.
 on:
   push:
-  pull_request:
+    branches: [release]
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       licensed:
