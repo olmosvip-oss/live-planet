@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_core/juce_core.h>
 #include "Song.h"
+#include <map>
 
 // Your own sample library (for example the sounds Splice saved on your Mac).
 // Live Planet reads the file and folder names, which usually say the tempo, key and
@@ -52,8 +53,22 @@ public:
     // Default places to look: ~/Splice and ~/Music/Splice, plus any folders you add.
     static juce::Array<juce::File> defaultFolders();
 
+    // What listening to a file found (remembered on disk, so each file is only listened to once).
+    // kind Other = listened to, but it isn't a usable loop or one-shot.
+    struct Heard { juce::int64 size = 0; int kind = (int) SampleKind::Other; int loop = 0; double bpm = 0; int key = -1; bool minor = false; };
+    using HeardMap = std::map<juce::String, Heard>;
+
     // Reads every audio file under the folders (up to `maxFiles`). Safe to call from a background thread.
-    void scan (const juce::Array<juce::File>& folders, int maxFiles = 60000);
+    // Files whose names don't say what they are (or a loop's tempo) go to `unheard`, unless `heard`
+    // already knows them; those are listened to afterwards with hear(), a few at a time.
+    void scan (const juce::Array<juce::File>& folders, int maxFiles = 60000, const HeardMap* heard = nullptr);
+    std::vector<std::pair<juce::String, juce::String>> unheard; // (path, root folder)
+    // Listens to a file the name didn't explain: a loop's tempo (from its length in whole bars, checked
+    // against how its hits repeat) and key, or a melodic one-shot. False: not something songs can use.
+    static bool hear (const juce::File& file, const juce::File& root, LibraryEntry& e);
+    static Heard heardOf (const LibraryEntry& e, juce::int64 size, bool usable);
+    static void apply (const Heard& h, LibraryEntry& e);
+    void add (const LibraryEntry& e) { entries.push_back (e); }
     bool load (const juce::File& cache);
     void save (const juce::File& cache) const;
 

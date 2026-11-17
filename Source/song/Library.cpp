@@ -1,4 +1,5 @@
 #include "Library.h"
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <regex>
 
 namespace lp::song
@@ -227,18 +228,160 @@ LibraryEntry Library::parse (const juce::File& file, const juce::File& root)
     return e;
 }
 
-void Library::scan (const juce::Array<juce::File>& folders, int maxFiles)
+void Library::scan (const juce::Array<juce::File>& folders, int maxFiles, const HeardMap* heard)
 {
     entries.clear();
+    unheard.clear();
     for (auto& root : folders)
     {
         for (const auto& it : juce::RangedDirectoryIterator (root, true, "*.wav;*.aif;*.aiff;*.flac;*.mp3", juce::File::findFiles))
         {
             if ((int) entries.size() >= maxFiles) return;
-            auto e = parse (it.getFile(), root);
-            if (e.kind != SampleKind::Other) entries.push_back (std::move (e));
+            const auto file = it.getFile();
+            auto e = parse (file, root);
+            // the name says what it is (and a loop's tempo): use it as it is
+            const bool needsEar = e.kind == SampleKind::Other || (e.kind == SampleKind::Loop && e.bpm <= 0.0);
+            if (! needsEar) { entries.push_back (std::move (e)); continue; }
+            // listened to before (and not changed since): what we heard then
+            if (heard != nullptr)
+                if (auto h = heard->find (e.path); h != heard->end() && h->second.size == it.getFileSize())
+                {
+                    if (h->second.kind != (int) SampleKind::Other) { apply (h->second, e); entries.push_back (std::move (e)); }
+                    continue;
+                }
+            unheard.push_back ({ e.path, root.getFullPathName() });
         }
     }
+}
+
+Library::Heard Library::heardOf (const LibraryEntry& e, juce::int64 size, bool usable)
+{
+    Heard h;
+    h.size = size;
+    if (! usable) return h;
+    h.kind = (int) e.kind; h.loop = (int) e.loop; h.bpm = e.bpm; h.key = e.key; h.minor = e.minor;
+    return h;
+}
+
+void Library::apply (const Heard& h, LibraryEntry& e)
+{
+    e.kind = (SampleKind) h.kind; e.loop = (LoopKind) h.loop; e.bpm = h.bpm;
+    if (h.key >= 0) { e.key = h.key; e.minor = h.minor; }
+}
+
+bool Library::hear (const juce::File& file, const juce::File& root, LibraryEntry& e)
+{
+    e = parse (file, root);
+    static thread_local std::unique_ptr<juce::AudioFormatManager> fm;
+    if (fm == nullptr) { fm = std::make_unique<juce::AudioFormatManager>(); fm->registerBasicFormats(); }
+    std::unique_ptr<juce::AudioFormatReader> rd (fm->createReaderFor (file));
+    if (rd == nullptr || rd->sampleRate < 8000.0 || rd->lengthInSamples <= 0) return false;
+    const double sr = rd->sampleRate, secs = (double) rd->lengthInSamples / sr;
+    if (secs < 0.15 || secs > 75.0) return false; // a click, or a whole song
+    const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (sr * 30.0));
+    juce::AudioBuffer<float> b ((int) std::max (1u, rd->numChannels), len);
+    rd->read (&b, 0, len, 0, true, true);
+    std::vector<float> mono ((size_t) len, 0.0f);
+    for (int ch = 0; ch < b.getNumChannels(); ++ch)
+    {
+        const auto* d = b.getReadPointer (ch);
+        for (int i = 0; i < len; ++i) mono[(size_t) i] += d[i];
+    }
+    float peak = 0.0f;
+    for (float v : mono) peak = std::max (peak, std::abs (v));
+    if (peak < 1.0e-4f) return false; // silence
+
+    int key = -1; bool minor = false;
+    const bool clearKey = detectKey (mono.data(), len, sr, key, minor);
+    const auto feel = measureFeel (mono.data(), len, sr);
+
+    // a short sound: only a melodic one-shot (a note, a stab, a vocal shot) is something we can place by ear
+    if (secs < 1.6)
+    {
+        if (e.kind != SampleKind::Other || ! clearKey || secs < 0.25) return false;
+        e.kind = SampleKind::OneShot;
+        if (e.key < 0) { e.key = key; e.minor = minor; }
+        return true;
+    }
+
+    // a loop: cut to whole bars at a whole-number tempo, so its length gives the tempo exactly;
+    // how its hits repeat decides between the lengths that fit (4 bars at 120, or 2 bars at 60?)
+    const double fps = 100.0;
+    const int hop = std::max (1, (int) std::round (sr / fps)), frames = len / hop;
+    std::vector<float> env ((size_t) std::max (frames, 1), 0.0f);
+    {
+        std::vector<float> energy ((size_t) std::max (frames, 1), 0.0f);
+        float prevSample = 0.0f;
+        for (int f = 0; f < frames; ++f)
+        {
+            double acc = 0;
+            for (int i = f * hop; i < (f + 1) * hop; ++i)
+            {
+                const float hp = mono[(size_t) i] - 0.97f * prevSample; // a gentle high-pass: the hits, not the hum
+                prevSample = mono[(size_t) i];
+                acc += (double) hp * hp;
+            }
+            energy[(size_t) f] = (float) std::log10 (1.0e-9 + acc / hop);
+        }
+        for (int f = 1; f < frames; ++f) env[(size_t) f] = std::max (0.0f, energy[(size_t) f] - energy[(size_t) f - 1]);
+    }
+    auto repeats = [&] (double bpm)
+    {
+        const double lag = fps * 60.0 / bpm;
+        double sc = 0;
+        const int l1 = (int) std::round (lag), l2 = (int) std::round (lag * 2), l4 = (int) std::round (lag * 4);
+        for (int i = 0; i + l4 + 1 < frames; ++i)
+            sc += env[(size_t) i] * (env[(size_t) (i + l1)] + 0.5f * env[(size_t) (i + l2)] + 0.25f * env[(size_t) (i + l4)]);
+        return sc;
+    };
+    double bestBpm = 0.0, bestScore = -1.0;
+    for (int bars : { 1, 2, 3, 4, 6, 8, 12, 16, 24, 32 })
+    {
+        const double exact = bars * 240.0 / secs;
+        const double whole = std::round (exact);
+        if (whole < 65.0 || whole > 185.0) continue;
+        // the file is within a hair of whole bars at a whole-number tempo (a little padding is allowed)
+        const double lenAtWhole = bars * 240.0 / whole;
+        if (std::abs (lenAtWhole - secs) > std::max (0.012, secs * 0.0025)) continue;
+        const double prior = std::exp (-0.5 * std::pow (std::log2 (whole / 110.0) / 0.6, 2.0));
+        const double sc = (repeats (whole) + 1.0e-6) * (0.5 + prior) * (bars == 3 || bars == 6 || bars == 12 || bars == 24 ? 0.7 : 1.0);
+        if (sc > bestScore) { bestScore = sc; bestBpm = whole; }
+    }
+    if (bestBpm <= 0.0) return false; // not whole bars at any normal tempo: not a loop we can line up
+    // and it has to sound like a loop: hits that repeat on that beat (more than on unrelated beats),
+    // or something with a clear key (a held pad has no hits but still loops); noise and FX don't
+    {
+        double other = 0;
+        for (double m : { 1.17, 1.31, 0.83, 0.71, 1.43 }) other += repeats (bestBpm * m);
+        other /= 5.0;
+        const bool rhythmic = repeats (bestBpm) > other * 1.35 + 1.0e-9;
+        if (! rhythmic && ! clearKey) return false;
+        if (! rhythmic)
+        {
+            // a held sound (a pad) gives no beat to go by: whole 1, 2, 4, 8 or 16 bars, nearest a usual tempo
+            double pick = 0.0, pickPrior = -1.0;
+            for (int bars : { 1, 2, 4, 8, 16 })
+            {
+                const double whole = std::round (bars * 240.0 / secs);
+                if (whole < 65.0 || whole > 185.0 || std::abs (bars * 240.0 / whole - secs) > std::max (0.012, secs * 0.0025)) continue;
+                const double prior = std::exp (-0.5 * std::pow (std::log2 (whole / 100.0) / 0.6, 2.0));
+                if (prior > pickPrior) { pickPrior = prior; pick = whole; }
+            }
+            if (pick > 0.0) bestBpm = pick;
+        }
+    }
+
+    e.kind = SampleKind::Loop;
+    e.bpm = bestBpm;
+    if (e.loop == LoopKind::None || e.loop == LoopKind::Other)
+    {
+        // what kind of loop, when the name doesn't say: something with a key is melodic; short busy hits are drums
+        if (clearKey) e.loop = LoopKind::Other;
+        else if (feel.sustain < 0.35f && feel.busy > 0.35f) e.loop = LoopKind::Drums;
+        else e.loop = LoopKind::Other;
+    }
+    if (e.key < 0 && clearKey && e.loop != LoopKind::Drums && e.loop != LoopKind::Perc) { e.key = key; e.minor = minor; }
+    return true;
 }
 
 int Library::count (SampleKind k) const

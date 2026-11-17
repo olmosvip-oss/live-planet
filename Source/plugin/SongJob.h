@@ -59,6 +59,7 @@ public:
         juce::File abletonSet;
         // your sample library
         bool scanning = false;
+        int listening = 0;        // unlabelled samples still to be listened to (tempo and key by ear)
         int librarySounds = 0, libraryLoops = 0;
         juce::String usedSamples; // what this song took from your library
         std::vector<TrackInfo> tracks;
@@ -132,7 +133,7 @@ public:
 
     static juce::File libraryCache()
     {
-        return lp::appFolder().getChildFile ("library-v4.json"); // v4: melodic one-shots too
+        return lp::appFolder().getChildFile ("library-v5.json"); // v5: unlabelled samples listened to (tempo and key by ear)
     }
 
     void makeSong (const lp::song::Options& o, const lp::song::RenderSettings& rs, const lp::Weather& sky, bool useLibrary, bool onlySamples = false)
@@ -997,11 +998,13 @@ private:
         loadTaste();
         // start with the library found last time, so songs can use it straight away
         loadFeatures();
+        loadHeard();
         if (library.load (libraryCache()))
         {
             const juce::ScopedLock sl (lock);
             status.librarySounds = library.size();
             status.libraryLoops = library.loopCount();
+            status.listening = (int) toHear.size();
         }
         while (! threadShouldExit())
         {
@@ -1052,13 +1055,16 @@ private:
             if (scanNow)
             {
                 lp::song::Library fresh;
-                fresh.scan (folders);
+                fresh.scan (folders, 60000, &heardMap);
+                toHear = fresh.unheard;
                 fresh.save (libraryCache());
+                saveHeard();
                 const juce::ScopedLock sl (lock);
                 library = fresh;
                 status.scanning = false;
                 status.librarySounds = library.size();
                 status.libraryLoops = library.loopCount();
+                status.listening = (int) toHear.size();
                 continue;
             }
             Task t;
@@ -1079,6 +1085,7 @@ private:
                 else if (t == Task::Write) writeTakes (o, rs, sky);
                 else if (t == Task::Open) openSaved (ref);
                 else if (t == Task::Rename) renameOpenSong();
+                else if (! toHear.empty()) hearSome(); // nothing else to do: listen to a few unlabelled samples
                 else wait (-1);
             }
             catch (const std::bad_alloc&)
@@ -1094,6 +1101,73 @@ private:
                 setStage (Stage::Failed, 0.0f, "something went wrong writing the song.");
             }
         }
+    }
+
+    // ---- unlabelled samples: listened to a few at a time when nothing else is happening
+    // (so writing a song never waits), remembered on disk so each file is only listened to once
+    lp::song::Library::HeardMap heardMap;
+    std::vector<std::pair<juce::String, juce::String>> toHear;
+    int heardSinceSave = 0;
+    static juce::File heardFile() { return lp::appFolder().getChildFile ("sample-heard.json"); }
+    static juce::File toHearFile() { return lp::appFolder().getChildFile ("sample-to-hear.json"); }
+
+    void loadHeard()
+    {
+        auto v = juce::JSON::parse (heardFile());
+        if (auto* obj = v.getDynamicObject())
+            for (auto& prop : obj->getProperties())
+            {
+                const auto& a = prop.value;
+                if (! a.isArray() || a.size() < 6) continue;
+                lp::song::Library::Heard h;
+                h.size = (juce::int64) a[0]; h.kind = (int) a[1]; h.loop = (int) a[2]; h.bpm = (double) a[3]; h.key = (int) a[4]; h.minor = (bool) a[5];
+                heardMap[prop.name.toString()] = h;
+            }
+        // samples still waiting from last time (the app was closed while it listened)
+        if (auto q = juce::JSON::parse (toHearFile()); q.isArray())
+            for (auto& r : *q.getArray())
+                if (r.isArray() && r.size() >= 2) toHear.push_back ({ r[0].toString(), r[1].toString() });
+    }
+
+    void saveHeard()
+    {
+        auto obj = std::make_unique<juce::DynamicObject>();
+        for (auto& [path, h] : heardMap)
+            obj->setProperty (juce::Identifier (path), juce::Array<juce::var> { h.size, h.kind, h.loop, h.bpm, h.key, h.minor });
+        heardFile().getParentDirectory().createDirectory();
+        heardFile().replaceWithText (juce::JSON::toString (juce::var (obj.release()), true));
+        juce::Array<juce::var> q;
+        for (auto& [path, root] : toHear) q.add (juce::Array<juce::var> { path, root });
+        toHearFile().replaceWithText (juce::JSON::toString (q, true));
+        heardSinceSave = 0;
+    }
+
+    void hearSome()
+    {
+        // a handful, then back to the loop (a song or an edit asked for meanwhile goes first)
+        for (int n = 0; n < 12 && ! toHear.empty() && ! threadShouldExit(); ++n)
+        {
+            const auto [path, root] = toHear.back();
+            toHear.pop_back();
+            const juce::File f (path);
+            if (! f.existsAsFile()) continue;
+            lp::song::LibraryEntry e;
+            bool usable = false;
+            try { usable = lp::song::Library::hear (f, juce::File (root), e); } catch (...) { usable = false; }
+            heardMap[path] = lp::song::Library::heardOf (e, f.getSize(), usable);
+            if (usable) library.add (e);
+            ++heardSinceSave;
+        }
+        const bool done = toHear.empty();
+        if (done || heardSinceSave >= 300)
+        {
+            library.save (libraryCache());
+            saveHeard();
+        }
+        const juce::ScopedLock sl (lock);
+        status.librarySounds = library.size();
+        status.libraryLoops = library.loopCount();
+        status.listening = (int) toHear.size();
     }
 
     void listen (const juce::File& file)

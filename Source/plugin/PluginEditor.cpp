@@ -1083,6 +1083,7 @@ void SongPanel::paint (Graphics& g)
         auto lib = c.reduced (22.0f, 16.0f).removeFromBottom (16.0f);
         g.setFont (lp::ui::mono (10.0f, false, 0.1f));
         const String count = st.scanning ? String ("SCANNING...")
+                           : st.listening > 0 ? String (st.librarySounds) + String::fromUTF8 (" SAMPLES \xc2\xb7 LISTENING TO ") + String (st.listening)
                            : st.librarySounds > 0 ? String (st.librarySounds) + " SAMPLES"
                                                   : String ("NO LIBRARY YET");
         // every word measured; SONGS keeps its place at the right end, and if the row is short of room
