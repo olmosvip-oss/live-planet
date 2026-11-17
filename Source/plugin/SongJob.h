@@ -11,6 +11,7 @@
 #include "../song/Hook.h"
 #include "../song/Arrange.h"
 #include "../song/Slice.h"
+#include "../song/Chops.h"
 #include "../song/Tune.h"
 #include "../song/Library.h"
 #include "../engine/Limiter.h"
@@ -22,7 +23,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -199,6 +200,59 @@ public:
             edits.erase (std::remove_if (edits.begin(), edits.end(), [track] (const std::pair<int, EditOp>& e)
                                          { return e.first == track && e.second == EditOp::Notes; }), edits.end());
             edits.push_back ({ track, EditOp::Notes });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
+    // the chop pads window: a vocal chops track's recording, its chops and its notes
+    struct ChopView { bool valid = false; juce::String path, name; std::vector<lp::song::ChopSlice> chops; std::vector<lp::song::Note> notes; double bpm = 90.0; int version = 0; };
+    ChopView chopView (int track) const
+    {
+        const juce::ScopedLock sl (lock);
+        ChopView v;
+        if (track < 0 || track >= (int) current.parts.size()) return v;
+        const auto& p = current.parts[(size_t) track];
+        if (p.samplePath.isEmpty() || p.kind != lp::song::PartKind::Melody) return v;
+        v.valid = true; v.path = p.samplePath; v.name = juce::String (p.name); v.chops = p.chops; v.notes = p.notes;
+        v.bpm = current.bpm; v.version = status.version;
+        return v;
+    }
+    // the Auto-tune window: a tuned vocal's settings (valid: it's a tuned vocal with its recording still there)
+    struct TuneView { bool valid = false; lp::song::VocalTune tune; juce::String name; double bpm = 90.0; int version = 0; };
+    TuneView tuneView (int track) const
+    {
+        const juce::ScopedLock sl (lock);
+        TuneView v;
+        if (track < 0 || track >= (int) current.parts.size()) return v;
+        const auto& p = current.parts[(size_t) track];
+        v.valid = p.tune.source.isNotEmpty() && juce::File (p.tune.source).existsAsFile();
+        v.tune = p.tune; v.name = juce::String (p.name); v.bpm = current.bpm; v.version = status.version;
+        return v;
+    }
+    // tuned again with new settings (in the background: the newest settings win)
+    void setTune (int track, const lp::song::VocalTune& t)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingTune[track] = t;
+            edits.erase (std::remove_if (edits.begin(), edits.end(), [track] (const std::pair<int, EditOp>& e)
+                                         { return e.first == track && e.second == EditOp::Tune; }), edits.end());
+            edits.push_back ({ track, EditOp::Tune });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    static bool isChopTrack (const lp::song::Part& p) { return p.kind == lp::song::PartKind::Melody && p.name == "vocal chops" && p.samplePath.isNotEmpty(); }
+    // the chops changed (moved, added, removed): `remap` says where each old chop went (-1: removed)
+    void setChops (int track, std::vector<lp::song::ChopSlice> chops, std::vector<int> remap)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingChops[track] = { std::move (chops), std::move (remap) };
+            edits.erase (std::remove_if (edits.begin(), edits.end(), [track] (const std::pair<int, EditOp>& e)
+                                         { return e.first == track && e.second == EditOp::Chops; }), edits.end());
+            edits.push_back ({ track, EditOp::Chops });
             status.editing = true;
         }
         startIfNeeded();
@@ -517,7 +571,28 @@ public:
         }
         const float g = loudest > 1e-4f && stemPeak > 1e-4f ? juce::jlimit (0.05f, 8.0f, stemPeak / loudest) : 0.6f;
         for (auto& [n, b] : hits) b->applyGain (g);
+        { const juce::ScopedLock sl (lock); kitGain[track] = g; }
         return hits;
+    }
+
+    // one drum's hit with its own effects as you're setting them (before they're recorded into the track),
+    // at the same loudness as the rest of the kit: heard at once while the drums play live
+    std::shared_ptr<juce::AudioBuffer<float>> drumHitWith (int track, int note, const lp::song::VoiceFx& fx) const
+    {
+        lp::song::Song song;
+        float g = 0.6f;
+        {
+            const juce::ScopedLock sl (lock);
+            if (! status.haveSong || track < 0 || track >= (int) current.parts.size()) return {};
+            song = current;
+            if (auto it = kitGain.find (track); it != kitGain.end()) g = it->second;
+        }
+        auto& part = song.parts[(size_t) track];
+        part.voiceFx[note] = fx;
+        auto b = lp::song::renderDrumHit (song, part, note, StudioPlayer::fileRate);
+        if (b.getNumSamples() < 2) return {};
+        b.applyGain (g);
+        return std::make_shared<juce::AudioBuffer<float>> (std::move (b));
     }
 
     // the name of the last drum sound swapped in, and a counter that goes up with each swap
@@ -2761,7 +2836,11 @@ private:
         rd->read (&in, 0, len, 0, true, rd->numChannels > 1);
         if (rd->numChannels == 1) in.copyFrom (1, 0, in, 0, 0, len);
         double avg = 0.0;
-        auto out = lp::song::tune::apply (in, rd->sampleRate, song.key, song.minor, hard ? 1.0f : 0.7f, hard ? 0.0f : 60.0f, &avg);
+        lp::song::VocalTune vt;
+        vt.source = vocal.getFullPathName();
+        vt.key = song.key; vt.scale = song.minor ? 1 : 0;
+        vt.speed = hard ? 0.0f : 0.35f; vt.humanize = hard ? 0.0f : 0.45f; vt.amount = 1.0f;
+        auto out = lp::song::tune::apply (in, rd->sampleRate, tuneSettings (vt), &avg);
         const auto dir = currentFolder.getChildFile ("vocals");
         dir.createDirectory();
         const auto tuned = dir.getChildFile (vocal.getFileNameWithoutExtension() + (hard ? " (tuned hard).wav" : " (tuned).wav"));
@@ -2770,6 +2849,7 @@ private:
         part.kind = lp::song::PartKind::Melody;
         part.name = hard ? "vocal (tuned hard)" : "vocal (tuned)";
         part.samplePath = tuned.getFullPathName();
+        part.tune = vt;
         part.source = "your vocal: " + vocal.getFileNameWithoutExtension();
         part.remix = juce::String ("auto-tuned to ") + lp::noteName (song.key) + (song.minor ? " minor" : " major") + (hard ? ", hard" : ", natural")
                    + ": it was off by " + juce::String (juce::roundToInt (avg * 100.0)) + " cents on average. starts at bar 1";
@@ -2787,6 +2867,13 @@ private:
         status.message = "your vocal, tuned to the song, is a new track (" + part.remix + ")";
         ++status.version;
         saveSession();
+    }
+
+    static lp::song::tune::Settings tuneSettings (const lp::song::VocalTune& v)
+    {
+        lp::song::tune::Settings s;
+        s.key = v.key; s.scale = v.scale; s.speed = v.speed; s.humanize = v.humanize; s.amount = v.amount; s.removed = v.removed;
+        return s;
     }
 
     void add808()
@@ -2858,6 +2945,8 @@ private:
             case EditOp::Grains: return on ("grains on");
             case EditOp::Key: return "key change";
             case EditOp::Notes: return on ("notes of");
+            case EditOp::Chops: return on ("chops of");
+            case EditOp::Tune: return on ("tuning of");
             case EditOp::SwapDrum: return on ("drum swap in");
             case EditOp::VoiceFx: return on ("drum effects in");
             case EditOp::VocalAnalyze: return on ("vocal analysis of");
@@ -2986,17 +3075,51 @@ private:
         for (auto& p : song.parts) if (const auto* e = library.find (p.samplePath)) packsInSong.addIfNotAlreadyThere (e->pack);
         std::vector<std::pair<float, juce::String>> pool;
         juce::Random rng ((juce::int64) seed);
+        // only sung vocals: the file's own name (or its folder's) says vocal, and nothing in its name says
+        // it's an instrument ("vocal chop synth", "vox pluck" and the like are synths)
+        static const juce::StringArray vocalWords { "vocal", "vocals", "vox", "voice", "voices", "acapella", "acappella", "adlib", "adlibs",
+                                                    "sing", "singer", "sung", "choir", "humming", "chant", "lyric", "lyrics" };
+        static const juce::StringArray notVocal { "synth", "synths", "pluck", "plucks", "lead", "leads", "keys", "key", "piano", "guitar", "gtr", "bass",
+                                                  "808", "arp", "arps", "bell", "bells", "pad", "pads", "string", "strings", "flute", "brass", "horn",
+                                                  "drum", "drums", "perc", "kick", "snare", "hat", "hats", "fx", "sfx", "riser", "impact", "sweep",
+                                                  "chord", "chords", "organ", "rhodes", "marimba", "mallet", "kalimba", "harp", "vocoder", "talkbox", "texture" };
+        auto words = [] (const juce::String& txt)
+        {
+            return juce::StringArray::fromTokens (txt.toLowerCase().replaceCharacters ("-.()[]&,", "        ").replace ("_", " "), " ", "");
+        };
         for (auto& e : usableLib.all())
         {
-            const auto lower = e.path.toLowerCase();
-            const bool vocal = e.loop == lp::song::LoopKind::Vocal || lower.contains ("vocal") || lower.contains ("vox") || lower.contains ("voice") || lower.contains ("chop");
-            if (! vocal || e.kind == lp::song::SampleKind::Riser || e.kind == lp::song::SampleKind::Impact) continue;
+            if (e.kind == lp::song::SampleKind::Riser || e.kind == lp::song::SampleKind::Impact || e.loop == lp::song::LoopKind::Drums) continue;
+            const juce::File f (e.path);
+            const auto name = words (f.getFileNameWithoutExtension());
+            const auto folder = words (f.getParentDirectory().getFileName() + " " + f.getParentDirectory().getParentDirectory().getFileName());
+            bool instrument = false, saysVocal = false, folderVocal = false;
+            for (auto& w : name) { instrument = instrument || notVocal.contains (w); saysVocal = saysVocal || vocalWords.contains (w) || w.startsWith ("vocal") || w.startsWith ("vox"); }
+            for (auto& w : folder) folderVocal = folderVocal || vocalWords.contains (w) || w.startsWith ("vocal") || w.startsWith ("vox");
+            for (auto& w : folder) if (notVocal.contains (w)) folderVocal = false;
+            const bool vocal = ! instrument && (saysVocal || folderVocal || (e.loop == lp::song::LoopKind::Vocal && name.size() > 0));
+            if (! vocal) continue;
             pool.push_back ({ (packsInSong.contains (e.pack) ? 2.0f : 0.0f) + rng.nextFloat() * 1.5f, e.path });
         }
         std::sort (pool.begin(), pool.end(), [] (auto& a, auto& b) { return a.first > b.first; });
         juce::StringArray out;
-        for (size_t i = 0; i < pool.size() && i < 8; ++i) out.add (pool[i].second);
+        for (size_t i = 0; i < pool.size() && i < 12; ++i) out.add (pool[i].second);
         return out;
+    }
+
+    // a vocal's chops (its pads), found once and kept with the part
+    static std::vector<lp::song::ChopSlice> findChopsIn (const juce::String& path)
+    {
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (path)));
+        if (rd == nullptr || rd->sampleRate <= 0 || rd->lengthInSamples <= 0) return {};
+        const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 120.0));
+        juce::AudioBuffer<float> b (2, len);
+        b.clear();
+        rd->read (&b, 0, len, 0, true, rd->numChannels > 1);
+        if (rd->numChannels == 1) b.copyFrom (1, 0, b, 0, 0, len);
+        return lp::song::chops::find (b, rd->sampleRate);
     }
 
     // sounds from your library for written parts: melodic one-shots (plucks, keys, bells, leads...) for a hook,
@@ -3223,20 +3346,33 @@ private:
         part.variant = 1;
         const auto seed = currentSeed * 31u + (juce::uint32) song.parts.size() * 7919u;
         juce::String where;
-        part.notes = lp::song::hook::write (song, chordList, seed + (juce::uint32) part.variant, chops, where);
+        if (! chops) part.notes = lp::song::hook::write (song, chordList, seed + (juce::uint32) part.variant, chops, where);
         if (chops)
         {
             // your own vocal (dropped or picked), or vocals from your sample folders
             juce::File own;
             { const juce::ScopedLock sl (lock); own = pendingOwnVocal; pendingOwnVocal = juce::File(); }
             part.candidates = own.existsAsFile() ? juce::StringArray (own.getFullPathName()) : vocalsToChop (song, seed);
-            if (part.candidates.isEmpty())
+            // the first that has sung syllables to chop (your own vocal is always used)
+            for (int i = 0; i < part.candidates.size(); ++i)
+            {
+                auto found = findChopsIn (part.candidates[i]);
+                if (lp::song::chops::sung (found) >= 3 || (own.existsAsFile() && ! found.empty()))
+                {
+                    part.candidate = i;
+                    part.samplePath = part.candidates[i];
+                    part.chops = std::move (found);
+                    break;
+                }
+            }
+            if (part.samplePath.isEmpty())
             {
                 const juce::ScopedLock sl (lock);
-                status.message = "no vocals in your sample folders to chop: try the melody hook";
+                status.message = own.existsAsFile() ? juce::String ("couldn't hear syllables to chop in that vocal")
+                                                    : juce::String ("no sung vocals in your sample folders to chop: try the melody hook, or chop your own vocal");
                 return;
             }
-            part.samplePath = part.candidates[0];
+            part.notes = lp::song::hook::writeChops (song, chordList, part.chops, seed + (juce::uint32) part.variant, where);
             part.source = (own.existsAsFile() ? juce::String ("your vocal: ") : sourceLabel (part.samplePath)) + juce::File (part.samplePath).getFileNameWithoutExtension();
         }
         else
@@ -3403,6 +3539,52 @@ private:
             song.groove.amount = pendingFeel;
             if (! song.groove.valid) { song.groove = lp::song::styleGroove (song.style); song.groove.amount = pendingFeel; }
         }
+        if (op == EditOp::Tune)
+        {
+            lp::song::VocalTune t;
+            { const juce::ScopedLock sl (lock); t = pendingTune[tr]; }
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (t.source)));
+            if (rd != nullptr && rd->sampleRate > 0)
+            {
+                {
+                    const juce::ScopedLock sl (lock);
+                    status.message = "tuning " + juce::String (part.name) + "...";
+                }
+                const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 600.0));
+                juce::AudioBuffer<float> in (2, len);
+                rd->read (&in, 0, len, 0, true, rd->numChannels > 1);
+                if (rd->numChannels == 1) in.copyFrom (1, 0, in, 0, 0, len);
+                double avg = 0.0;
+                auto out = lp::song::tune::apply (in, rd->sampleRate, tuneSettings (t), &avg);
+                const auto dir = currentFolder.getChildFile ("vocals");
+                dir.createDirectory();
+                const auto tuned = dir.getChildFile (juce::File (t.source).getFileNameWithoutExtension() + " (tuned " + juce::String (++editCounter) + ").wav");
+                if (writeStem (tuned, out, rd->sampleRate))
+                {
+                    part.samplePath = tuned.getFullPathName();
+                    part.tune = t;
+                    part.remix = juce::String ("auto-tuned to ") + lp::noteName (t.key) + " " + juce::String (lp::song::tune::scaleName (t.scale)).toLowerCase()
+                               + ", retune " + juce::String (juce::roundToInt ((1.0f - t.speed) * 100.0f)) + "% fast, humanize " + juce::String (juce::roundToInt (t.humanize * 100.0f))
+                               + "%: it was off by " + juce::String (juce::roundToInt (avg * 100.0)) + " cents on average";
+                }
+            }
+        }
+        if (op == EditOp::Chops)
+        {
+            const juce::ScopedLock sl (lock);
+            auto [chops, remap] = pendingChops[tr];
+            // a chop whose pad was removed: its notes go back to being picked by their note
+            for (auto& nt : part.notes)
+                if (nt.slice >= 0)
+                {
+                    if (part.chops.empty()) break;
+                    nt.slice = nt.slice < (int) remap.size() ? remap[(size_t) nt.slice] : -1;
+                }
+            part.chops = std::move (chops);
+            for (auto& nt : part.notes) if (nt.slice >= (int) part.chops.size()) nt.slice = -1;
+        }
         if (op == EditOp::Notes)
         {
             const juce::ScopedLock sl (lock);
@@ -3437,12 +3619,27 @@ private:
             const bool chops = part.name == "vocal chops";
             ++part.variant;
             juce::String where;
-            part.notes = lp::song::hook::write (song, songChords (song, tracks), currentSeed * 31u + (juce::uint32) tr * 7919u + (juce::uint32) part.variant, chops, where);
-            if (chops && part.candidates.size() > 1 && part.variant % 2 == 0)
+            const auto chordList = songChords (song, tracks);
+            const auto hookSeed = currentSeed * 31u + (juce::uint32) tr * 7919u + (juce::uint32) part.variant;
+            if (! chops)
+                part.notes = lp::song::hook::write (song, chordList, hookSeed, chops, where);
+            else
             {
-                part.candidate = (part.candidate + 1) % part.candidates.size();
-                part.samplePath = part.candidates[part.candidate];
-                part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
+                // every other time, another vocal too (one with sung syllables)
+                if (part.candidates.size() > 1 && part.variant % 2 == 0)
+                    for (int tries = 0; tries < part.candidates.size() - 1; ++tries)
+                    {
+                        const int c = (part.candidate + 1 + tries) % part.candidates.size();
+                        auto found = findChopsIn (part.candidates[c]);
+                        if (lp::song::chops::sung (found) < 3) continue;
+                        part.candidate = c;
+                        part.samplePath = part.candidates[c];
+                        part.chops = std::move (found);
+                        part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
+                        break;
+                    }
+                if (part.chops.empty()) part.chops = findChopsIn (part.samplePath);
+                part.notes = lp::song::hook::writeChops (song, chordList, part.chops, hookSeed, where);
             }
             part.remix = "an original hook over your chords (take " + juce::String (part.variant) + "), in the " + where + ". swap: another hook";
         }
@@ -4126,6 +4323,9 @@ private:
     std::map<int, std::pair<int, int>> pendingRegion;
     std::map<int, GrainSettings> pendingGrains;
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
+    std::map<int, std::pair<std::vector<lp::song::ChopSlice>, std::vector<int>>> pendingChops;
+    std::map<int, lp::song::VocalTune> pendingTune;
+    mutable std::map<int, float> kitGain; // (drumHits) each drum track's kit loudness
     std::map<int, std::pair<int, int>> pendingDrumSwap;
     std::map<int, std::map<int, lp::song::VoiceFx>> pendingVoiceFx; // track -> note -> settings, waiting to be recorded
     int chordsVersion = -1;

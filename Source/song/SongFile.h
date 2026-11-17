@@ -39,7 +39,8 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("gainDb", p.gainDb); o->setProperty ("variant", p.variant);
     juce::Array<juce::var> notes;
     for (auto& n : p.notes)
-        notes.add (n.glide ? juce::Array<juce::var> { n.beat, n.length, n.pitch, n.velocity, 1 } : juce::Array<juce::var> { n.beat, n.length, n.pitch, n.velocity });
+        notes.add (n.slice >= 0 ? juce::Array<juce::var> { n.beat, n.length, n.pitch, n.velocity, n.glide ? 1 : 0, n.slice }
+                 : n.glide ? juce::Array<juce::var> { n.beat, n.length, n.pitch, n.velocity, 1 } : juce::Array<juce::var> { n.beat, n.length, n.pitch, n.velocity });
     o->setProperty ("notes", notes);
     o->setProperty ("samplePath", p.samplePath); o->setProperty ("loopBars", p.loopBars); o->setProperty ("loopStartBars", ints (p.loopStartBars));
     o->setProperty ("source", p.source); o->setProperty ("remix", p.remix); o->setProperty ("candidates", strings (p.candidates));
@@ -80,6 +81,17 @@ inline juce::var partToVar (const Part& p)
         vc->setProperty ("analysis", c.analysis);
         o->setProperty ("vocal", vc);
     }
+    if (p.tune.source.isNotEmpty())
+    {
+        const auto& t = p.tune;
+        o->setProperty ("tune", juce::Array<juce::var> { t.source, t.key, t.scale, t.speed, t.humanize, t.amount, t.removed });
+    }
+    if (! p.chops.empty())
+    {
+        juce::Array<juce::var> ch;
+        for (auto& c : p.chops) ch.add (juce::Array<juce::var> { c.start, c.len, c.midi });
+        o->setProperty ("chops", ch);
+    }
     if (! p.kit.empty())
     {
         juce::Array<juce::var> kit;
@@ -95,7 +107,14 @@ inline Part partFromVar (const juce::var& v)
     p.name = v["name"].toString().toStdString(); p.kind = (PartKind) (int) v["kind"]; p.sound = (lp::SoundId) (int) v["sound"];
     p.gainDb = v["gainDb"]; p.variant = v["variant"];
     if (auto* a = v["notes"].getArray())
-        for (auto& n : *a) p.notes.push_back ({ (double) n[0], (double) n[1], (int) n[2], (float) n[3], n.size() > 4 && (int) n[4] != 0 });
+        for (auto& n : *a) p.notes.push_back ({ (double) n[0], (double) n[1], (int) n[2], (float) n[3], n.size() > 4 && (int) n[4] != 0, n.size() > 5 ? (int) n[5] : -1 });
+    if (auto* a = v["tune"].getArray(); a != nullptr && a->size() >= 7)
+    {
+        auto& t = p.tune;
+        t.source = (*a)[0].toString(); t.key = (*a)[1]; t.scale = (*a)[2]; t.speed = (*a)[3]; t.humanize = (*a)[4]; t.amount = (*a)[5]; t.removed = (*a)[6];
+    }
+    if (auto* a = v["chops"].getArray())
+        for (auto& c : *a) if (c.size() >= 3) p.chops.push_back ({ (double) c[0], (double) c[1], (double) c[2] });
     p.samplePath = v["samplePath"].toString(); p.loopBars = v["loopBars"]; p.loopStartBars = readInts (v["loopStartBars"]);
     p.source = v["source"].toString(); p.remix = v["remix"].toString(); p.candidates = readStrings (v["candidates"]);
     p.candidate = v["candidate"]; p.pitchSemis = v["pitchSemis"]; p.reversed = v["reversed"]; p.autoTune = v["autoTune"]; p.locked = (bool) v.getProperty ("locked", false);

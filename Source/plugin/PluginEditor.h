@@ -1,4 +1,5 @@
 #pragma once
+#include "../song/Tune.h"
 #include <set>
 #include "Meter.h"
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -295,6 +296,95 @@ private:
     float compGr = 0.0f, deessGr = 0.0f, outDb = -90.0f;
     int lastScope = 0;
     bool livePicture = false;
+};
+
+// A vocal chops track's pads: its recording with the chops on it, 16 pads you play with the mouse, your keys or
+// a MIDI controller, and recording what you play into the song (ChopPanel.cpp)
+class ChopPanel : public juce::Component, private juce::Timer
+{
+public:
+    ChopPanel (LivePlanetProcessor&, int track, std::function<void()> closed);
+    ~ChopPanel() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    bool keyStateChanged (bool isKeyDown) override;
+
+private:
+    void timerCallback() override;
+    void load();
+    void cutPads();
+    void commitChops();
+    void finishTake();
+    double songBeat() const;
+    float xOf (double sec) const;
+    double secOf (float x) const;
+    int chopAt (float x, int& edge) const;
+    juce::Rectangle<int> card() const;
+    juce::Rectangle<float> waveArea() const, padArea() const, padRect (int) const;
+    LivePlanetProcessor& proc;
+    int track = 0;
+    std::function<void()> onClosed;
+    SongJob::ChopView view;
+    juce::AudioBuffer<float> audio;          // the vocal, at the pads' rate
+    std::vector<float> peaks;
+    int peaksWidth = -1;
+    std::vector<lp::song::ChopSlice> chops;
+    std::vector<int> origin;                 // each chop's place in the song's list (-1: new)
+    bool chopsDirty = false;
+    juce::uint32 changedAt = 0, lastPaint = 0;
+    int selected = -1, dragChop = -1, dragEdge = 0, seenVersion = -1;
+    double dragStartSec = 0.0;
+    lp::song::ChopSlice dragOrig;
+    std::array<juce::uint32, 16> flashAt {};
+    std::set<int> heldKeys;
+    bool recording = false, quantize = true, wasPlaying = false, mutedForTake = false;
+    double takeFrom = -1.0, takeTo = -1.0;
+    std::vector<LivePlanetProcessor::PadHit> take;
+    juce::String message;
+    juce::TextButton playBtn { "Play" }, recBtn { "Record" }, quantBtn { "Snap: 1/16" }, autoBtn { "Find chops again" };
+    juce::Rectangle<int> closeX;
+};
+
+// A tuned vocal's Auto-tune window (TunePanel.cpp)
+class TunePanel : public juce::Component, private juce::Timer
+{
+public:
+    TunePanel (LivePlanetProcessor&, int track, std::function<void()> closed);
+    ~TunePanel() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+
+private:
+    void timerCallback() override;
+    void syncControls();
+    void recompute();
+    void changed();
+    double nowSec() const;
+    lp::song::tune::Settings settings() const;
+    juce::Rectangle<int> card() const;
+    juce::Rectangle<float> meterArea() const, graphArea() const, keysArea() const;
+    LivePlanetProcessor& proc;
+    int track = 0, seenVersion = -1, lowNote = 52, highNote = 72;
+    std::function<void()> onClosed;
+    lp::song::VocalTune tune;
+    juce::String name;
+    std::vector<double> pitch, target;
+    std::vector<float> corr;
+    std::shared_ptr<std::atomic<bool>> aliveFlag = std::make_shared<std::atomic<bool>> (true);
+    bool dirty = false, busy = false;
+    juce::uint32 changedAt = 0;
+    juce::TextButton naturalBtn { "Natural" }, extremeBtn { "Extreme" }, playBtn { "Play" };
+    juce::ComboBox keyBox, scaleBox;
+    juce::Slider speedKnob, humanKnob, amountKnob;
+    juce::Rectangle<int> closeX;
 };
 
 // DAWs that can't import markers (FL Studio, Bitwig): the song's sections and their bars, to add by hand
@@ -694,15 +784,21 @@ private:
     NoteGrid noteGrid;
     bool notesTrack = false;
     bool noteBig = true;      // the note editor opens big (notes need the room); "bigger" toggles it
+    juce::Rectangle<int> toolSlot (int i) const;
     bool bigNow() const { return notesTrack && ! showingDrums() ? noteBig : drumBig; }  // a played part (808, hook, bass line): its notes can be edited
     juce::TextButton sliceBtn { "Slice into hits" }; // a drum loop -> a drum track you can edit
     juce::TextButton vocalBtn { "Vocal chain" };     // a vocal track: its chain, in its own window
     std::unique_ptr<VocalPanel> vocalPanel;
+    juce::TextButton chopBtn { "Chop pads" };      // vocal chops: its pads, in their own window
+    std::unique_ptr<ChopPanel> chopPanel;
+    juce::TextButton tuneBtn { "Auto-tune" };      // a tuned vocal: its Auto-tune window
+    std::unique_ptr<TunePanel> tunePanel;
     bool drumBig = false;
     // one drum's own effects (picked by clicking its name in the drum editor): the mix dials show it instead
     int voice = -1;
     std::array<std::atomic<float>, 8> voiceVals {}; // volume, pan, tone, space, echo, warmth, nostalgia, chorus
-    bool voiceDirty = false;
+    bool voiceDirty = false, voiceLiveDirty = false;
+    std::shared_ptr<std::atomic<bool>> voiceRendering = std::make_shared<std::atomic<bool>> (false);
     juce::uint32 voiceChangedAt = 0;
     juce::TextButton voiceChip;
     void pickVoice (int note);

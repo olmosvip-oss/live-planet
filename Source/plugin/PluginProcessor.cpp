@@ -164,7 +164,7 @@ void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         const auto* presets = lp::masterPresets (count);
         for (int i = 0; i < count && i < (int) liveMasters.size(); ++i) liveMasters[(size_t) i].prepare (sampleRate, presets[i].ceilingDb);
     }
-    for (auto* v : { &fxL, &fxR, &sendL, &sendR }) v->assign ((size_t) maxBlock, 0.0f);
+    for (auto* v : { &fxL, &fxR, &sendL, &sendR, &liveL, &liveR }) v->assign ((size_t) maxBlock, 0.0f);
 }
 
 lp::Weather LivePlanetProcessor::getManualWeather() const
@@ -240,9 +240,21 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     // Your keyboard: either play notes directly, or hold keys to set the chord
     const bool chordMode = params.getRawParameterValue ("keymode")->load() > 0.5f;
     keyEvents.clear();
+    const bool toPads = padsTrack.load() >= 0;
     for (const auto m : midi)
     {
         const auto msg = m.getMessage();
+        if (toPads && (msg.isNoteOn() || msg.isNoteOff()))
+        {
+            // the chop pads are open: C1 (36) and up are pads 1-16 (any other note lands on a pad too)
+            if (msg.isNoteOn())
+            {
+                const int pad = ((msg.getNoteNumber() - 36) % 16 + 16) % 16;
+                livePads.audition (pad, msg.getFloatVelocity());
+                notePadHit (pad, msg.getFloatVelocity(), m.samplePosition);
+            }
+            continue;
+        }
         if (msg.isNoteOn())
         {
             held.set ((size_t) msg.getNoteNumber());
@@ -372,6 +384,19 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         studio.groupGain[3] = v ("bass") / 0.45f;
         const bool fx = (size_t) n <= fxL.size();
         if (fx) for (auto* b : { &fxL, &fxR, &sendL, &sendR }) std::fill (b->begin(), b->begin() + n, 0.0f);
+        // the drum (or note) editor's loop: the part played live from what you're drawing, through the
+        // track's own mixer and effects (so its knobs are heard as it plays)
+        const int lt0 = liveTrack.load();
+        const bool liveLoop = preview && lt0 >= 0 && (size_t) n <= liveL.size();
+        if (liveLoop)
+        {
+            const double toBeats = sbpm / 60.0 / StudioPlayer::fileRate;
+            std::fill (liveL.begin(), liveL.begin() + n, 0.0f);
+            std::fill (liveR.begin(), liveR.begin() + n, 0.0f);
+            liveDrums.process (liveL.data(), liveR.data(), n, getSampleRate(), true, pos * toBeats, (pos + n * inc) * toBeats, 1.0f);
+            studio.liveInL = liveL.data();
+            studio.liveInR = liveR.data();
+        }
         studio.render (L, R, n, pos, inc, getSampleRate(),
                        fx ? fxL.data() : nullptr, fx ? fxR.data() : nullptr, fx ? sendL.data() : nullptr, fx ? sendR.data() : nullptr,
                        preview ? sbpm : (t.bpm > 0.0 ? t.bpm : sbpm));
@@ -388,12 +413,16 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         // the drum editor's loop: your pattern played live (the recorded drum track is skipped)
         const int lt = liveTrack.load();
         const bool looping = preview && lt >= 0;
+        studio.liveInL = studio.liveInR = nullptr;
         if (looping)
         {
-            const double toBeats = sbpm / 60.0 / StudioPlayer::fileRate;
-            const auto& m = studio.mix[(size_t) juce::jlimit (0, StudioPlayer::maxTracks - 1, lt)];
-            const float g = m.mute.load() ? 0.0f : juce::Decibels::decibelsToGain (m.gainDb.load());
-            liveDrums.process (L, R, n, getSampleRate(), true, pos * toBeats, next * toBeats, g);
+            if (! liveLoop) // (no room for it in the mixer this block: played straight, at the track's volume)
+            {
+                const double toBeats = sbpm / 60.0 / StudioPlayer::fileRate;
+                const auto& m = studio.mix[(size_t) juce::jlimit (0, StudioPlayer::maxTracks - 1, lt)];
+                const float g = m.mute.load() ? 0.0f : juce::Decibels::decibelsToGain (m.gainDb.load());
+                liveDrums.process (L, R, n, getSampleRate(), true, pos * toBeats, next * toBeats, g);
+            }
             auditioned = true;
         }
         // the master (after), or the plain mix through the song's limiter (before)
@@ -446,6 +475,12 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     // a drum you clicked in the editor (when the loop isn't playing it already)
     if (! auditioned) liveDrums.process (L, R, n, getSampleRate(), false, 0.0, 0.0, 1.0f);
+    // the chop pads you play
+    if (const int pt = padsTrack.load(); pt >= 0)
+    {
+        const auto& m = studio.mix[(size_t) juce::jlimit (0, StudioPlayer::maxTracks - 1, pt)];
+        livePads.process (L, R, n, getSampleRate(), false, 0.0, 0.0, juce::Decibels::decibelsToGain (m.gainDb.load()));
+    }
 
     // the master meter: what comes out
     {

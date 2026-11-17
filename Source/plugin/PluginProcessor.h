@@ -84,6 +84,32 @@ public:
     int seenMixInserts = 0;
     // the drum editor: hear each hit, and loop the bars you're editing with the rest of the song
     LiveDrums liveDrums;
+    // the chop pads (vocal chops): each pad a chop, played from the window, your computer keys or a MIDI
+    // controller (while the window is open, notes go to the pads); what you play is noted with where the song was
+    LiveDrums livePads;
+    std::atomic<int> padsTrack { -1 };
+    struct PadHit { int pad; float vel; double beat; bool playing; };
+    juce::SpinLock padLock;
+    std::vector<PadHit> padHits;
+    void hitPad (int pad, float vel)
+    {
+        livePads.audition (pad, vel);
+        notePadHit (pad, vel, 0);
+    }
+    void notePadHit (int pad, float vel, int offsetSamples)
+    {
+        const double sbpm = songBpm.load(), sr = getSampleRate() > 0 ? getSampleRate() : 48000.0;
+        const double beat = playheadPos.load() / StudioPlayer::fileRate * sbpm / 60.0 + offsetSamples / sr * sbpm / 60.0;
+        const juce::SpinLock::ScopedLockType sl (padLock);
+        if (padHits.size() < 512) padHits.push_back ({ pad, vel, beat, songPlaying.load() });
+    }
+    std::vector<PadHit> takePadHits()
+    {
+        std::vector<PadHit> out;
+        const juce::SpinLock::ScopedLockType sl (padLock);
+        std::swap (out, padHits);
+        return out;
+    }
     std::atomic<int> liveTrack { -1 };
     std::atomic<double> loopStartBeat { 0.0 }, loopBeats { 4.0 };
     void startDrumLoop (int track, double startBeat, double beats);
@@ -151,7 +177,7 @@ public:
         const bool minor = m > 0 ? m == 2 : (st.profile.valid ? st.profile.minor : st.song.minor);
         songJob.setSongKey (key, minor);
     }
-    std::vector<float> fxL, fxR, sendL, sendR;
+    std::vector<float> fxL, fxR, sendL, sendR, liveL, liveR;
     std::atomic<bool> previewPlaying { false };
     std::atomic<double> previewPos { 0.0 };   // in 48 kHz samples
     std::atomic<double> dawBpm { 0.0 };

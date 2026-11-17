@@ -304,7 +304,20 @@ struct Note
     int pitch;       // MIDI note (drums: 36 kick, 38 snare, 42 closed hat, 46 open hat, 39 clap, 45 tom)
     float velocity;  // 0..1
     bool glide = false; // slides into this note from the one before (808s)
+    int slice = -1;     // vocal chops: which chop (pad) it plays (-1: picked for its note)
 };
+
+// your vocal, auto-tuned: the untouched recording, and how it's tuned (the Auto-tune window)
+struct VocalTune
+{
+    juce::String source;  // the vocal as you recorded it (empty: not a tuned vocal)
+    int key = 0, scale = 0; // scale: 0 major, 1 minor, 2 chromatic, 3 harmonic minor, 4 major pentatonic, 5 minor pentatonic
+    float speed = 0.35f, humanize = 0.45f, amount = 1.0f;
+    int removed = 0;      // notes taken out (bit per pitch class)
+};
+
+// one chop of a vocal (a pad): where it is in the recording, in seconds, and the note it's sung on (0: none)
+struct ChopSlice { double start = 0.0, len = 0.0, midi = 0.0; };
 
 struct Part
 {
@@ -345,6 +358,8 @@ struct Part
     std::map<int, juce::String> kit; // a drum part with its own sounds (a sliced drum loop); empty = the song's kit
     std::map<int, VoiceFx> voiceFx; // drums: a sound's own mix and effects (note -> settings; only the changed ones)
     VocalChain vocal;               // a vocal track's chain (off unless you turn it on)
+    VocalTune tune;                 // a tuned vocal: how it's tuned
+    std::vector<ChopSlice> chops;   // vocal chops: the recording's chops (its pads); empty = found when it's recorded
     const std::map<int, juce::String>& kitIn (const struct Song& s) const;
 };
 

@@ -22,6 +22,20 @@ public:
         for (auto& v : voices) v.active = false; // nothing keeps pointing at the old sounds
         // `k` (the old kit) is freed here, after the lock
     }
+    // one sound of the kit made again (a drum's own effects changed): it plays from its next hit
+    void setHit (int note, std::shared_ptr<juce::AudioBuffer<float>> b)
+    {
+        std::shared_ptr<juce::AudioBuffer<float>> old;
+        {
+            const juce::SpinLock::ScopedLockType sl (lock);
+            auto it = kit.find (note);
+            if (it == kit.end() || b == nullptr) return;
+            for (auto& v : voices) if (v.active && v.buf == it->second.get()) v.active = false;
+            old = std::move (it->second);
+            it->second = std::move (b);
+        }
+        // `old` is freed here, after the lock
+    }
     bool hasKit() const { const juce::SpinLock::ScopedLockType sl (lock); return ! kit.empty(); }
 
     void setPattern (std::vector<Hit> h, double loopStartBeat, double loopBeats)

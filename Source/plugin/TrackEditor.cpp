@@ -63,6 +63,42 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
         vocalPanel->toFront (true);
     };
     addChildComponent (vocalBtn);
+    chopBtn.setTooltip ("This vocal's chops as 16 pads: play them with your mouse, computer keys or a MIDI controller, record what you play, and move the chops on the waveform");
+    chopBtn.getProperties().set ("primary", true);
+    chopBtn.setWantsKeyboardFocus (false);
+    chopBtn.onClick = [this]
+    {
+        auto* top = getTopLevelComponent();
+        if (top == nullptr) return;
+        SafePointer<TrackEditor> self (this);
+        chopPanel = std::make_unique<ChopPanel> (proc, track, [self]
+        {
+            MessageManager::callAsync ([self] { if (self != nullptr) self->chopPanel.reset(); });
+        });
+        top->addAndMakeVisible (*chopPanel);
+        chopPanel->setBounds (top->getLocalBounds());
+        chopPanel->toFront (true);
+        chopPanel->grabKeyboardFocus();
+    };
+    addChildComponent (chopBtn);
+    tuneBtn.setTooltip ("Your tuned vocal's Auto-tune: key and scale, retune speed, humanize, the notes it tunes to, and its pitch line");
+    tuneBtn.getProperties().set ("primary", true);
+    tuneBtn.setWantsKeyboardFocus (false);
+    tuneBtn.onClick = [this]
+    {
+        auto* top = getTopLevelComponent();
+        if (top == nullptr) return;
+        SafePointer<TrackEditor> self (this);
+        tunePanel = std::make_unique<TunePanel> (proc, track, [self]
+        {
+            MessageManager::callAsync ([self] { if (self != nullptr) self->tunePanel.reset(); });
+        });
+        top->addAndMakeVisible (*tunePanel);
+        tunePanel->setBounds (top->getLocalBounds());
+        tunePanel->toFront (true);
+        tunePanel->grabKeyboardFocus();
+    };
+    addChildComponent (tuneBtn);
     drumGrid.onToggleBig = [this] { drumBig = ! drumBig; drumGrid.setBig (drumBig); resized(); repaint(); };
     auto mixOf = [this] (int t) -> StudioPlayer::Mix& { return proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, t)]; };
     // (with a drum picked in the drum editor, they're that drum's own settings instead)
@@ -157,7 +193,7 @@ TrackEditor::Dial& TrackEditor::addDial (const char* name, double lo, double hi,
     {
         if (! raw->value) return;
         raw->value (track).store ((float) raw->s.getValue());
-        if (voice >= 0) { voiceDirty = true; voiceChangedAt = Time::getMillisecondCounter(); } // a drum's own: re-recorded once you pause
+        if (voice >= 0) { voiceDirty = true; voiceLiveDirty = true; voiceChangedAt = Time::getMillisecondCounter(); } // a drum's own: heard live at once, recorded once you stop turning
     };
     s.setWantsKeyboardFocus (false);
     addAndMakeVisible (s);
@@ -230,6 +266,23 @@ bool TrackEditor::showingDrums() const
 
 void TrackEditor::refresh()
 {
+    // a drum's own effects as you turn them: its hit made again in the background and swapped into the live
+    // kit, so the drum loop plays it straight away
+    if (voiceLiveDirty && voice >= 0 && ! voiceRendering->load())
+    {
+        voiceLiveDirty = false;
+        lp::song::VoiceFx f;
+        f.gainDb = voiceVals[0]; f.pan = voiceVals[1]; f.tone = voiceVals[2]; f.space = voiceVals[3];
+        f.echo = voiceVals[4]; f.warmth = voiceVals[5]; f.nostalgia = voiceVals[6]; f.chorus = voiceVals[7];
+        *voiceRendering = true;
+        ++proc.printsRunning; // (the plugin waits for this before closing)
+        Thread::launch ([&pr = proc, busy = voiceRendering, t = track, note = voice, f]
+        {
+            if (auto b = pr.songJob.drumHitWith (t, note, f)) pr.liveDrums.setHit (note, std::move (b));
+            *busy = false;
+            --pr.printsRunning;
+        });
+    }
     // a drum's own effects: re-recorded a moment after you stop turning
     if (voiceDirty && Time::getMillisecondCounter() - voiceChangedAt > 300
         && std::none_of (dials.begin(), dials.end(), [] (const std::unique_ptr<Dial>& d) { return d->s.isMouseButtonDown(); }))
@@ -342,6 +395,16 @@ void TrackEditor::mouseDoubleClick (const MouseEvent& e)
     if (screen().contains (e.position)) { proc.songJob.setRegion (track, 0, 0); dragFrom = dragTo = -1; }
 }
 
+// the window buttons (vocal chain, chop pads, auto-tune): a row under the screen, from the right
+// (made bigger, the grid reaches down: they sit just above the knobs)
+Rectangle<int> TrackEditor::toolSlot (int i) const
+{
+    const bool gridBig = (showingDrums() || notesTrack) && bigNow();
+    const int y = gridBig ? getHeight() - 112 - 14 - 32 : (int) screen().getBottom() + 1;
+    const int w = 112, h = 26;
+    return { (int) screen().getRight() - (i + 1) * w - i * 8, y, w, h };
+}
+
 void TrackEditor::resized()
 {
     auto top = getLocalBounds().removeFromTop (54);
@@ -358,6 +421,7 @@ void TrackEditor::resized()
     top.removeFromRight (16);
     notThis.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40)); top.removeFromRight (6);
     love.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 40));
+
 
     // the drum / note editor: in the screen, or (bigger) down to just above the track's effect knobs
     // (made bigger, the knobs stay: only the grains row gives way)
@@ -379,7 +443,6 @@ void TrackEditor::resized()
     printFx.setBounds (0, rows.getY() + 4 + bh, 100, bh - 6);
     dragTrack.setBounds (0, rows.getY() + 4 + 2 * bh, 100, bh - 6);
     dragMidi.setBounds (0, rows.getY() + 4 + 3 * bh, 100, bh - 6);
-    vocalBtn.setBounds (dragMidi.getBounds()); // (a vocal has no midi: its chain takes that place)
     hFx.setTopLeftPosition (104, rows.getY() + 4 + (bh - 6) / 2 - 8);
     {
         // by the "Grains" title (the second row)
@@ -411,6 +474,10 @@ void TrackEditor::paint (Graphics& g)
     const juce::String tr0name = track < (int) st.tracks.size() ? st.tracks[(size_t) track].name : juce::String();
     // the drum editor made bigger covers the dials: they hide until it's made smaller again
     const bool big = (showingDrums() || notesTrack) && bigNow();
+    const bool isChops = ! showingDrums() && tr0name == "vocal chops";
+    const bool isTuned = ! showingDrums() && tr0name.startsWith ("vocal (tuned");
+    if (chopBtn.getBounds() != toolSlot (0)) chopBtn.setBounds (toolSlot (0));
+    if (tuneBtn.getBounds() != toolSlot (0)) tuneBtn.setBounds (toolSlot (0));
     for (auto* c : getChildren())
     {
         bool want = true;
@@ -423,7 +490,15 @@ void TrackEditor::paint (Graphics& g)
             const auto nm = String (tr0name).toLowerCase();
             want = ! showingDrums() && (nm.contains ("drum") || nm.contains ("perc"));
         }
-        else if (c == &vocalBtn) want = ! showingDrums() && track < (int) st.tracks.size() && st.tracks[(size_t) track].vocal;
+        else if (c == &vocalBtn)
+        {
+            want = ! showingDrums() && track < (int) st.tracks.size() && st.tracks[(size_t) track].vocal;
+            // under the screen on the right (left of the chop pads / auto-tune, when the track has them)
+            const auto vb = toolSlot (isChops || isTuned ? 1 : 0);
+            if (vocalBtn.getBounds() != vb) vocalBtn.setBounds (vb);
+        }
+        else if (c == &chopBtn) want = isChops;
+        else if (c == &tuneBtn) want = isTuned;
         else if (c == &hGrains) want = ! big;
         else if (c == &voiceChip) want = voice >= 0 && showingDrums();   // one drum picked: its chip instead of Bypass
         else if (c == &bypassFx) want = voice < 0;
@@ -528,5 +603,10 @@ void TrackEditor::paint (Graphics& g)
     // the remix note
     g.setFont (font (12.5f));
     g.setColour (t.inkDim);
-    g.drawText (tr.remix, Rectangle<float> (0.0f, sc.getBottom() + 2.0f, (float) getWidth(), 18.0f), Justification::centredLeft, true);
+    {
+        // (it stops before the window buttons on its right)
+        float right = (float) getWidth();
+        for (auto* b : { &vocalBtn, &chopBtn, &tuneBtn }) if (b->isVisible()) right = jmin (right, (float) b->getX() - 12.0f);
+        g.drawText (tr.remix, Rectangle<float> (0.0f, sc.getBottom() + 2.0f, right, 18.0f), Justification::centredLeft, true);
+    }
 }

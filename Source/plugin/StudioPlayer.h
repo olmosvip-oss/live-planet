@@ -84,6 +84,10 @@ public:
         d.warmth = 0.0f; d.nostalgia = 0.0f; d.chorus = 0.0f; d.printFx = false; d.dragDry = false; d.fxBypass = false;
     }
     std::atomic<int> skipTrack { -1 }; // a track played live instead (the drum editor's loop)
+    // (audio thread) that track's live sound for this block, at the host's rate: it goes through the track's
+    // own mixer and effects like the recorded track would, so every knob is heard while it plays
+    const float* liveInL = nullptr;
+    const float* liveInR = nullptr;
     // what each track is playing right now (its loudest sample since the screen last looked), for the meters
     std::array<std::atomic<float>, maxTracks> peakL {}, peakR {};
     std::atomic<float> meterGain { 1.0f }; // the song's playback level, so the meters read what you hear
@@ -296,10 +300,15 @@ public:
         {
             auto* r = readers[t].get();
             auto& m = mix[t];
-            if (r == nullptr || m.mute.load() || (anySolo && ! m.solo.load()) || (int) t == skipTrack.load()) continue;
-            if (start >= r->lengthInSamples) continue;
-            scratch.clear();
-            r->read (&scratch, 0, need, start, true, true);
+            const bool skipped = (int) t == skipTrack.load();
+            const bool live = skipped && liveInL != nullptr && liveInR != nullptr;
+            if ((r == nullptr && ! live) || m.mute.load() || (anySolo && ! m.solo.load()) || (skipped && ! live)) continue;
+            if (! live)
+            {
+                if (start >= r->lengthInSamples) continue;
+                scratch.clear();
+                r->read (&scratch, 0, need, start, true, true);
+            }
             const bool toFx = fxL != nullptr && m.sample.load();
             const int grp = juce::jlimit (0, 4, m.group.load());
             const float g = juce::Decibels::decibelsToGain (m.gainDb.load()) * (toFx ? groupGain[(size_t) grp].load() : 1.0f);
@@ -379,10 +388,15 @@ public:
             const bool chainOn = ! byp && liveParams[t].on && (int) vocalTmpL.size() >= n;
             for (int i = 0; i < n; ++i, ph += inc)
             {
-                const int i0 = (int) ph;
-                const float fr = (float) (ph - i0);
-                float xl = a[i0] + (a[i0 + 1] - a[i0]) * fr;
-                float xr = b[i0] + (b[i0 + 1] - b[i0]) * fr;
+                float xl, xr;
+                if (live) { xl = liveInL[i]; xr = liveInR[i]; }
+                else
+                {
+                    const int i0 = (int) ph;
+                    const float fr = (float) (ph - i0);
+                    xl = a[i0] + (a[i0 + 1] - a[i0]) * fr;
+                    xr = b[i0] + (b[i0 + 1] - b[i0]) * fr;
+                }
                 if (tone < -0.01f) { f.l.tick (xl); f.r.tick (xr); xl = f.l.lp; xr = f.r.lp; }
                 else if (tone > 0.01f) { f.l.tick (xl); f.r.tick (xr); xl = f.l.hp; xr = f.r.hp; }
                 if (inserts)

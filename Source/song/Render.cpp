@@ -7,6 +7,7 @@
 #include "../engine/Engine.h"
 #include "../engine/Sources.h"
 #include "OneNote.h"
+#include "Chops.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <signalsmith-stretch/signalsmith-stretch.h>
 
@@ -1209,67 +1210,35 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     }
     else if (part.kind == PartKind::Melody && part.samplePath.isNotEmpty())
     {
-        // vocal chops: the recording cut into short sung slices, each moved to a note of the hook
+        // vocal chops: the recording cut into short sung slices (its pads), each note playing one of them,
+        // moved onto the note it's written on (or as it was sung, for a hit you played on the pads)
         auto src = loadAudio (part.samplePath, sr);
         const int n = src.getNumSamples();
-        struct Slice { int start, len; double midi; };
-        std::vector<Slice> slices;
-        if (n > (int) (0.2 * sr))
-        {
-            // where new syllables start: the loudness jumps up
-            const int hop = (int) (0.01 * sr);
-            std::vector<float> envl;
-            for (int i = 0; i + hop <= n; i += hop) envl.push_back (0.5f * (src.getRMSLevel (0, i, hop) + src.getRMSLevel (1, i, hop)));
-            float peak = 0; for (float v : envl) peak = std::max (peak, v);
-            std::vector<int> starts;
-            for (size_t k = 5; k < envl.size(); ++k)
-            {
-                const float before = *std::max_element (envl.begin() + (long) k - 5, envl.begin() + (long) k);
-                if (envl[k] > peak * 0.15f && envl[k] > before * 1.8f && (starts.empty() || (int) k * hop - starts.back() > (int) (0.12 * sr)))
-                    starts.push_back ((int) k * hop);
-            }
-            if (starts.size() < 3) for (int i = 0; i + (int) (0.3 * sr) < n; i += (int) (0.3 * sr)) starts.push_back (i); // no clear syllables: even slices
-            // each syllable's note, heard over the part of it a chop plays (its first ~0.35 s). Only syllables that
-            // hold one clear note are used: a slide to another note, a harmony or a breath would land off the hook's
-            // notes, so they're left out (with a looser rule only if too few pass)
-            struct Heard { int a0, len; lp::song::onenote::Reading r; };
-            std::vector<Heard> heard;
-            for (size_t k = 0; k < starts.size() && heard.size() < 40; ++k)
-            {
-                const int a0 = starts[k];
-                const int a1 = std::min ({ n, k + 1 < starts.size() ? starts[k + 1] : n, a0 + (int) (0.6 * sr) });
-                if (a1 - a0 < (int) (0.17 * sr)) continue;
-                const int look = std::min (a1 - a0, (int) (0.38 * sr));
-                juce::AudioBuffer<float> seg (2, look);
-                for (int ch = 0; ch < 2; ++ch) seg.copyFrom (ch, 0, src, std::min (ch, src.getNumChannels() - 1), a0, look);
-                const auto r = lp::song::onenote::read (seg, sr);
-                if (r.midi > 0.0) heard.push_back ({ a0, a1 - a0, r });
-            }
-            for (float strict : { 1.0f, 0.0f })
-            {
-                for (auto& h : heard)
-                    if (slices.size() < 24 && h.r.voiced > 0.5f * strict + 0.3f * (1 - strict) && h.r.steady > (strict > 0 ? 0.82f : 0.65f) && h.r.body > 0.12f)
-                        slices.push_back ({ h.a0, h.len, h.r.midi });
-                if (slices.size() >= 3) break;
-                slices.clear();
-            }
-        }
-        if (! slices.empty())
+        const auto chopList = part.chops.empty() ? lp::song::chops::find (src, sr) : part.chops;
+        std::vector<size_t> sungIdx;
+        for (size_t i = 0; i < chopList.size(); ++i) if (chopList[i].midi > 0.0) sungIdx.push_back (i);
+        if (! chopList.empty() && n > 0)
         {
             int k = 0;
             for (auto& note : part.notes)
             {
-                // a different syllable for each note, in a pattern that repeats with the hook
-                const auto& sl = slices[(size_t) ((k++ + note.pitch * 3) % (int) slices.size())];
-                double shift = note.pitch - sl.midi;
+                size_t which;
+                if (note.slice >= 0 && note.slice < (int) chopList.size()) which = (size_t) note.slice;
+                else if (! sungIdx.empty()) which = sungIdx[(size_t) ((k++ + note.pitch * 3) % (int) sungIdx.size())];
+                else which = (size_t) (k++ % (int) chopList.size());
+                const auto& sl = chopList[which];
+                double shift = sl.midi > 0.0 ? note.pitch - sl.midi : 0.0;
                 shift -= 12.0 * std::round (shift / 12.0);                    // its own octave: the voice stays natural
                 const double ratio = std::pow (2.0, shift / 12.0);
+                const int s0 = (int) (sl.start * sr), slen = std::min ((int) (sl.len * sr), n - s0);
+                if (s0 < 0 || slen <= 2) continue;
                 const long at = (long) (note.beat * spb);
-                const int outLen = (int) std::min ((double) sl.len / ratio, note.length * spb);
+                const int outLen = (int) std::min ((double) slen / ratio, note.length * spb);
                 const int fadeIn = (int) (0.004 * sr), fadeOut = std::min (outLen / 3, (int) (0.03 * sr));
                 for (int i = 0; i < outLen && at + i < total; ++i)
                 {
-                    const double pos = sl.start + i * ratio;
+                    if (at + i < 0) continue;
+                    const double pos = s0 + i * ratio;
                     const int i0 = (int) pos;
                     if (i0 + 1 >= n) break;
                     const float f = (float) (pos - i0);

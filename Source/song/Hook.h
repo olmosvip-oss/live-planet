@@ -9,6 +9,116 @@
 namespace lp::song::hook
 {
 
+// where a hook plays: the choruses (and drops); no chorus: the loudest sections. `where` says it in words.
+inline std::vector<const Section*> hookSections (const Song& song, juce::String& where)
+{
+    std::vector<const Section*> targets;
+    for (auto& s : song.sections)
+    {
+        const juce::String n (s.name);
+        if (n.startsWithIgnoreCase ("chorus") || n.startsWithIgnoreCase ("drop") || n.startsWithIgnoreCase ("hook")) targets.push_back (&s);
+    }
+    if (targets.empty())
+    {
+        float loud = 0;
+        for (auto& s : song.sections) loud = std::max (loud, s.energy);
+        for (auto& s : song.sections) if (s.energy >= loud - 0.05f) targets.push_back (&s);
+    }
+    juce::StringArray names;
+    for (auto* s : targets) names.addIfNotAlreadyThere (juce::String (s->name).trimCharactersAtEnd ("0123456789 ") + "es");
+    where = names.joinIntoString (", ");
+    return targets;
+}
+
+// Vocal chops the way producers play them on pads: a one-bar rhythm said again and again, on two or three
+// notes of each chord (so it moves with the song but stays easy to hum), each spot in the rhythm always the
+// same syllable, and every fourth bar an answer that lands home. Each note says which chop (pad) it plays.
+inline std::vector<Note> writeChops (const Song& song, const std::vector<chords::Chord>& chordList, const std::vector<ChopSlice>& slices,
+                                     juce::uint32 seed, juce::String& where)
+{
+    juce::Random rng ((juce::int64) seed * 2654435761u + 91);
+    std::vector<int> sung;
+    for (int i = 0; i < (int) slices.size(); ++i) if (slices[(size_t) i].midi > 0.0) sung.push_back (i);
+    if (sung.empty()) for (int i = 0; i < (int) slices.size(); ++i) sung.push_back (i);
+    if (sung.empty()) return {};
+
+    // one bar: when each chop hits (beats) and which of the chord's notes it sings (0 low .. 3 high)
+    struct Motif { std::vector<double> t; std::vector<int> tone; };
+    static const std::vector<Motif> motifs = {
+        { { 0.0, 0.75, 1.5, 2.5, 3.0 },             { 2, 2, 1, 2, 0 } },
+        { { 0.0, 0.5, 1.5, 2.0, 2.75, 3.5 },        { 1, 2, 2, 1, 1, 0 } },
+        { { 0.5, 1.0, 1.75, 2.5, 3.5 },             { 2, 3, 2, 1, 1 } },
+        { { 0.0, 0.75, 1.5, 2.0, 3.0 },             { 0, 0, 2, 1, 2 } },
+        { { 0.0, 1.5, 2.0, 2.5, 3.5 },              { 2, 1, 2, 3, 2 } },
+        { { 0.0, 0.25, 0.75, 1.5, 2.5, 3.25 },      { 1, 1, 2, 2, 1, 0 } },
+        { { 0.75, 1.5, 2.25, 3.0 },                 { 2, 1, 1, 0 } },
+        { { 0.0, 0.75, 1.0, 1.5, 2.25, 3.0 },       { 2, 2, 1, 2, 1, 1 } },
+    };
+    const auto& m = motifs[(size_t) rng.nextInt ((int) motifs.size())];
+    // the answer bar: the same start, then down to the key's home note, held
+    const int keep = std::max (2, (int) m.t.size() - 2);
+
+    // which chop sings each spot of the rhythm: two or three of the clearest, always in the same places
+    const int voices = std::min ((int) sung.size(), 2 + rng.nextInt (2));
+    std::vector<int> pick;
+    {
+        auto pool = sung;
+        for (int i = (int) pool.size() - 1; i > 0; --i) std::swap (pool[(size_t) i], pool[(size_t) rng.nextInt (i + 1)]);
+        pick.assign (pool.begin(), pool.begin() + voices);
+    }
+    std::vector<int> spotChop;
+    for (size_t i = 0; i < m.t.size(); ++i) spotChop.push_back (pick[(size_t) ((i * 7 + (size_t) m.tone[i]) % (size_t) voices)]);
+
+    const int home = 60 + song.key % 12 - (song.key % 12 > 5 ? 12 : 0) + 3; // the chops sit around E4..A4
+    auto chordAt = [&] (double beat) -> chords::Chord
+    {
+        for (auto& c : chordList) if (c.valid && beat >= c.beat && beat < c.beat + c.length) return c;
+        chords::Chord h; h.valid = true; h.root = song.key; h.minor = song.minor; return h;
+    };
+    // the chord's notes from just under the home note up: tone 0..3
+    auto toneOf = [&] (const chords::Chord& c, int idx)
+    {
+        std::vector<int> pcs = chords::tones (c);
+        std::vector<int> ladder;
+        for (int pch = home - 4; pch <= home + 14 && ladder.size() < 6; ++pch)
+            for (int t : pcs) if (((pch % 12) + 12) % 12 == t) { ladder.push_back (pch); break; }
+        if (ladder.empty()) return home;
+        return ladder[(size_t) juce::jlimit (0, (int) ladder.size() - 1, idx)];
+    };
+
+    std::vector<Note> out;
+    for (auto* sec : hookSections (song, where))
+    {
+        const double end = (sec->startBar + sec->bars) * 4.0;
+        for (int b = 0; b < sec->bars; ++b)
+        {
+            const double t0 = (sec->startBar + b) * 4.0;
+            const bool answer = b % 4 == 3 || b == sec->bars - 1;
+            const size_t count = answer ? (size_t) keep : m.t.size();
+            for (size_t i = 0; i < count; ++i)
+            {
+                const double t = t0 + m.t[i];
+                if (t >= end) break;
+                const double nextT = i + 1 < count ? t0 + m.t[i + 1] : t0 + 4.0 + (answer ? 0.0 : m.t[0]);
+                const auto c = chordAt (t + 0.01);
+                int pitch = toneOf (c, m.tone[i]);
+                double len = std::min (nextT - t, 0.5);
+                if (answer && i + 1 == count)
+                {
+                    // home: the key's own note nearest where the line is
+                    int h = home - 4;
+                    while (((h - song.key) % 12 + 12) % 12 != 0) ++h;
+                    pitch = h;
+                    len = std::min (1.5, end - t);
+                }
+                const bool down = std::abs (m.t[i] - std::round (m.t[i])) < 0.01;
+                out.push_back ({ t, std::max (0.15, len * 0.92), pitch, down ? 0.9f : 0.74f, false, spotChop[i] });
+            }
+        }
+    }
+    return out;
+}
+
 inline std::vector<Note> write (const Song& song, const std::vector<chords::Chord>& chordList, juce::uint32 seed, bool chops,
                                 juce::String& where)
 {
