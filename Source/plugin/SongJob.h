@@ -4,6 +4,7 @@
 #include "StudioPlayer.h"
 #include "../song/OneNote.h"
 #include <juce_audio_formats/juce_audio_formats.h>
+#include <set>
 #include "../song/Song.h"
 #include "../song/SongFile.h"
 #include "../song/Chords.h"
@@ -133,7 +134,7 @@ public:
 
     static juce::File libraryCache()
     {
-        return lp::appFolder().getChildFile ("library-v5.json"); // v5: unlabelled samples listened to (tempo and key by ear)
+        return lp::appFolder().getChildFile ("library-v6.json"); // v6: unlabelled samples listened to, and loops' tempo labels checked against their length
     }
 
     void makeSong (const lp::song::Options& o, const lp::song::RenderSettings& rs, const lp::Weather& sky, bool useLibrary, bool onlySamples = false)
@@ -1144,22 +1145,36 @@ private:
 
     void hearSome()
     {
-        // a handful, then back to the loop (a song or an edit asked for meanwhile goes first)
-        for (int n = 0; n < 12 && ! toHear.empty() && ! threadShouldExit(); ++n)
+        // a handful (or a few hundred quick label checks), then back to the loop (a song or an edit asked
+        // for meanwhile goes first)
+        const auto until = juce::Time::getMillisecondCounter() + 300;
+        for (int n = 0; n < 12 && ! toHear.empty() && ! threadShouldExit() && juce::Time::getMillisecondCounter() < until;)
         {
             const auto [path, root] = toHear.back();
             toHear.pop_back();
             const juce::File f (path);
-            if (! f.existsAsFile()) continue;
+            const auto said = lp::song::Library::parse (f, juce::File (root));
+            const bool labelled = said.kind == lp::song::SampleKind::Loop && said.bpm > 0.0;
+            if (! f.existsAsFile()) { if (labelled) library.replace (path, nullptr); continue; }
             lp::song::LibraryEntry e;
             bool usable = false;
-            try { usable = lp::song::Library::hear (f, juce::File (root), e); } catch (...) { usable = false; }
+            try { usable = lp::song::Library::checkLabel (f, juce::File (root), e); } catch (...) { usable = false; }
             heardMap[path] = lp::song::Library::heardOf (e, f.getSize(), usable);
-            if (usable) library.add (e);
+            if (labelled)
+            {
+                // already in the library as its name says: corrected, or left out
+                if (! usable) library.replace (path, nullptr);
+                else if (e.bpm != said.bpm) { library.replace (path, &e); ++n; }
+            }
+            else
+            {
+                ++n;
+                if (usable) library.add (e);
+            }
             ++heardSinceSave;
         }
         const bool done = toHear.empty();
-        if (done || heardSinceSave >= 300)
+        if (done || heardSinceSave >= 1500)
         {
             library.save (libraryCache());
             saveHeard();
@@ -1482,6 +1497,12 @@ private:
                 part.remix = "new notes written for this song";
             }
         }
+
+        // kit sounds that turned out to be loops are cut into their hits
+        if (cutKitLoops (song))
+            for (auto& part : song.parts)
+                if (part.kind == lp::song::PartKind::Drums && part.kit.empty())
+                    part.remix = "drum loops cut into their hits: each row plays its own sound, in the loop's own pattern";
 
         // loops from your library, placed by section
         auto addLoop = [&] (const lp::song::LoopChoice& choice, const juce::String& name, std::initializer_list<const char*> sections)
@@ -2502,6 +2523,141 @@ private:
         saveSession();
     }
 
+    // A drum "one-shot" in the kit that is really a loop (a whole hat pattern, a full beat) would play the whole
+    // loop at every hit of its row. Such a file is cut instead: its row plays one hit from it (the kick row a kick,
+    // the hats a hat), and plays the loop's own pattern for that sound, so the grid shows what's in the loop.
+    struct KitLoop { bool loop = false; std::map<int, juce::String> sounds; int common = 42; float commonShare = 0; std::vector<lp::song::Note> pattern; double beats = 0; };
+    std::map<juce::String, KitLoop> kitLoops;      // by file (only used on the job's thread)
+    std::map<juce::String, juce::String> cutFrom;  // a cut hit -> the loop it came from
+
+    const KitLoop& kitLoopOf (const juce::String& path)
+    {
+        if (auto it = kitLoops.find (path); it != kitLoops.end()) return it->second;
+        auto& k = kitLoops[path];
+        const juce::File file (path);
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (file));
+        if (rd == nullptr || rd->sampleRate < 8000.0) return k;
+        const double sr = rd->sampleRate, secs = (double) rd->lengthInSamples / sr;
+        if (secs < 0.9 || secs > 40.0) return k; // a hit (a kick, a snare with its tail), or not a drum loop
+        const int len = (int) rd->lengthInSamples;
+        juce::AudioBuffer<float> b (2, len);
+        b.clear();
+        rd->read (&b, 0, len, 0, true, rd->numChannels > 1);
+        if (rd->numChannels == 1) b.copyFrom (1, 0, b, 0, 0, len);
+        const auto hits = lp::song::slice::findHits (b, sr);
+        // one sound and its tail is a one-shot; hits spread over more than half a second are a loop
+        if (hits.size() < 4 || (double) (hits.back().at - hits.front().at) / sr < 0.6) return k;
+        k.loop = true;
+        std::map<int, float> loudest;
+        std::map<int, int> count;
+        for (auto& h : hits) { loudest[h.cls] = std::max (loudest[h.cls], h.level); ++count[h.cls]; }
+        int most = 0;
+        for (auto& [c, n] : count) if (n > most) { most = n; k.common = c; }
+        k.commonShare = (float) most / (float) hits.size();
+        // each kind's sound: its loudest hit, up to the next one
+        const auto dir = lp::appFolder().getChildFile ("kit cuts");
+        dir.createDirectory();
+        const auto tag = juce::String::toHexString (path.hashCode64()) + "-" + juce::String (len);
+        for (auto& [cls, lv] : loudest)
+        {
+            size_t best = 0;
+            for (size_t i = 0; i < hits.size(); ++i) if (hits[i].cls == cls && hits[i].level >= lv * 0.999f) { best = i; break; }
+            const auto f = dir.getChildFile (file.getFileNameWithoutExtension().substring (0, 40) + " " + tag + " " + juce::String (cls) + ".wav");
+            if (! f.existsAsFile())
+            {
+                const int a0 = hits[best].at;
+                const int a1 = std::min ({ len, best + 1 < hits.size() ? hits[best + 1].at : len, a0 + (int) ((cls == 46 ? 0.9 : 0.6) * sr) });
+                if (a1 - a0 < 64) continue;
+                juce::AudioBuffer<float> one (2, a1 - a0);
+                for (int ch = 0; ch < 2; ++ch) one.copyFrom (ch, 0, b, ch, a0, a1 - a0);
+                const int fade = std::min ((a1 - a0) / 3, (int) (0.02 * sr));
+                one.applyGainRamp (a1 - a0 - fade, fade, 1.0f, 0.0f);
+                if (! writeStem (f, one, sr)) continue;
+            }
+            k.sounds[cls] = f.getFullPathName();
+            cutFrom[f.getFullPathName()] = path;
+        }
+        // its pattern, if its tempo can be told (the name's, if it fits its length, else by ear)
+        lp::song::LibraryEntry e;
+        if (lp::song::Library::checkLabel (file, file.getParentDirectory(), e) && e.kind == lp::song::SampleKind::Loop && e.bpm > 0)
+        {
+            const double beats = std::round (secs * e.bpm / 240.0) * 4.0;
+            if (beats >= 4.0 && beats <= 64.0)
+            {
+                k.beats = beats;
+                for (auto& h : hits)
+                {
+                    double beat = (double) h.at / sr * e.bpm / 60.0;
+                    const double q = std::round (beat * 4.0) / 4.0;
+                    if (std::abs (beat - q) < 0.08) beat = q;
+                    if (beat >= beats - 0.05) continue;
+                    const float vel = juce::jlimit (0.2f, 1.0f, std::sqrt (h.level / std::max (1e-6f, loudest[h.cls])));
+                    k.pattern.push_back ({ std::max (0.0, beat), 0.25, h.cls, vel });
+                }
+            }
+        }
+        return k;
+    }
+
+    // which of a cut loop's sounds a kit row plays (-1: none fits)
+    static int cutKindFor (const KitLoop& k, int note, bool exact)
+    {
+        const int want = note == 36 ? 36 : (note == 38 || note == 39) ? 38 : note == 42 ? 42 : note == 46 ? 46 : 70;
+        if (k.sounds.count (want)) return want;
+        if (want == 42 && k.sounds.count (46)) return 46;
+        if (want == 46 && k.sounds.count (42)) return 42;
+        if (exact) return -1;
+        return k.sounds.count (k.common) ? k.common : (k.sounds.empty() ? -1 : k.sounds.begin()->first);
+    }
+
+    // cuts every loop in the song's kit (see KitLoop); true if there were any
+    bool cutKitLoops (lp::song::Song& song)
+    {
+        if (song.drumSamples.empty()) return false;
+        bool any = false;
+        std::map<int, std::pair<const KitLoop*, int>> rows; // row -> the loop and kind of hit whose pattern it plays
+        std::set<std::pair<juce::String, int>> used;
+        for (auto [note, path] : song.drumSamples)
+        {
+            if (note == 49) continue; // a crash rings: one hit is right
+            const auto& k = kitLoopOf (path);
+            if (! k.loop) continue;
+            any = true;
+            const int exact = cutKindFor (k, note, true), c = exact >= 0 ? exact : cutKindFor (k, note, false);
+            if (c < 0) continue;
+            song.drumSamples[note] = k.sounds.at (c);
+            // its pattern: of the sound this row is for, or (a loop that is mostly one sound, like a hat loop) of that sound
+            const bool fits = exact >= 0 || (c == k.common && k.commonShare >= 0.6f);
+            if (fits && k.beats > 0 && used.insert ({ path, c }).second) rows[note] = { &k, c };
+        }
+        if (rows.empty()) return any;
+        for (auto& part : song.parts)
+        {
+            if (part.kind != lp::song::PartKind::Drums || ! part.kit.empty()) continue;
+            for (auto& [note, kc] : rows)
+            {
+                const auto& k = *kc.first;
+                const int loopBars = std::max (1, (int) (k.beats / 4.0));
+                std::set<int> bars; // where the song plays this row: the loop's pattern goes there instead
+                for (auto& n : part.notes) if (n.pitch == note) bars.insert ((int) std::floor (n.beat / 4.0 + 1e-6));
+                part.notes.erase (std::remove_if (part.notes.begin(), part.notes.end(), [note = note] (const lp::song::Note& n) { return n.pitch == note; }), part.notes.end());
+                for (int bar : bars)
+                {
+                    int from = 0;
+                    for (auto& sec : song.sections) if (bar >= sec.startBar && bar < sec.startBar + sec.bars) from = sec.startBar;
+                    const double at = ((bar - from) % loopBars) * 4.0;
+                    for (auto& pn : k.pattern)
+                        if (pn.pitch == kc.second && pn.beat >= at && pn.beat < at + 4.0)
+                            part.notes.push_back ({ bar * 4.0 + pn.beat - at, 0.25, note, pn.velocity });
+                }
+            }
+            std::stable_sort (part.notes.begin(), part.notes.end(), [] (const lp::song::Note& a, const lp::song::Note& b) { return a.beat < b.beat; });
+        }
+        return any;
+    }
+
     // a drum loop track becomes a drum track you can edit: every hit found in it, sorted into kick, snare,
     // hats and percussion, each with a sound cut from the loop itself (its own kit)
     void sliceDrums (int tr)
@@ -3176,7 +3332,8 @@ private:
             refreshUsable();
             // every sound of that kind: the kit's own pack first, then the rest of your library (in a set order,
             // so next / back step through them), leaving out anything you said "not this" to
-            const auto cur = song.drumSamples.count (note) ? song.drumSamples[note] : juce::String();
+            auto cur = song.drumSamples.count (note) ? song.drumSamples[note] : juce::String();
+            if (auto c = cutFrom.find (cur); c != cutFrom.end()) cur = c->second; // a hit cut from a loop: step on from that loop
             const auto* curEntry = library.find (cur);
             const juce::String pack = curEntry != nullptr ? curEntry->pack : juce::String();
             std::vector<const lp::song::LibraryEntry*> same, other;
@@ -3203,6 +3360,8 @@ private:
                 for (int i = 0; i < (int) all.size(); ++i) if (all[(size_t) i]->path == cur) at = i;
                 const int nextIndex = at < 0 ? 0 : ((at + (req.second < 0 ? -1 : 1)) % (int) all.size() + (int) all.size()) % (int) all.size();
                 song.drumSamples[note] = all[(size_t) nextIndex]->path;
+                if (const auto& k = kitLoopOf (all[(size_t) nextIndex]->path); k.loop)
+                    if (const int c = cutKindFor (k, note, false); c >= 0) song.drumSamples[note] = k.sounds.at (c); // a loop: just its hit
                 {
                     const juce::ScopedLock sl (lock);
                     drumSwapName = juce::File (all[(size_t) nextIndex]->path).getFileNameWithoutExtension();
@@ -3339,6 +3498,7 @@ private:
                 auto picks = lp::song::pickFromLibrary (usableLib, currentTarget, currentSeed, {}, part.candidates[part.candidate]);
                 song.drumSamples = picks.drums;
                 part.source = kitLabel (picks) + picks.drumPack + " kit";
+                if (cutKitLoops (song)) part.remix = "drum loops cut into their hits: each row plays its own sound, in the loop's own pattern";
             }
             else if (part.kind == PK::Drums)
             {

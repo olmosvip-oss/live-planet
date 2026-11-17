@@ -241,7 +241,10 @@ void Library::scan (const juce::Array<juce::File>& folders, int maxFiles, const 
             auto e = parse (file, root);
             // the name says what it is (and a loop's tempo): use it as it is
             const bool needsEar = e.kind == SampleKind::Other || (e.kind == SampleKind::Loop && e.bpm <= 0.0);
-            if (! needsEar) { entries.push_back (std::move (e)); continue; }
+            // a loop whose name gives its tempo is checked once too: if its length isn't whole bars at that
+            // tempo the label is wrong, and the tempo is found by ear instead (or it's left out)
+            const bool labelled = e.kind == SampleKind::Loop && e.bpm > 0.0;
+            if (! needsEar && ! labelled) { entries.push_back (std::move (e)); continue; }
             // listened to before (and not changed since): what we heard then
             if (heard != nullptr)
                 if (auto h = heard->find (e.path); h != heard->end() && h->second.size == it.getFileSize())
@@ -249,6 +252,7 @@ void Library::scan (const juce::Array<juce::File>& folders, int maxFiles, const 
                     if (h->second.kind != (int) SampleKind::Other) { apply (h->second, e); entries.push_back (std::move (e)); }
                     continue;
                 }
+            if (labelled) entries.push_back (e); // usable as labelled meanwhile
             unheard.push_back ({ e.path, root.getFullPathName() });
         }
     }
@@ -267,6 +271,27 @@ void Library::apply (const Heard& h, LibraryEntry& e)
 {
     e.kind = (SampleKind) h.kind; e.loop = (LoopKind) h.loop; e.bpm = h.bpm;
     if (h.key >= 0) { e.key = h.key; e.minor = h.minor; }
+}
+
+bool Library::checkLabel (const juce::File& file, const juce::File& root, LibraryEntry& e)
+{
+    e = parse (file, root);
+    if (e.kind != SampleKind::Loop || e.bpm <= 0.0) return hear (file, root, e);
+    {
+        static thread_local std::unique_ptr<juce::AudioFormatManager> fm;
+        if (fm == nullptr) { fm = std::make_unique<juce::AudioFormatManager>(); fm->registerBasicFormats(); }
+        std::unique_ptr<juce::AudioFormatReader> rd (fm->createReaderFor (file));
+        if (rd == nullptr || rd->sampleRate < 8000.0 || rd->lengthInSamples <= 0) return false;
+        // whole bars at the tempo in its name: the label is right
+        const double bars = (double) rd->lengthInSamples / rd->sampleRate * e.bpm / 240.0;
+        for (int b : { 1, 2, 4, 8, 16 })
+            if (std::abs (bars - b) / b < 0.015) return true;
+    }
+    // the name's tempo doesn't fit how long it is: find the real one by ear (it keeps what the name says it is)
+    const auto said = e;
+    if (! hear (file, root, e) || e.kind != SampleKind::Loop) return false;
+    e.loop = said.loop;
+    return true;
 }
 
 bool Library::hear (const juce::File& file, const juce::File& root, LibraryEntry& e)

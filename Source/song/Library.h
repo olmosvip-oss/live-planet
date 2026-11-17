@@ -66,9 +66,24 @@ public:
     // Listens to a file the name didn't explain: a loop's tempo (from its length in whole bars, checked
     // against how its hits repeat) and key, or a melodic one-shot. False: not something songs can use.
     static bool hear (const juce::File& file, const juce::File& root, LibraryEntry& e);
+    // A loop with a tempo in its name: true if its length is whole bars at that tempo; if not, its real
+    // tempo by ear (e.bpm corrected); false if neither works. Anything else goes to hear().
+    static bool checkLabel (const juce::File& file, const juce::File& root, LibraryEntry& e);
     static Heard heardOf (const LibraryEntry& e, juce::int64 size, bool usable);
     static void apply (const Heard& h, LibraryEntry& e);
     void add (const LibraryEntry& e) { entries.push_back (e); }
+    // puts `e` in place of the entry with the same path (or leaves that entry out, if `e` is null)
+    void replace (const juce::String& path, const LibraryEntry* e)
+    {
+        for (size_t i = 0; i < entries.size(); ++i)
+            if (entries[i].path == path)
+            {
+                if (e != nullptr) entries[i] = *e;
+                else entries.erase (entries.begin() + (long) i);
+                return;
+            }
+        if (e != nullptr) entries.push_back (*e);
+    }
     bool load (const juce::File& cache);
     void save (const juce::File& cache) const;
 
