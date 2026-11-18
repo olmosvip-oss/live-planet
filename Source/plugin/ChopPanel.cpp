@@ -16,7 +16,12 @@ namespace
         const auto* lnf = dynamic_cast<LivePlanetLookAndFeel*> (&c.getLookAndFeel());
         return lnf != nullptr ? *lnf->th : lp::ui::theme (0);
     }
-    Colour padColour (int i) { return Colour::fromHSV (std::fmod (0.72f + (float) i * 0.061f, 1.0f), 0.55f, 0.98f, 1.0f); }
+    // Loopwright's own four colours (purple, green, amber, blue), going round; each row a touch deeper
+    Colour padColour (int i)
+    {
+        static const Colour base[4] = { Colour (0xff8b6cf6), Colour (0xff5fbf8f), Colour (0xffd9a05b), Colour (0xff6aaed6) };
+        return base[i % 4].withMultipliedBrightness (1.0f - 0.07f * (float) ((i / 4) % 4));
+    }
     // pads 1-4 on the bottom row, like a drum machine: Z X C V, then A S D F, Q W E R, 1 2 3 4
     const char* padKeys = "zxcvasdfqwer1234";
     constexpr double rate = LiveDrums::kitRate;
@@ -315,7 +320,7 @@ void ChopPanel::paint (Graphics& g)
             const auto& c = chops[(size_t) i];
             const float x0 = xOf (c.start), x1 = std::max (x0 + 2.0f, xOf (c.start + c.len));
             const float lit = jlimit (0.0f, 1.0f, 1.0f - (float) (now - flashAt[(size_t) i]) / 260.0f);
-            g.setColour (padColour (i).withAlpha ((i == selected ? 0.26f : 0.12f) + 0.3f * lit));
+            g.setColour (padColour (i).withAlpha ((i == selected ? 0.18f : 0.07f) + 0.25f * lit));
             g.fillRect (Rectangle<float> (x0, w.getY(), x1 - x0, w.getHeight()));
             g.setColour (padColour (i).withAlpha (0.9f));
             g.fillRect (Rectangle<float> (x0, w.getY(), 2.0f, w.getHeight()));
@@ -328,13 +333,13 @@ void ChopPanel::paint (Graphics& g)
                 g.fillRect (Rectangle<float> (x1 - 2.0f, w.getY(), 2.0f, w.getHeight()));
             }
         }
-        const float mid = w.getCentreY(), half = w.getHeight() * 0.44f;
+        const float mid = w.getCentreY(), half = w.getHeight() * 0.40f;
         for (int x = 0; x < peaksWidth; ++x)
         {
             const double sec = (double) x / peaksWidth * n / rate;
             int in = -1;
             for (int i = 0; i < (int) chops.size(); ++i) if (sec >= chops[(size_t) i].start && sec < chops[(size_t) i].start + chops[(size_t) i].len) in = i;
-            g.setColour (in >= 0 ? padColour (in).brighter (0.2f) : Colours::white.withAlpha (0.28f));
+            g.setColour (in >= 0 ? padColour (in).withAlpha (0.85f) : Colours::white.withAlpha (0.22f));
             const float h = std::max (0.5f, peaks[(size_t) x] * half);
             g.fillRect (w.getX() + (float) x, mid - h, 1.0f, h * 2.0f);
         }

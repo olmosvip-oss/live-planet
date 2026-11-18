@@ -114,6 +114,14 @@ inline double nearestAllowed (double midi, const Settings& s)
     return best;
 }
 
+// the nearest note of a key (minor: natural minor) to a pitch
+inline double nearestInKey (double midi, int key, bool minor)
+{
+    Settings s;
+    s.key = key; s.scale = minor ? 1 : 0;
+    return nearestAllowed (midi, s);
+}
+
 // the note each frame is tuned to (0: none). A sung note stays on its note until the voice has clearly
 // moved to another one, so it doesn't flicker between two notes.
 inline std::vector<double> targets (const std::vector<double>& pitch, const Settings& s)
