@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "../song/Chops.h"
+#include "PadLook.h"
 
 using namespace juce;
 using lp::ui::font;
@@ -361,43 +362,25 @@ void ChopPanel::paint (Graphics& g)
     for (int i = 0; i < maxPads; ++i)
     {
         const auto pr = padRect (i);
-        const bool has = i < (int) chops.size();
-        const float lit = has ? jlimit (0.0f, 1.0f, 1.0f - (float) (now - flashAt[(size_t) i]) / 260.0f) : 0.0f;
-        const auto col = padColour (i);
-        g.setColour (has ? col.withAlpha (0.14f + 0.6f * lit) : Colours::white.withAlpha (0.03f));
-        g.fillRoundedRectangle (pr, 10.0f);
-        g.setColour (has ? col.withAlpha (i == selected ? 0.95f : 0.4f) : Colours::white.withAlpha (0.06f));
-        g.drawRoundedRectangle (pr.reduced (0.5f), 10.0f, i == selected ? 2.0f : 1.0f);
-        g.setFont (lp::ui::mono (10.0f, true, 0.08f));
-        g.setColour (has ? t.ink : t.inkDim.withAlpha (0.5f));
-        g.drawText (String (i + 1), pr.reduced (10.0f, 8.0f), Justification::topLeft, false);
-        g.setColour (t.inkDim);
-        g.drawText (String::charToString ((juce_wchar) toupper (padKeys[i])), pr.reduced (10.0f, 8.0f), Justification::topRight, false);
-        if (has && chops[(size_t) i].midi > 0.0)
-        {
-            const int m = roundToInt (chops[(size_t) i].midi);
-            g.setFont (font (13.0f, lp::ui::Medium));
-            g.setColour (t.ink.withAlpha (0.8f));
-            g.drawText (String (lp::noteName (m)) + String (m / 12 - 1), pr.reduced (10.0f, 8.0f), Justification::bottomLeft, false);
-        }
+        if (i >= (int) chops.size()) { lp::ui::drawEmptyPad (g, pr); continue; }
+        const float lit = jlimit (0.0f, 1.0f, 1.0f - (float) (now - flashAt[(size_t) i]) / 300.0f);
+        const int m = chops[(size_t) i].midi > 0.0 ? roundToInt (chops[(size_t) i].midi) : -1;
+        lp::ui::drawPad (g, pr, padColour (i), lit, "PAD " + String (i + 1),
+                         String::charToString ((juce_wchar) toupper (padKeys[i])), m >= 0 ? String (lp::noteName (m)) + String (m / 12 - 1) : String(),
+                         i == selected, lp::ui::mono (9.5f, true, 0.12f), lp::ui::mono (9.0f, false, 0.08f), t.ink, t.inkDim);
     }
 
     // ---- what's what, on the right
     const auto pa = padArea();
     auto info = Rectangle<float> (pa.getRight() + 30.0f, pa.getY(), cf.getRight() - 28.0f - pa.getRight() - 30.0f, pa.getHeight());
-    g.setFont (lp::ui::mono (10.0f, true, 0.14f));
-    g.setColour (t.grassLight);
-    g.drawText ("PLAY", info.removeFromTop (16.0f), Justification::centredLeft, false);
-    g.setFont (font (14.0f, lp::ui::Light));
-    g.setColour (t.ink.withAlpha (0.85f));
-    auto para = [&] (const String& s, float h) { g.drawFittedText (s, info.removeFromTop (h).toNearestInt(), Justification::topLeft, 4, 1.0f); info.removeFromTop (8.0f); };
-    para ("Click a pad, use your keys (Z X C V on the bottom row up to 1 2 3 4), or a MIDI controller: C1 is pad 1.", 58.0f);
-    g.setFont (lp::ui::mono (10.0f, true, 0.14f));
-    g.setColour (t.grassLight);
-    g.drawText ("RECORD", info.removeFromTop (16.0f), Justification::centredLeft, false);
-    g.setFont (font (14.0f, lp::ui::Light));
-    g.setColour (t.ink.withAlpha (0.85f));
-    para ("Press Record, then Play (or play your DAW) and play the pads with the song. When you stop, what you played replaces the bars you played over, snapped to 1/16 (or as you played it). Undo brings back what was there.", 112.0f);
+    auto head = [&] (const char* h) { g.setFont (lp::ui::mono (9.0f, true, 0.16f)); g.setColour (t.grassLight); g.drawText (h, info.removeFromTop (14.0f), Justification::centredLeft, false); info.removeFromTop (4.0f); };
+    auto para = [&] (const String& txt, float h) { g.setFont (font (12.5f, lp::ui::Light)); g.setColour (t.ink.withAlpha (0.7f)); g.drawFittedText (txt, info.removeFromTop (h).toNearestInt(), Justification::topLeft, 5, 1.0f); info.removeFromTop (14.0f); };
+    head ("PLAY");
+    para ("Click a pad, tap its key, or use a MIDI controller (C1 is pad 1).", 34.0f);
+    head ("RECORD");
+    para ("Record, then Play, and jam with the song. When you stop, your take replaces those bars. Undo brings them back.", 52.0f);
+    head ("EDIT");
+    para ("Drag a chop's edges on the waveform. Double-click adds one, Delete removes it.", 36.0f);
     if (recording && proc.songIsPlaying())
     {
         g.setFont (font (20.0f, lp::ui::Medium));

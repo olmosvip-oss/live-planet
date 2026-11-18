@@ -29,7 +29,7 @@ namespace
     }
     // your computer keys: the bottom rows of letters, like a drum machine's pads
     struct DrumKey { char key; int note; };
-    const DrumKey drumKeys[] = { { 'z', 36 }, { 'x', 38 }, { 'c', 39 }, { 'v', 37 }, { 'a', 42 }, { 's', 46 }, { 'd', 45 }, { 'f', 70 }, { 'q', 49 } };
+    const DrumKey drumKeys[] = { { 'z', 36 }, { 'x', 38 }, { 'c', 39 }, { 'a', 42 }, { 's', 46 }, { 'd', 70 }, { 'q', 49 }, { 'w', 45 }, { 'e', 37 } };
     char keyFor (int note) { for (auto& k : drumKeys) if (k.note == note) return k.key; return 0; }
     constexpr float nameW = 132.0f, toolbarH = 40.0f, overviewH = 22.0f, lanesGap = 4.0f, sectionH = 18.0f, rulerH = 18.0f, hintH = 22.0f;
 }
@@ -54,7 +54,7 @@ DrumGrid::DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
         proc.startDrumLoop (track, a, b - a);
         playBtn.setButtonText ("stop");
     };
-    setup (recBtn, "record: play the drums with your keys (Z X C V / A S D F / Q) or a MIDI controller while the loop plays, and every hit goes into the pattern (snapped to the grid)");
+    setup (recBtn, "record: play the drums with your keys (Z X C / A S D / Q W E) or a MIDI controller while the loop plays, and every hit goes into the pattern (snapped to the grid)");
     recBtn.onClick = [this]
     {
         recording = ! recording;
