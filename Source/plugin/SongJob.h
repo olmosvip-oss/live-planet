@@ -23,7 +23,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -163,6 +163,22 @@ public:
         }
         startIfNeeded();
     }
+
+    // your DAW's tempo changed: the song is recorded again at it (so what plays in the plugin, sped up or
+    // slowed down, is what you drag: never sped up like a record, which would change its key)
+    void setSongBpm (double bpm)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            if (current.parts.empty()) return;
+            pendingBpm = bpm;
+            edits.erase (std::remove_if (edits.begin(), edits.end(), [] (const std::pair<int, EditOp>& e) { return e.second == EditOp::Tempo; }), edits.end());
+            edits.push_back ({ 0, EditOp::Tempo });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    double songBpmNow() const { const juce::ScopedLock sl (lock); return current.parts.empty() ? 0.0 : current.bpm; }
 
     // play only part of a track's sample (in the song's bars; bars 0 = all of it)
     void setRegion (int track, int startBar, int bars)
@@ -2559,6 +2575,47 @@ private:
         saveSession();
     }
 
+    void retempoSong()
+    {
+        lp::song::Song song;
+        double bpm;
+        {
+            const juce::ScopedLock sl (lock);
+            song = current;
+            bpm = pendingBpm;
+        }
+        if (song.sections.empty() || bpm < 30.0 || std::abs (song.bpm - bpm) < 0.05) return;
+        const double was = song.bpm;
+        song.bpm = bpm;
+        setStage (Stage::Rendering, 0.05f, "your DAW is at " + juce::String (bpm, bpm == std::round (bpm) ? 0 : 1) + " bpm: recording \"" + song.title + "\" at that tempo...");
+        const auto sub = currentFolder.getChildFile ("tempo " + juce::String (bpm, 1) + " " + juce::String (++editCounter));
+        lp::song::Rendered files;
+        const bool ok = lp::song::render (song, currentRs, sub, files,
+                                          [this] (float p) { const juce::ScopedLock sl (lock); status.progress = 0.05f + 0.9f * p; },
+                                          [this] { return threadShouldExit(); });
+        if (! ok) { setStage (Stage::Failed, 0.0f, "couldn't record the song at the new tempo"); return; }
+        song.matchEqDb = files.matchEqDb; song.matchGainDb = files.matchGainDb;
+        song.playbackMakeupDb = files.playbackMakeupDb; song.mixShaped = true;
+        juce::File als;
+        if (writeAbletonSet) als = writeAbletonSet (song, files);
+        files.folder = currentFolder;
+        files.mixAudio.reset();
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks.clear();
+        for (int i = 0; i < (int) song.parts.size(); ++i)
+            status.tracks.push_back (info (song.parts[(size_t) i], files.stems[i], song));
+        status.files = files;
+        if (als.existsAsFile()) status.abletonSet = als;
+        ++status.version;
+        status.stage = Stage::Done;
+        status.progress = 1.0f;
+        status.message = "\"" + song.title + "\" is now at " + juce::String (bpm, bpm == std::round (bpm) ? 0 : 1) + " bpm (was " + juce::String (was, was == std::round (was) ? 0 : 1)
+                       + "), same key: drag the tracks again for the new tempo";
+        saveSession();
+    }
+
     void applyArrange()
     {
         std::vector<lp::song::arrange::Item> plan;
@@ -2955,6 +3012,7 @@ private:
             case EditOp::AddChops: return "add vocal chops";
             case EditOp::FromTake: return "track from a take";
             case EditOp::Arrange: return "arrangement";
+            case EditOp::Tempo: return "tempo change";
             case EditOp::Add808: return "add 808";
             case EditOp::SliceDrums: return on ("slice");
             case EditOp::AddTuned: return "add tuned vocal";
@@ -3438,6 +3496,7 @@ private:
             return;
         }
         if (op == EditOp::Arrange) { applyArrange(); return; }
+        if (op == EditOp::Tempo) { retempoSong(); return; }
         if (op == EditOp::Section) { applyVary(); return; }
         if (op == EditOp::Like || op == EditOp::Dislike) { applyRating (tr, op == EditOp::Like ? 1 : -1); return; }
         if (op == EditOp::Key) { retuneSong (tr % 12, tr >= 12); return; }
@@ -4325,6 +4384,7 @@ private:
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
     std::map<int, std::pair<std::vector<lp::song::ChopSlice>, std::vector<int>>> pendingChops;
     std::map<int, lp::song::VocalTune> pendingTune;
+    double pendingBpm = 0.0;
     mutable std::map<int, float> kitGain; // (drumHits) each drum track's kit loudness
     std::map<int, std::pair<int, int>> pendingDrumSwap;
     std::map<int, std::map<int, lp::song::VoiceFx>> pendingVoiceFx; // track -> note -> settings, waiting to be recorded

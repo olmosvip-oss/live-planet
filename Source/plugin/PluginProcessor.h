@@ -165,6 +165,8 @@ public:
     int seenVocalSerial = -1;     // the vocal chains the studio has
     bool lastSongChecked = false; // (the app) reopened the last song yet?
     int startTicks = 0;
+    int tempoOffTicks = 0;      // how long your DAW's tempo has been off the song's
+    double askedBpm = 0.0;      // the tempo the song was last asked to move to
     std::atomic<bool> restoredFromProject { false };
     // the key boxes changed: move the current song to that key (Auto = the reference's key)
     void applyChosenKey()

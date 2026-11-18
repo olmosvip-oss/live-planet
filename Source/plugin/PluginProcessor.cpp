@@ -643,6 +643,21 @@ void LivePlanetProcessor::timerCallback()
         double bpm = 90.0;
         songJob.takeFinishedMix (bpm); // (the studio plays the tracks themselves now)
         const auto st = songJob.getStatus();
+        // your DAW's tempo isn't the song's (and the song follows your DAW): once it has stayed there a
+        // moment, the song is recorded again at that tempo. Until then it's played faster or slower to keep
+        // in time, which also moves its pitch; a song recorded at the DAW's tempo plays (and drags) in its key.
+        {
+            const double daw = dawBpm.load(), sb = st.haveSong ? st.song.bpm : 0.0;
+            const bool follow = params.getRawParameterValue ("dawtempo")->load() > 0.5f;
+            const bool off = st.haveSong && follow && daw > 30.0 && daw < 300.0 && std::abs (daw - sb) > 0.05;
+            if (! off) tempoOffTicks = 0;
+            else if (++tempoOffTicks > 3 && ! st.editing && st.stage != SongJob::Stage::Rendering && std::abs (daw - askedBpm) > 0.05)
+            {
+                askedBpm = daw;
+                songJob.setSongBpm (std::round (daw * 100.0) / 100.0);
+            }
+            if (! off) askedBpm = 0.0;
+        }
         if (st.mixInsertSerial != seenMixInserts)
         {
             // an undone delete: its track comes back, and so does a row in the mixer for it
