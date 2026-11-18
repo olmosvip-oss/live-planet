@@ -7,13 +7,16 @@ namespace
     juce::var getJson (const juce::URL& url, juce::String& error)
     {
         auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
-                           .withConnectionTimeoutMs (8000)
+                           .withConnectionTimeoutMs (5000)
                            .withExtraHeaders ("User-Agent: LivePlanet/0.1");
         // connections can drop for a moment, so try a few times before giving up
         for (int attempt = 0; attempt < 4; ++attempt)
         {
+            // (closing: stop now, a request can't be cut short once it has started)
+            if (juce::Thread::currentThreadShouldExit()) break;
             if (attempt > 0)
                 juce::Thread::sleep (600 * attempt);
+            if (juce::Thread::currentThreadShouldExit()) break;
             std::unique_ptr<juce::InputStream> in (url.createInputStream (options));
             if (in == nullptr)
                 continue;
@@ -44,7 +47,7 @@ WeatherService::~WeatherService()
 {
     signalThreadShouldExit();
     notify();
-    stopThread (10000);
+    stopThread (15000); // (one request in flight finishes within its 5 s timeout)
 }
 
 void WeatherService::requestCity (const juce::String& name)
