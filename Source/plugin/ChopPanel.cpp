@@ -174,6 +174,7 @@ void ChopPanel::finishTake()
 void ChopPanel::timerCallback()
 {
     bool redraw = false;
+    if (isShowing() && ! hasKeyboardFocus (true)) grabKeyboardFocus(); // your keys play the pads
     const auto now = Time::getMillisecondCounter();
     for (auto& h : proc.takePadHits())
     {

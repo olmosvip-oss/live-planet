@@ -241,6 +241,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const bool chordMode = params.getRawParameterValue ("keymode")->load() > 0.5f;
     keyEvents.clear();
     const bool toPads = padsTrack.load() >= 0;
+    const bool toDrums = ! toPads && drumKeysTrack.load() >= 0 && juce::Time::getMillisecondCounter() - drumKeysLease.load() < 800;
     for (const auto m : midi)
     {
         const auto msg = m.getMessage();
@@ -252,6 +253,17 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                 const int pad = ((msg.getNoteNumber() - 36) % 16 + 16) % 16;
                 livePads.audition (pad, msg.getFloatVelocity());
                 notePadHit (pad, msg.getFloatVelocity(), m.samplePosition);
+            }
+            continue;
+        }
+        if (toDrums && (msg.isNoteOn() || msg.isNoteOff()))
+        {
+            // the drum editor is open: notes play the kit (General MIDI drum notes, or any pad of a controller)
+            if (msg.isNoteOn())
+            {
+                const int dn = drumNoteFor (msg.getNoteNumber());
+                liveDrums.audition (dn, msg.getFloatVelocity());
+                notePadHit (dn, msg.getFloatVelocity(), m.samplePosition);
             }
             continue;
         }

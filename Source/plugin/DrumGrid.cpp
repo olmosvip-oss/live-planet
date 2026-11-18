@@ -27,6 +27,10 @@ namespace
     {
         return juce::String (s).trimCharactersAtEnd ("0123456789 ");
     }
+    // your computer keys: the bottom rows of letters, like a drum machine's pads
+    struct DrumKey { char key; int note; };
+    const DrumKey drumKeys[] = { { 'z', 36 }, { 'x', 38 }, { 'c', 39 }, { 'v', 37 }, { 'a', 42 }, { 's', 46 }, { 'd', 45 }, { 'f', 70 }, { 'q', 49 } };
+    char keyFor (int note) { for (auto& k : drumKeys) if (k.note == note) return k.key; return 0; }
     constexpr float nameW = 132.0f, toolbarH = 40.0f, overviewH = 22.0f, lanesGap = 4.0f, sectionH = 18.0f, rulerH = 18.0f, hintH = 22.0f;
 }
 
@@ -50,6 +54,17 @@ DrumGrid::DrumGrid (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
         proc.startDrumLoop (track, a, b - a);
         playBtn.setButtonText ("stop");
     };
+    setup (recBtn, "record: play the drums with your keys (Z X C V / A S D F / Q) or a MIDI controller while the loop plays, and every hit goes into the pattern (snapped to the grid)");
+    recBtn.onClick = [this]
+    {
+        recording = ! recording;
+        recBtn.getProperties().set ("primary", recording);
+        recBtn.setButtonText (recording ? "rec on" : "rec");
+        if (recording) pushUndo(); // one undo takes back the whole take
+        if (recording && ! proc.drumLoopPlaying()) playBtn.triggerClick();
+        recBtn.repaint();
+    };
+    setWantsKeyboardFocus (true);
     setup (zoomOut, "zoom out (or Cmd / Ctrl + scroll, or pinch)");
     setup (zoomIn, "zoom in");
     setup (fitBtn, "see the whole song");
@@ -252,8 +267,80 @@ Rectangle<float> DrumGrid::swapArrow (size_t row, int which) const
 
 void DrumGrid::mouseMove (const MouseEvent&) { repaint(); } // hover highlights (swap arrows, sections)
 
+// hits you played (keys or a MIDI controller): each row lights up, and while recording into the
+// playing loop, each hit lands in the pattern on the nearest step
+void DrumGrid::takeHits()
+{
+    // (while it shows, your keys and MIDI notes play this kit)
+    const bool showing = isShowing() && track >= 0;
+    if (showing && ! proc.drumPadsOpen.load())
+    {
+        proc.drumKeysTrack = track; proc.drumKeysLease = Time::getMillisecondCounter();
+        // your keys come here (unless you're typing somewhere)
+        auto* f = Component::getCurrentlyFocusedComponent();
+        // (not while you type, or while a window of its own is open over it)
+        bool inPanel = false;
+        for (auto* c = f; c != nullptr && ! inPanel; c = c->getParentComponent())
+            inPanel = dynamic_cast<VocalPanel*> (c) != nullptr || dynamic_cast<TunePanel*> (c) != nullptr
+                   || dynamic_cast<ChopPanel*> (c) != nullptr || dynamic_cast<DrumPadPanel*> (c) != nullptr;
+        const bool typing = dynamic_cast<TextEditor*> (f) != nullptr || dynamic_cast<ComboBox*> (f) != nullptr;
+        if (proc.padsTrack.load() < 0 && ! inPanel && ! typing && f != this && isShowing())
+            grabKeyboardFocus();
+    }
+    if (! showing) { if (proc.drumKeysTrack.load() == track) proc.drumKeysTrack = -1; return; }
+    if (proc.padsTrack.load() >= 0 || proc.drumPadsOpen.load()) return; // the pads windows have them
+    auto hits = proc.takePadHits();
+    if (hits.empty()) return;
+    const auto now = Time::getMillisecondCounter();
+    bool added = false;
+    double a, b;
+    loopRange (a, b);
+    for (auto& h : hits)
+    {
+        rowFlash[h.pad] = now;
+        if (std::find (rows.begin(), rows.end(), h.pad) == rows.end()) { rows.push_back (h.pad); std::sort (rows.begin(), rows.end(), [] (int x, int y) { return x > y; }); }
+        if (! recording || ! proc.drumLoopPlaying()) continue;
+        const double len = 1.0 / stepsPerBeat;
+        double beat = std::round (h.beat / len) * len;
+        // (folded into the loop: a hit right at its end belongs to its start)
+        const double loopLen = std::max (len, b - a);
+        beat = a + std::fmod (std::fmod (beat - a, loopLen) + loopLen, loopLen);
+        if (beat >= b - len * 0.5) beat = a;
+        const bool there = std::any_of (notes.begin(), notes.end(), [&] (const lp::song::Note& n) { return n.pitch == h.pad && std::abs (n.beat - beat) < len * 0.5; });
+        if (there) continue;
+        notes.push_back ({ beat, std::min (0.25, len), h.pad, juce::jlimit (0.2f, 1.0f, h.vel) });
+        added = true;
+    }
+    if (added) changed();
+    repaint();
+}
+
+bool DrumGrid::keyPressed (const KeyPress& k)
+{
+    if (k.getModifiers().isCommandDown() || k.getModifiers().isCtrlDown()) return false;
+    const auto ch = (char) std::tolower ((int) k.getTextCharacter());
+    for (auto& dk : drumKeys)
+        if (dk.key == ch)
+        {
+            const int code = k.getKeyCode();
+            if (heldKeys.count (code)) return true; // held down: once, not over and over
+            heldKeys.insert (code);
+            proc.hitDrum (dk.note, k.getModifiers().isShiftDown() ? 1.0f : 0.85f);
+            return true;
+        }
+    return false;
+}
+
+bool DrumGrid::keyStateChanged (bool)
+{
+    for (auto it = heldKeys.begin(); it != heldKeys.end();)
+        it = KeyPress::isKeyCurrentlyDown (*it) ? std::next (it) : heldKeys.erase (it);
+    return false;
+}
+
 void DrumGrid::refresh()
 {
+    takeHits();
     canSwapRows = proc.songJob.kitIsSamples (track);
     if (auto fx = proc.songJob.notesWithFx (track); fx != withFx) { withFx = std::move (fx); repaint(); }
     // a drum sound was swapped: show its name, and play it once its new sound is loaded
@@ -533,7 +620,8 @@ void DrumGrid::copyAcross (bool everySectionOfKind)
 void DrumGrid::resized()
 {
     auto top = getLocalBounds().removeFromTop ((int) toolbarH - 6).reduced (10, 4);
-    playBtn.setBounds (top.removeFromLeft (64)); top.removeFromLeft (10);
+    playBtn.setBounds (top.removeFromLeft (64)); top.removeFromLeft (6);
+    recBtn.setBounds (top.removeFromLeft (62)); top.removeFromLeft (10);
     zoomOut.setBounds (top.removeFromLeft (30)); top.removeFromLeft (4);
     zoomIn.setBounds (top.removeFromLeft (30)); top.removeFromLeft (4);
     fitBtn.setBounds (top.removeFromLeft (96)); top.removeFromLeft (4);
@@ -714,8 +802,23 @@ void DrumGrid::paint (Graphics& g)
                 g.setColour (t.grass.withAlpha (0.28f));
                 g.fillRoundedRectangle (Rectangle<float> (6.0f, y + 1.0f, 80.0f, rowH - 2.0f), 4.0f);
             }
+            if (auto fl = rowFlash.find (rows[i]); fl != rowFlash.end())
+            {
+                const float lit = 1.0f - (float) (Time::getMillisecondCounter() - fl->second) / 220.0f;
+                if (lit > 0.0f)
+                {
+                    g.setColour (t.grass.withAlpha (0.55f * lit));
+                    g.fillRoundedRectangle (Rectangle<float> (6.0f, y + 1.0f, 80.0f, rowH - 2.0f), 4.0f);
+                    repaint (0, (int) y, 90, (int) rowH + 1);
+                }
+            }
             g.setColour (isPicked ? Colours::white : hasFx ? t.grassLight : t.inkDim);
             g.drawText (rowName (rows[i]), Rectangle<float> (12.0f, y, 70.0f, rowH), Justification::centredLeft, false);
+            if (const char kc = keyFor (rows[i]); kc != 0 && rowH >= 10.0f) // its key on your keyboard
+            {
+                g.setColour (t.inkDim.withAlpha (0.55f));
+                g.drawText (String::charToString ((juce_wchar) std::toupper (kc)), Rectangle<float> (70.0f, y, 14.0f, rowH), Justification::centredRight, false);
+            }
             if (hasFx) // a little dot: this drum has its own effects
             {
                 g.setColour (t.grassLight);

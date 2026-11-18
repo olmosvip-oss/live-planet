@@ -351,6 +351,35 @@ private:
     juce::Rectangle<int> closeX;
 };
 
+// A drum track's kit on pads you play with the mouse, your keys or a MIDI controller, and record (DrumPadPanel.cpp)
+class DrumPadPanel : public juce::Component, private juce::Timer
+{
+public:
+    DrumPadPanel (LivePlanetProcessor&, int track, std::function<void()> closed);
+    ~DrumPadPanel() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    bool keyStateChanged (bool isKeyDown) override;
+
+private:
+    void timerCallback() override;
+    void finishTake();
+    juce::Rectangle<int> card() const;
+    juce::Rectangle<float> padRect (int) const;
+    LivePlanetProcessor& proc;
+    int track = 0;
+    std::function<void()> onClosed;
+    juce::String title, message;
+    std::map<int, juce::uint32> flashAt;
+    std::set<int> heldKeys;
+    bool recording = false, quantize = true, wasPlaying = false;
+    std::vector<LivePlanetProcessor::PadHit> take;
+    juce::TextButton playBtn { "Play" }, recBtn { "Record" }, quantBtn { "Snap: 1/16" };
+    juce::Rectangle<int> closeX;
+};
+
 // A tuned vocal's Auto-tune window (TunePanel.cpp)
 class TunePanel : public juce::Component, private juce::Timer
 {
@@ -600,6 +629,8 @@ public:
     void mouseUp (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    bool keyStateChanged (bool isKeyDown) override;
     void mouseMagnify (const juce::MouseEvent&, float scale) override;
     void stopLoop();          // leaving the drum editor
     void forgetKit() { kitKey.clear(); } // another editor used the live player: load the kit again next time
@@ -656,6 +687,12 @@ private:
     std::vector<lp::song::Note> notes;
     std::vector<std::vector<lp::song::Note>> undo;
     std::vector<int> rows; // drum notes, top to bottom
+    // playing the kit from your keys or a MIDI controller (and recording it into the loop)
+    juce::TextButton recBtn { "rec" };
+    bool recording = false;
+    std::set<int> heldKeys;
+    std::map<int, juce::uint32> rowFlash;
+    void takeHits();
     juce::TextButton playBtn { "play" }, zoomOut { "-" }, zoomIn { "+" }, fitBtn { "whole song" }, resBtn { "1/16" },
                      fillSection { "copy to section" }, fillAll { "every chorus" }, clearBtn { "clear" }, undoBtn { "undo" },
                      bigBtn { "bigger" }, feelBtn { "feel 100%" };
@@ -793,6 +830,8 @@ private:
     std::unique_ptr<ChopPanel> chopPanel;
     juce::TextButton tuneBtn { "Auto-tune" };      // a tuned vocal: its Auto-tune window
     std::unique_ptr<TunePanel> tunePanel;
+    juce::TextButton drumPadsBtn { "Drum pads" };  // a drum track: its kit on pads
+    std::unique_ptr<DrumPadPanel> drumPadPanel;
     bool drumBig = false;
     // one drum's own effects (picked by clicking its name in the drum editor): the mix dials show it instead
     int voice = -1;

@@ -99,6 +99,24 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
         tunePanel->grabKeyboardFocus();
     };
     addChildComponent (tuneBtn);
+    drumPadsBtn.setTooltip ("Your kit on pads: play the drums with your mouse, computer keys or a MIDI controller, and record what you play into the drums");
+    drumPadsBtn.getProperties().set ("primary", true);
+    drumPadsBtn.setWantsKeyboardFocus (false);
+    drumPadsBtn.onClick = [this]
+    {
+        auto* top = getTopLevelComponent();
+        if (top == nullptr) return;
+        SafePointer<TrackEditor> self (this);
+        drumPadPanel = std::make_unique<DrumPadPanel> (proc, track, [self]
+        {
+            MessageManager::callAsync ([self] { if (self != nullptr) self->drumPadPanel.reset(); });
+        });
+        top->addAndMakeVisible (*drumPadPanel);
+        drumPadPanel->setBounds (top->getLocalBounds());
+        drumPadPanel->toFront (true);
+        drumPadPanel->grabKeyboardFocus();
+    };
+    addChildComponent (drumPadsBtn);
     drumGrid.onToggleBig = [this] { drumBig = ! drumBig; drumGrid.setBig (drumBig); resized(); repaint(); };
     auto mixOf = [this] (int t) -> StudioPlayer::Mix& { return proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, t)]; };
     // (with a drum picked in the drum editor, they're that drum's own settings instead)
@@ -478,6 +496,7 @@ void TrackEditor::paint (Graphics& g)
     const bool isTuned = ! showingDrums() && tr0name.startsWith ("vocal (tuned");
     if (chopBtn.getBounds() != toolSlot (0)) chopBtn.setBounds (toolSlot (0));
     if (tuneBtn.getBounds() != toolSlot (0)) tuneBtn.setBounds (toolSlot (0));
+    if (drumPadsBtn.getBounds() != toolSlot (0)) drumPadsBtn.setBounds (toolSlot (0));
     for (auto* c : getChildren())
     {
         bool want = true;
@@ -499,6 +518,7 @@ void TrackEditor::paint (Graphics& g)
         }
         else if (c == &chopBtn) want = isChops;
         else if (c == &tuneBtn) want = isTuned;
+        else if (c == &drumPadsBtn) want = showingDrums();
         else if (c == &hGrains) want = ! big;
         else if (c == &voiceChip) want = voice >= 0 && showingDrums();   // one drum picked: its chip instead of Bypass
         else if (c == &bypassFx) want = voice < 0;
@@ -606,7 +626,7 @@ void TrackEditor::paint (Graphics& g)
     {
         // (it stops before the window buttons on its right)
         float right = (float) getWidth();
-        for (auto* b : { &vocalBtn, &chopBtn, &tuneBtn }) if (b->isVisible()) right = jmin (right, (float) b->getX() - 12.0f);
+        for (auto* b : { &vocalBtn, &chopBtn, &tuneBtn, &drumPadsBtn }) if (b->isVisible()) right = jmin (right, (float) b->getX() - 12.0f);
         g.drawText (tr.remix, Rectangle<float> (0.0f, sc.getBottom() + 2.0f, right, 18.0f), Justification::centredLeft, true);
     }
 }

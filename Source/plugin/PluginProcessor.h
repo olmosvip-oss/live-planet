@@ -110,6 +110,31 @@ public:
         std::swap (out, padHits);
         return out;
     }
+    // the drum editor: your computer keys or a MIDI controller play the kit (and record into the loop)
+    std::atomic<int> drumKeysTrack { -1 };
+    std::atomic<bool> drumPadsOpen { false }; // the Drum pads window takes the hits
+    std::atomic<juce::uint32> drumKeysLease { 0 }; // renewed every frame while the drum editor shows
+    static int drumNoteFor (int n)
+    {
+        switch (n)
+        {
+            case 35: case 36: return 36;
+            case 37: return 37;
+            case 38: case 40: return 38;
+            case 39: return 39;
+            case 42: case 44: return 42;
+            case 46: return 46;
+            case 41: case 43: case 45: case 47: case 48: case 50: return 45;
+            case 49: case 57: return 49;
+            case 70: return 70;
+            default: { static const int order[8] = { 36, 38, 39, 37, 42, 46, 45, 70 }; return order[((n - 36) % 8 + 8) % 8]; }
+        }
+    }
+    void hitDrum (int note, float vel)
+    {
+        liveDrums.audition (note, vel);
+        notePadHit (note, vel, 0);
+    }
     std::atomic<int> liveTrack { -1 };
     std::atomic<double> loopStartBeat { 0.0 }, loopBeats { 4.0 };
     void startDrumLoop (int track, double startBeat, double beats);
