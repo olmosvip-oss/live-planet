@@ -124,6 +124,12 @@ jobs:
         run: |
           $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
           if (-not (Test-Path $nsis)) { choco install nsis --no-progress -y; }
+          if (-not (Test-Path $nsis)) {
+            # (the package site can be down: NSIS's own download instead)
+            Invoke-WebRequest -Uri "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10.zip" -OutFile nsis.zip -MaximumRetryCount 4 -RetryIntervalSec 5
+            Expand-Archive nsis.zip -DestinationPath nsis-tool -Force
+            $nsis = (Get-ChildItem nsis-tool -Recurse -Filter makensis.exe | Select-Object -First 1).FullName
+          }
           New-Item -ItemType Directory -Force package | Out-Null
           & $nsis "/DAPPVERSION=0.9.${{ github.run_number }}" "/DSRC=$PWD\dist" "/DOUTDIR=$PWD\package" packaging\windows\loopwright.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
