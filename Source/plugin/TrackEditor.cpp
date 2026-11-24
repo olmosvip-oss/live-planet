@@ -493,7 +493,7 @@ void TrackEditor::paint (Graphics& g)
     // the drum editor made bigger covers the dials: they hide until it's made smaller again
     const bool big = (showingDrums() || notesTrack) && bigNow();
     const bool isChops = ! showingDrums() && tr0name == "vocal chops";
-    const bool isTuned = ! showingDrums() && tr0name.startsWith ("vocal (tuned");
+    const bool isTuned = ! showingDrums() && track < (int) st.tracks.size() && st.tracks[(size_t) track].tunable;
     if (chopBtn.getBounds() != toolSlot (0)) chopBtn.setBounds (toolSlot (0));
     if (tuneBtn.getBounds() != toolSlot (0)) tuneBtn.setBounds (toolSlot (0));
     if (drumPadsBtn.getBounds() != toolSlot (0)) drumPadsBtn.setBounds (toolSlot (0));

@@ -66,7 +66,7 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
     };
     setupEditor (lyrics, true, "[Chorus]\nOne line per phrase.\nStart each part with a tag like [Verse] or [Chorus].");
     lyrics.setFont (font (17.0f, lp::ui::Light));
-    lyrics.onTextChange = [this] { repaint(); };
+    lyrics.onTextChange = [this] { refreshButtons(); repaint(); };
     setupEditor (style, false, "smooth R&B lead, catchy, long held notes");
     style.setFont (font (14.5f, lp::ui::Light));
     style.onTextChange = [this] { markStyles(); };
@@ -134,10 +134,187 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
     consent.onClick = [this] { refreshButtons(); };
     create.getProperties().set ("primary", true);
     create.setWantsKeyboardFocus (false);
+    create.onClick = [this] { startCreate(); };
     addAndMakeVisible (create);
     stop.setWantsKeyboardFocus (false);
+    stop.onClick = [this] { if (! snap.jobs.empty()) proc.voiceClient.cancel (snap.jobs.front().id); };
     addChildComponent (stop);
+    addVoice.setTooltip ("Add a voice: a clean WAV of the singer, 10 to 30 seconds, no music. It stays on this computer, with the voice helper.");
+    addVoice.onClick = [this]
+    {
+        chooser = std::make_unique<FileChooser> ("A clean recording of the voice (WAV, no music)", File(), "*.wav");
+        chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+        {
+            if (fc.getResult().existsAsFile()) proc.voiceClient.addVoice (fc.getResult());
+        });
+    };
+    demo = std::getenv ("LP_VOICE_DEMO") != nullptr;
     startTimerHz (30);
+}
+
+void VoicePage::shown (bool isShown)
+{
+    if (! demo) proc.voiceClient.setWanted (isShown);
+    if (! isShown) // (leaving: a version playing along stops)
+        if (proc.hasVoicePreview()) { proc.setVoicePreview (nullptr); for (auto* r : rows) r->play.setButtonText ("play"); }
+}
+
+File VoicePage::voiceFolder() const { return songFolder.getChildFile ("voice"); }
+
+// which of this song's jobs started where (so a version lines up with its section), kept with the song
+void VoicePage::loadJobs()
+{
+    jobStarts.clear();
+    const auto v = JSON::parse (voiceFolder().getChildFile ("jobs.json")); // (kept: the object lives in it)
+    if (auto* o = v.getDynamicObject())
+        for (auto& p : o->getProperties())
+            if (lp::voice::validJobId (p.name.toString()) && p.value.isArray() && p.value.size() >= 2)
+                jobStarts[p.name.toString()] = { (double) p.value[0], p.value[1].toString() };
+}
+void VoicePage::saveJobs()
+{
+    if (! songFolder.isDirectory()) return;
+    auto* o = new DynamicObject();
+    for (auto& [id, v] : jobStarts) o->setProperty (id, Array<var> { v.first, v.second });
+    voiceFolder().createDirectory();
+    voiceFolder().getChildFile ("jobs.json").replaceWithText (JSON::toString (var (o)));
+}
+
+void VoicePage::startCreate()
+{
+    const int choice = section.getSelectedItemIndex();
+    if (choice < 0 || choice >= (int) sectionInfo.size()) return;
+    lp::voice::Client::Request r;
+    r.lyrics = lyrics.getText();
+    r.style = style.getText();
+    r.voice = voice.getText();
+    r.key = songKeyName;
+    r.bpm = songBpmValue;
+    r.takes = takesN;
+    r.results = versionsN;
+    r.tune = (float) tuning.getValue();
+    r.runs = roundToInt (runs.getValue());
+    r.clean = clean.getToggleState();
+    r.consent = consent.getToggleState();
+    const int secIndex = sectionInfo[(size_t) choice].first;
+    r.tag = String (sectionInfo[(size_t) choice].second, 3) + "|" + section.getText().upToFirstOccurrenceOf ("(", false, false).trim();
+    r.renderTrack = [&pr = proc, secIndex] { return pr.renderSectionForVoice (secIndex); };
+    proc.voiceClient.create (std::move (r));
+    create.setEnabled (false);
+}
+
+void VoicePage::refresh()
+{
+    if (demo) return;
+    // the song stopped: the version playing along stops too
+    if (! proc.previewPlaying.load() && proc.hasVoicePreview())
+    {
+        proc.setVoicePreview (nullptr);
+        for (auto* r : rows) r->play.setButtonText ("play");
+    }
+    // the song: its sections (the parts a voice can sing over), key and tempo
+    const auto st = proc.songJob.getStatus();
+    if (st.version != seenSongVersion)
+    {
+        seenSongVersion = st.version;
+        songFolder = st.haveSong ? st.files.folder : File();
+        loadJobs();
+        StringArray names;
+        sectionInfo.clear();
+        int pick = 0;
+        if (st.haveSong)
+            for (int i = 0; i < (int) st.song.sections.size(); ++i)
+            {
+                const auto& sec = st.song.sections[(size_t) i];
+                const double secs = sec.bars * 240.0 / st.song.bpm, start = sec.startBar * 240.0 / st.song.bpm;
+                if (secs < 4.0 || secs > 60.0) continue; // (what the helper sings well)
+                String n (sec.name);
+                n = n.substring (0, 1).toUpperCase() + n.substring (1);
+                if (pick == 0 && n.startsWithIgnoreCase ("chorus")) pick = names.size();
+                names.add (n + "   (bars " + String (sec.startBar + 1) + " to " + String (sec.startBar + sec.bars) + ", " + String (roundToInt (secs)) + " s)");
+                sectionInfo.push_back ({ i, start });
+            }
+        static const char* noteNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        const int minorKey = st.song.minor ? st.song.key : (st.song.key + 9) % 12; // (a major song: its relative minor, the same notes)
+        songKeyName = noteNames[((minorKey % 12) + 12) % 12];
+        songBpmValue = st.song.bpm;
+        setSong (names, pick, ! st.haveSong ? String ("WRITE A SONG FIRST")
+                                           : String (songKeyName) + " MINOR" + (st.song.minor ? String() : " (SAME NOTES AS " + String (noteNames[st.song.key % 12]) + " MAJOR)"),
+                 String (roundToInt (st.song.bpm)) + " BPM");
+    }
+    // the helper's news
+    const int ser = proc.voiceClient.serial();
+    if (ser != seenSerial)
+    {
+        seenSerial = ser;
+        auto s = proc.voiceClient.snapshot();
+        bool changed = false;
+        for (auto& [id, tag] : s.tags)
+            if (! jobStarts.count (id))
+            {
+                jobStarts[id] = { tag.upToFirstOccurrenceOf ("|", false, false).getDoubleValue(), tag.fromFirstOccurrenceOf ("|", false, false) };
+                changed = true;
+            }
+        if (changed) saveJobs();
+        // each finished version of the newest song is fetched once, into the song's folder
+        if (! s.jobs.empty() && songFolder.isDirectory())
+            for (auto& r : s.jobs.front().results)
+            {
+                const auto key = s.jobs.front().id + "/" + String (r.n);
+                if (asked.count (key) || s.files.count (key)) continue;
+                asked.insert (key);
+                proc.voiceClient.fetch (s.jobs.front().id, r.n, voiceFolder().getChildFile (s.jobs.front().id).getChildFile ("vocal_" + String (r.n) + ".wav"));
+            }
+        setSnapshot (s);
+    }
+}
+
+// a fetched version: made to start at bar 1 (silent until its section), for dragging, as a track, and to play along
+void VoicePage::prepare (ResultRow& row, const File& fetched)
+{
+    if (row.preparing || row.vocalFile.existsAsFile()) return;
+    row.preparing = true;
+    const auto it = jobStarts.find (row.jobId);
+    const double start = it != jobStarts.end() ? it->second.first : 0.0;
+    const String name = it != jobStarts.end() ? it->second.second : String ("vocal");
+    const auto title = (snap.jobs.empty() ? String() : snap.jobs.front().title).retainCharacters ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '-").substring (0, 30).trim();
+    const auto out = fetched.getSiblingFile ((title.isNotEmpty() ? title : String ("vocal")) + " v" + String (row.res.n) + " (" + name + ").wav");
+    SafePointer<VoicePage> self (this);
+    Component::SafePointer<ResultRow> rp (&row);
+    Thread::launch ([self, rp, fetched, out, start]
+    {
+        AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::shared_ptr<AudioBuffer<float>> buf;
+        if (std::unique_ptr<AudioFormatReader> rd (fm.createReaderFor (fetched)); rd != nullptr && rd->sampleRate > 0 && rd->lengthInSamples < (int64) (rd->sampleRate * 600))
+        {
+            const int len = (int) rd->lengthInSamples;
+            AudioBuffer<float> raw (2, len);
+            raw.clear();
+            rd->read (&raw, 0, len, 0, true, rd->numChannels > 1);
+            if (rd->numChannels == 1) raw.copyFrom (1, 0, raw, 0, 0, len);
+            const double ratio = rd->sampleRate / StudioPlayer::fileRate;
+            const int pad = (int) std::round (start * StudioPlayer::fileRate), outLen = (int) (len / ratio);
+            buf = std::make_shared<AudioBuffer<float>> (2, pad + outLen);
+            buf->clear();
+            for (int ch = 0; ch < 2; ++ch) { LagrangeInterpolator li; li.process (ratio, raw.getReadPointer (ch), buf->getWritePointer (ch, pad), outLen); }
+            out.deleteFile();
+            WavAudioFormat wav;
+            if (std::unique_ptr<AudioFormatWriter> w (wav.createWriterFor (new FileOutputStream (out), StudioPlayer::fileRate, 2, 24, {}, 0)); w != nullptr)
+                w->writeFromAudioSampleBuffer (*buf, 0, buf->getNumSamples());
+        }
+        MessageManager::callAsync ([self, rp, out, buf, start]
+        {
+            if (rp == nullptr) return;
+            rp->preparing = false;
+            if (buf == nullptr || ! out.existsAsFile()) return;
+            rp->vocalFile = out;
+            rp->preview = buf;
+            rp->startSec = start;
+            rp->repaint();
+            if (self != nullptr) self->refreshButtons();
+        });
+    });
 }
 
 VoicePage::~VoicePage() = default;
@@ -156,14 +333,23 @@ void VoicePage::markStyles()
 
 void VoicePage::refreshButtons()
 {
-    const bool working = ! snap.jobs.empty() && snap.jobs.front().live();
-    create.setEnabled (snap.connected && consent.getToggleState() && ! working);
-    stop.setVisible (working);
+    const bool working = snap.connected && ! snap.jobs.empty() && snap.jobs.front().live(); // (no helper: nothing is running)
+    const bool ready = snap.connected && consent.getToggleState() && ! working && ! snap.sending && lyrics.getText().trim().isNotEmpty()
+                    && voice.getText().isNotEmpty() && section.getNumItems() > 0;
+    create.setEnabled (ready);
+    create.setButtonText (snap.sending ? "Sending your section..." : "Create vocal");
+    if (stop.isVisible() != working) { stop.setVisible (working); resized(); }
+    for (auto* r : rows)
+    {
+        r->play.setEnabled (r->preview != nullptr);
+        r->toTrack.setEnabled (r->vocalFile.existsAsFile() && r->toTrack.getButtonText() != "added");
+    }
 }
 
 void VoicePage::setSnapshot (const lp::voice::Snapshot& s)
 {
     snap = s;
+    if (! snap.message.isEmpty() && snap.messageBad) create.setEnabled (true);
     StringArray had;
     for (int i = 0; i < voice.getNumItems(); ++i) had.add (voice.getItemText (i));
     if (had != snap.voices)
@@ -261,10 +447,34 @@ void VoicePage::resized()
         if (! snap.jobs.empty())
             for (auto& res : snap.jobs.front().results)
             {
-                if (i >= rows.size()) addAndMakeVisible (rows.add (new ResultRow (proc, th)));
+                if (i >= rows.size())
+                {
+                    auto* nr = rows.add (new ResultRow (proc, th));
+                    addAndMakeVisible (nr);
+                    nr->play.onClick = [this, nr]
+                    {
+                        // play it with the song from its section (again: stop)
+                        if (nr->play.getButtonText() == "stop") { proc.setVoicePreview (nullptr); proc.previewPlaying = false; nr->play.setButtonText ("play"); return; }
+                        if (nr->preview == nullptr) return;
+                        for (auto* r : rows) r->play.setButtonText ("play");
+                        proc.setVoicePreview (nr->preview);
+                        proc.previewPos = jmax (0.0, nr->startSec - 0.5) * StudioPlayer::fileRate;
+                        proc.previewPlaying = true;
+                        nr->play.setButtonText ("stop");
+                    };
+                    nr->toTrack.onClick = [this, nr]
+                    {
+                        if (! nr->vocalFile.existsAsFile()) return;
+                        proc.songJob.addSungVocal (nr->vocalFile, "sung " + String (nr->res.n),
+                                                   "sung by the voice helper (version " + String (nr->res.n) + "): words " + String (nr->res.words) + "%, in key " + String (nr->res.key) + "%");
+                        nr->toTrack.setButtonText ("added");
+                        nr->toTrack.setEnabled (false);
+                    };
+                }
                 auto* row = rows[i];
-                row->set (res);
-                row->setBounds (area.withY (area.getY() + (float) i * 62.0f).withHeight (56.0f).toNearestInt());
+                row->set (res, snap.jobs.front().id);
+                if (auto f = snap.files.find (snap.jobs.front().id + "/" + String (res.n)); f != snap.files.end()) prepare (*row, f->second);
+                row->setBounds (area.withY (area.getY() + (float) i * 52.0f).withHeight (47.0f).toNearestInt());
                 row->setVisible (true);
                 ++i;
             }
@@ -275,7 +485,7 @@ Rectangle<float> VoicePage::resultsArea() const
 {
     auto c = progressCard().reduced (18.0f, 16.0f);
     c.removeFromTop (24);
-    c.removeFromTop (78 + 8 + 46 + 10); // the wave, then the steps
+    c.removeFromTop (54 + 8 + 46 + 8); // the wave, then the steps
     return c;
 }
 
@@ -345,16 +555,16 @@ void VoicePage::paint (Graphics& g)
                      : j->state == "queued" ? String ("WAITING FOR THE ONE BEFORE")
                      : "SINGING: " + j->title.toUpperCase();
         label (g, title, head.withTrimmedRight (70.0f), t);
-        if (j != nullptr && j->live())
+        if (snap.connected && j != nullptr && j->live())
         {
             g.setFont (lp::ui::mono (10.0f, true, 0.1f));
             g.setColour (t.ink);
             g.drawText (clock (Time::getCurrentTime().toMilliseconds() / 1000.0 - j->created), head, Justification::centredRight, false);
         }
         // the wave: four lines, faster and bigger as the song gets further along
-        auto wave = in.removeFromTop (78.0f);
+        auto wave = in.removeFromTop (54.0f);
         {
-            const bool live = j != nullptr && j->live();
+            const bool live = snap.connected && j != nullptr && j->live();
             int at = 0;
             if (j != nullptr) for (int k = 0; k < (int) snap.stages.size(); ++k) if (snap.stages[(size_t) k].first == j->stage) at = k;
             const float amp = live ? 0.25f + 0.12f * (float) at : j != nullptr && j->state == "done" ? 0.55f : 0.08f;
@@ -438,7 +648,13 @@ void VoicePage::paint (Graphics& g)
             g.setColour (Colour (0xffff8f8f));
             g.drawFittedText (j->error, list.removeFromTop (48.0f).toNearestInt(), Justification::topLeft, 3, 1.0f);
         }
-        if (j == nullptr || j->results.empty())
+        if (snap.message.isNotEmpty() && (snap.messageBad || j == nullptr || snap.sending))
+        {
+            g.setFont (font (12.0f, lp::ui::Light));
+            g.setColour (snap.messageBad ? Colour (0xffff8f8f) : t.inkDim);
+            g.drawText (snap.message, r.reduced (18.0f, 12.0f).removeFromBottom (16.0f), Justification::centredLeft, true);
+        }
+        if (j == nullptr || (j->results.empty() && j->state != "error" && j->state != "cancelled"))
         {
             g.setFont (font (13.0f, lp::ui::Light));
             g.setColour (t.inkDim);
@@ -461,19 +677,29 @@ VoicePage::ResultRow::ResultRow (LivePlanetProcessor& p, const lp::ui::Theme*& t
     addAndMakeVisible (drag);
 }
 
-void VoicePage::ResultRow::set (const lp::voice::Result& r)
+void VoicePage::ResultRow::set (const lp::voice::Result& r, const String& id)
 {
+    if (id != jobId || r.n != res.n)
+    {
+        // another version: nothing of the old one carries over
+        vocalFile = File(); preview = nullptr; preparing = false;
+        toTrack.setButtonText ("add as track"); toTrack.setEnabled (true);
+        play.setButtonText ("play");
+    }
     res = r;
+    jobId = id;
+    play.setEnabled (preview != nullptr);
+    toTrack.setEnabled (vocalFile.existsAsFile() && toTrack.getButtonText() != "added");
     repaint();
 }
 
 void VoicePage::ResultRow::resized()
 {
-    auto b = getLocalBounds().reduced (12, 10);
-    play.setBounds (b.removeFromLeft (38).withSizeKeepingCentre (38, 38));
-    toTrack.setBounds (b.removeFromRight (104).withSizeKeepingCentre (104, 30));
+    auto b = getLocalBounds().reduced (10, 6);
+    play.setBounds (b.removeFromLeft (36).withSizeKeepingCentre (35, 35));
+    toTrack.setBounds (b.removeFromRight (104).withSizeKeepingCentre (104, 28));
     b.removeFromRight (6);
-    drag.setBounds (b.removeFromRight (110).withSizeKeepingCentre (110, 30));
+    drag.setBounds (b.removeFromRight (110).withSizeKeepingCentre (110, 28));
 }
 
 void VoicePage::ResultRow::paint (Graphics& g)
@@ -484,11 +710,11 @@ void VoicePage::ResultRow::paint (Graphics& g)
     g.fillRoundedRectangle (r, 12.0f);
     g.setColour (Colours::white.withAlpha (0.06f));
     g.drawRoundedRectangle (r.reduced (0.5f), 12.0f, 1.0f);
-    auto in = r.reduced (12.0f, 9.0f).withTrimmedLeft (52.0f).withTrimmedRight (236.0f);
-    g.setFont (font (14.0f, lp::ui::Medium));
+    auto in = r.reduced (10.0f, 6.0f).withTrimmedLeft (48.0f).withTrimmedRight (234.0f);
+    g.setFont (font (13.5f, lp::ui::Medium));
     g.setColour (t.ink);
-    g.drawText ("Version " + String (res.n), in.removeFromTop (18.0f), Justification::centredLeft, false);
-    auto m = in.removeFromTop (20.0f);
+    g.drawText ("Version " + String (res.n), in.removeFromTop (17.0f), Justification::centredLeft, false);
+    auto m = in.removeFromTop (17.0f);
     meter (g, m.removeFromLeft (m.getWidth() / 2 - 6.0f), "WORDS", res.words, t);
     m.removeFromLeft (12.0f);
     meter (g, m, "IN KEY", res.key, t);

@@ -784,29 +784,47 @@ public:
     void resized() override;
     void setSnapshot (const lp::voice::Snapshot&);
     void setSong (const juce::StringArray& sectionNames, int pick, const juce::String& keyText, const juce::String& bpmText);
+    void refresh();                 // (every frame while it shows) the helper's news and the song's sections
+    void shown (bool isShown);      // keep up with the helper only while it shows (or while it sings)
 
 private:
     struct ResultRow : public juce::Component
     {
         ResultRow (LivePlanetProcessor&, const lp::ui::Theme*&);
-        void set (const lp::voice::Result&);
+        void set (const lp::voice::Result&, const juce::String& jobId);
         void paint (juce::Graphics&) override;
         void resized() override;
         LivePlanetProcessor& proc;
         const lp::ui::Theme*& th;
         lp::voice::Result res;
-        juce::File vocalFile;
+        juce::String jobId;
+        juce::File vocalFile;                                 // the version, starting at bar 1 (dragged, made a track)
+        std::shared_ptr<juce::AudioBuffer<float>> preview;    // ...at 48 kHz, to play with the song
+        double startSec = 0.0;
+        bool preparing = false;
         juce::TextButton play { "play" }, toTrack { "add as track" };
         FilePill drag;
     };
     void timerCallback() override;
     void markStyles();
     void refreshButtons();
+    void startCreate();
+    void prepare (ResultRow&, const juce::File& fetched);
+    juce::File voiceFolder() const;
+    void loadJobs();
+    void saveJobs();
     juce::Rectangle<float> lyricsCard() const, styleCard() const, setupCard() const, progressCard() const, resultsArea() const;
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
     lp::voice::Snapshot snap;
-    juce::String songKey, songBpm;
+    int seenSerial = -1, seenSongVersion = -1;
+    bool demo = false;
+    juce::String songKey, songBpm, songKeyName;  // songKeyName: the minor key sent to the helper ("A")
+    double songBpmValue = 120.0;
+    juce::File songFolder;
+    std::vector<std::pair<int, double>> sectionInfo; // (section index, start seconds) for each choice
+    std::map<juce::String, std::pair<double, juce::String>> jobStarts; // job id -> (its section's start, its name)
+    std::set<juce::String> asked;   // versions asked for already
     float phase = 0.0f;
     juce::TextEditor lyrics, style;
     juce::OwnedArray<juce::TextButton> tagChips, styleChips;
@@ -818,6 +836,7 @@ private:
     juce::Slider tuning, runs;
     juce::ToggleButton clean { "remove background noise" }, consent { "this is my voice, or I have the singer's permission" };
     juce::OwnedArray<ResultRow> rows;
+    std::unique_ptr<juce::FileChooser> chooser;
 };
 
 class TrackEditor : public juce::Component
@@ -971,9 +990,11 @@ public:
 private:
     void timerCallback() override;
     void runSearch();
+public:
     void setPage (int p);
-    void applyTheme();
     enum Page { Write = 0, Studio, Edit, Sound, Voice };
+private:
+    void applyTheme();
     juce::Rectangle<int> tabBounds (int i) const;
 
     struct Knob

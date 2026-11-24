@@ -1192,6 +1192,8 @@ void SongPanel::mouseUp (const MouseEvent& e)
         m.addItem (PopupMenu::Item (open.haveSong ? "Rename \"" + open.song.title + "\"..." : String ("Rename Song...")).setID (3).setEnabled (open.haveSong && ! busy));
         m.addSeparator();
         m.addItem (1, "Storage & cleanup...");
+        m.addSeparator();
+        m.addItem (PopupMenu::Item ("Voice page (experimental)").setID (4).setTicked ((bool) lp::setting ("voiceLab", false)));
         SafePointer<SongPanel> self (this);
         m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (songsLink.toNearestInt())), [self, recent] (int id)
         {
@@ -1208,6 +1210,13 @@ void SongPanel::mouseUp (const MouseEvent& e)
                     if (f.existsAsFile()) f = f.getParentDirectory(); // (song.json or any file inside it)
                     if (f.getChildFile ("song.json").existsAsFile()) self->proc.songJob.openSong (f);
                 });
+                return;
+            }
+            if (id == 4)
+            {
+                // the experimental Voice page: a fifth tab (it needs the voice helper running on this computer)
+                lp::setSetting ("voiceLab", ! (bool) lp::setting ("voiceLab", false));
+                if (auto* ed = self->findParentComponentOfClass<LivePlanetEditor>()) { ed->setPage (LivePlanetEditor::Write); ed->repaint(); }
                 return;
             }
             if (id == 3)
@@ -2074,6 +2083,7 @@ void LivePlanetEditor::setPage (int p)
     const bool write = p == Write, studio = p == Studio, edit = p == Edit, sound = p == Sound, sky = false; // (the weather page is gone)
     trackEditor.setVisible (edit);
     voicePage.setVisible (p == Voice);
+    voicePage.shown (p == Voice);
     studioKey.setVisible (studio);
     studioMode.setVisible (studio);
     masterBox.setVisible (studio);
@@ -2316,6 +2326,7 @@ void LivePlanetEditor::timerCallback()
     else if (sampleView.isVisible())
         sampleView.setVisible (false);
     if (page == Edit) trackEditor.refresh();
+    if (page == Voice) voicePage.refresh();
     repaint (0, 0, getWidth(), 70); // the top bar (library and tempo)
 }
 

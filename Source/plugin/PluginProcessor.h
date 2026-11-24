@@ -8,6 +8,7 @@
 #include "SongJob.h"
 #include "StudioPlayer.h"
 #include "LiveDrums.h"
+#include "VoiceHelper.h"
 #include "../engine/SampleFx.h"
 #include "../engine/Master.h"
 #include "../engine/Sampler.h"
@@ -135,6 +136,19 @@ public:
         liveDrums.audition (note, vel);
         notePadHit (note, vel, 0);
     }
+    // ---- Voice (experimental): the local voice helper, and a sung version heard with the song
+    lp::voice::Client voiceClient;
+    // the song's section (all tracks as you hear them) as a WAV for the helper to sing over (background thread)
+    juce::File renderSectionForVoice (int sectionIndex);
+    // a version playing along with the song: 48 kHz, starting at bar 1 (null = none)
+    void setVoicePreview (std::shared_ptr<juce::AudioBuffer<float>> b)
+    {
+        std::shared_ptr<juce::AudioBuffer<float>> old;
+        { const juce::SpinLock::ScopedLockType sl (voicePreviewLock); old = std::move (voicePreview); voicePreview = std::move (b); }
+    }
+    bool hasVoicePreview() const { const juce::SpinLock::ScopedLockType sl (voicePreviewLock); return voicePreview != nullptr; }
+    juce::SpinLock voicePreviewLock;
+    std::shared_ptr<juce::AudioBuffer<float>> voicePreview;
     std::atomic<int> liveTrack { -1 };
     std::atomic<double> loopStartBeat { 0.0 }, loopBeats { 4.0 };
     void startDrumLoop (int track, double startBeat, double beats);

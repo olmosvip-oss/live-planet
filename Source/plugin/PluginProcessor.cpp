@@ -426,6 +426,26 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         const int lt = liveTrack.load();
         const bool looping = preview && lt >= 0;
         studio.liveInL = studio.liveInR = nullptr;
+        // a sung version from the Voice page, in time with the song (it starts at bar 1, like the stems)
+        {
+            const juce::SpinLock::ScopedTryLockType vl (voicePreviewLock);
+            if (vl.isLocked() && voicePreview != nullptr)
+            {
+                const auto& vb = *voicePreview;
+                const int vn = vb.getNumSamples();
+                const float* va = vb.getReadPointer (0);
+                const float* vr = vb.getReadPointer (std::min (1, vb.getNumChannels() - 1));
+                for (int i = 0; i < n; ++i)
+                {
+                    const double fp = pos + i * inc;
+                    const int i0 = (int) fp;
+                    if (i0 < 0 || i0 + 1 >= vn) continue;
+                    const float fr = (float) (fp - i0);
+                    L[i] += va[i0] + (va[i0 + 1] - va[i0]) * fr;
+                    R[i] += vr[i0] + (vr[i0 + 1] - vr[i0]) * fr;
+                }
+            }
+        }
         if (looping)
         {
             if (! liveLoop) // (no room for it in the mixer this block: played straight, at the track's volume)
@@ -1448,4 +1468,32 @@ void LivePlanetProcessor::addLibraryFolder (const juce::File& f)
     list.getParentDirectory().createDirectory();
     list.appendText (f.getFullPathName() + "\n");
     rescanLibrary();
+}
+
+// the song's section as you hear it (every track, with its mixer), for the voice helper to sing over
+juce::File LivePlanetProcessor::renderSectionForVoice (int sectionIndex)
+{
+    const auto st = songJob.getStatus();
+    if (! st.haveSong || sectionIndex < 0 || sectionIndex >= (int) st.song.sections.size()) return {};
+    const auto& sec = st.song.sections[(size_t) sectionIndex];
+    juce::Array<juce::File> stems;
+    for (auto& t : st.tracks) stems.add (t.stem);
+    const double barSamples = 4.0 * 60.0 / st.song.bpm * StudioPlayer::fileRate;
+    const int a = (int) std::round (sec.startBar * barSamples), len = (int) std::round (sec.bars * barSamples);
+    // just the section, from a bar before it (so echoes and rooms are already ringing as it starts)
+    const int warm = std::min (a, (int) std::round (barSamples));
+    const auto all = StudioPlayer::bounce (stems, studio.mix, st.song.bpm, nullptr, a - warm, warm + len);
+    if (all.getNumSamples() < warm + len || len <= 0) return {};
+    juce::AudioBuffer<float> cut (2, len);
+    for (int ch = 0; ch < 2; ++ch) cut.copyFrom (ch, 0, all, std::min (ch, all.getNumChannels() - 1), warm, len);
+    // the same loudness as a mix, kept below clipping
+    const float pk = std::max (cut.getMagnitude (0, 0, len), cut.getMagnitude (1, 0, len));
+    if (pk > 0.0f) cut.applyGain (juce::jmin (4.0f, 0.89f / pk));
+    const auto f = st.files.folder.getChildFile ("voice").getChildFile (juce::String (sec.name) + " (" + juce::String (sec.bars) + " bars).wav");
+    f.getParentDirectory().createDirectory();
+    f.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (f), StudioPlayer::fileRate, 2, 24, {}, 0));
+    if (w == nullptr || ! w->writeFromAudioSampleBuffer (cut, 0, len)) return {};
+    return f;
 }

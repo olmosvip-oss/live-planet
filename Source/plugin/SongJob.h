@@ -5,6 +5,7 @@
 #include "../song/OneNote.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <set>
+#include <tuple>
 #include "../song/Song.h"
 #include "../song/SongFile.h"
 #include "../song/Chords.h"
@@ -23,7 +24,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -45,6 +46,7 @@ public:
         juce::String keyText; // e.g. "G# major to C minor, down 5 st"
         bool locked = false;  // kept when the rest is written again
         bool vocal = false;   // a vocal track (it has the Vocal chain)
+        bool tunable = false; // a vocal with its untouched recording kept (it has Auto-tune)
     };
 
     struct Status
@@ -1410,6 +1412,19 @@ public:
     std::pair<int, bool> songKey() const { const juce::ScopedLock sl (lock); return { current.key, current.minor }; }
 
     // your vocal, auto-tuned to the song's key, as a new track (natural or hard)
+    // a vocal sung by the voice helper (from the Voice page) as a new track: it starts at bar 1 (silent until its
+    // section), keeps its recording untouched (so Auto-tune can work on it) and has the Vocal chain
+    void addSungVocal (const juce::File& vocal, const juce::String& name, const juce::String& about)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingSung = { vocal, name, about };
+            edits.push_back ({ 0, EditOp::AddSung });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
     void addTunedVocal (const juce::File& vocal, bool hard)
     {
         {
@@ -2299,6 +2314,7 @@ private:
             const auto lower = juce::String (p.name).toLowerCase() + " " + p.source.toLowerCase();
             t.vocal = p.vocal.on || lower.contains ("vocal") || lower.contains ("vox") || lower.contains ("chop");
         }
+        t.tunable = p.tune.source.isNotEmpty();
         const juce::String n (p.name);
         if (p.kind == lp::song::PartKind::Drums || p.kind == lp::song::PartKind::Fx || n.contains ("drum") || n == "percussion") t.group = 4;
         else if (p.kind == lp::song::PartKind::Bass || n.contains ("bass"))                t.group = 3;
@@ -2926,6 +2942,42 @@ private:
         saveSession();
     }
 
+    void addSung()
+    {
+        lp::song::Song song;
+        std::tuple<juce::File, juce::String, juce::String> what;
+        {
+            const juce::ScopedLock sl (lock);
+            if (current.parts.empty() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
+            song = current; what = pendingSung;
+        }
+        const auto& [file, name, about] = what;
+        if (! file.existsAsFile()) return;
+        lp::song::Part part;
+        part.kind = lp::song::PartKind::Melody;
+        part.name = ("vocal (" + name + ")").toStdString(); // ("vocal (" plays the file from bar 1)
+        part.samplePath = file.getFullPathName();
+        part.tune.source = file.getFullPathName();     // Auto-tune starts from it, untouched
+        part.tune.key = song.minor ? song.key : (song.key + 9) % 12;
+        part.tune.scale = 1;
+        part.source = "voice helper: " + name;
+        part.remix = about;
+        song.parts.push_back (part);
+        juce::AudioBuffer<float> buf;
+        if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
+        const int tr = (int) song.parts.size() - 1;
+        const auto stem = currentFolder.getChildFile ("stems").getChildFile (
+            juce::String (tr + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (added " + juce::String (++editCounter) + ").wav");
+        if (! writeStem (stem, buf, currentRs.sampleRate)) return;
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        status.tracks.push_back (info (part, stem, song));
+        status.message = juce::String (part.name) + " is a new track: open it in Edit for its Vocal chain and Auto-tune";
+        ++status.version;
+        saveSession();
+    }
+
     static lp::song::tune::Settings tuneSettings (const lp::song::VocalTune& v)
     {
         lp::song::tune::Settings s;
@@ -3013,6 +3065,7 @@ private:
             case EditOp::FromTake: return "track from a take";
             case EditOp::Arrange: return "arrangement";
             case EditOp::Tempo: return "tempo change";
+            case EditOp::AddSung: return "add sung vocal";
             case EditOp::Add808: return "add 808";
             case EditOp::SliceDrums: return on ("slice");
             case EditOp::AddTuned: return "add tuned vocal";
@@ -3473,6 +3526,7 @@ private:
         if (op == EditOp::Add808) { add808(); return; }
         if (op == EditOp::SliceDrums) { sliceDrums (tr); return; }
         if (op == EditOp::AddTuned) { addTuned(); return; }
+        if (op == EditOp::AddSung) { addSung(); return; }
         if (op == EditOp::Remove) { removeTrack (tr); return; }
         if (op == EditOp::Rewrite)
         {
@@ -4385,6 +4439,7 @@ private:
     std::map<int, std::pair<std::vector<lp::song::ChopSlice>, std::vector<int>>> pendingChops;
     std::map<int, lp::song::VocalTune> pendingTune;
     double pendingBpm = 0.0;
+    std::tuple<juce::File, juce::String, juce::String> pendingSung;
     mutable std::map<int, float> kitGain; // (drumHits) each drum track's kit loudness
     std::map<int, std::pair<int, int>> pendingDrumSwap;
     std::map<int, std::map<int, lp::song::VoiceFx>> pendingVoiceFx; // track -> note -> settings, waiting to be recorded

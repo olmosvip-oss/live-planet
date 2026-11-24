@@ -1,0 +1,41 @@
+# Voice (experimental)
+
+A fifth page, VOICE, that sings your lyrics over a section of your song in a voice you have permission to use.
+The singing models are NOT in the plugin: a separate local app, the voice helper, does it. The plugin only talks
+to it, on a background thread (never the audio thread). With no helper running, the page says so and everything
+else in Loopwright works as before.
+
+## Switching it on
+SONGS menu (bottom of Settings) > "Voice page (experimental)". Off by default. (`LP_VOICE=1` also shows it, for tests.)
+
+## How the plugin finds the helper
+The helper writes `{port, token, pid}` (mode 0600) to:
+- macOS: `~/Library/Application Support/Loopwright/voice-helper.json`
+- other: `<app data>/Loopwright/voice-helper.json`
+- `LP_VOICE_HELPER_FILE=<path>` overrides it (tests).
+
+The plugin only connects to 127.0.0.1, sends the token as `X-Token` on every POST, caps sizes, checks job ids
+(12 hex characters) and audio paths, and treats every answer as data.
+
+## What it does
+1. Create: records the chosen section of your song (all tracks, as you hear them, from a bar before it so echoes are
+   ringing) to `<song>/voice/<section>.wav`, uploads it (`kind=track`), then `POST /api/create` with your lyrics,
+   style, voice, the song's key (a major song: its relative minor, the same notes) and tempo, takes, versions,
+   tuning, runs, noise removal and your permission.
+2. While it sings: polls `/api/jobs` about every 1.5 s, only while the page is open or a job is running.
+3. Each finished version is fetched to `<song>/voice/<job>/vocal_N.wav`, then written again starting at bar 1
+   (silent until its section) as `<title> vN (<section>).wav`: that's what you drag, what plays along with the
+   song, and what "add as track" adds (a vocal track with its Vocal chain and Auto-tune).
+4. `<song>/voice/jobs.json` remembers where each job's section starts.
+
+## Testing without the real helper
+`tools/fake_voice_helper.py` answers the same API: each stage takes a moment and the "vocal" is a tone in the key.
+
+    python3 tools/fake_voice_helper.py --dir /tmp/fake-voice --conn /tmp/fake-voice/voice-helper.json --stage-seconds 2
+    LP_VOICE=1 LP_VOICE_HELPER_FILE=/tmp/fake-voice/voice-helper.json <Loopwright app>
+
+`--fail` makes every job end in an error. Kill it mid-job to check the page copes with the helper going away.
+
+## Not done (before customers)
+Everything in the helper brief's "Before customers get it" list: a signed helper installer and model downloads,
+license and legal review, consent wording and takedown policy, privacy text, Windows, hardware checks. Minor keys only.
