@@ -1676,6 +1676,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       songView (p),
       studioView (p),
       trackEditor (p, lnf.th),
+      voicePage (p, lnf.th),
       grainView (p),
       sourcesPanel (p, lnf.th),
       pillMidi ("drag midi", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.midiFile.getFullPathName()) : StringArray(); }),
@@ -1736,6 +1737,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (songView);
     addChildComponent (studioView);
     addChildComponent (trackEditor);
+    addChildComponent (voicePage);
     setUpKeyBoxes (p, studioKey, studioMode, studioKeyAtt, studioModeAtt);
     addChildComponent (studioKey);
     addChildComponent (studioMode);
@@ -1913,6 +1915,25 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         Desktop::getInstance().setGlobalScaleFactor ((float) std::atof (scale));
     applyTheme();
     setPage (Write);
+    if (std::getenv ("LP_VOICE_DEMO") != nullptr) // (for screenshots: the Voice page in the middle of singing)
+        MessageManager::callAsync ([sp = Component::SafePointer<LivePlanetEditor> (this)]
+    {
+        if (sp == nullptr) return;
+        auto& voicePage = sp->voicePage;
+        lp::voice::Snapshot d;
+        d.connected = true;
+        d.voices = { "my voice (clean)", "demo voice" };
+        d.stages = { { "sing", "Writing melodies" }, { "score", "Checking words and key" }, { "clean", "Removing background noise" },
+                     { "voice", "Singing in your voice" }, { "mix", "Finishing and mixing" } };
+        lp::voice::Job j;
+        j.id = "a1b2c3d4e5f6"; j.state = "running"; j.stage = "voice"; j.note = "version 2 of 2"; j.title = "Hold me close";
+        j.created = Time::getCurrentTime().toMilliseconds() / 1000.0 - 263.0;
+        j.results.push_back ({ 1, "/audio/a1b2c3d4e5f6/vocal_1.wav", "/audio/a1b2c3d4e5f6/mix_1.wav", "hold me close", 92, 96 });
+        d.jobs.push_back (j);
+        voicePage.setSnapshot (d);
+        voicePage.setSong ({ "Chorus 1   (bars 33 to 40, 16 s)", "Verse 1   (bars 9 to 24, 32 s)", "Chorus 2   (bars 57 to 64, 16 s)" }, 0, "A MINOR", "120 BPM");
+        sp->setPage (Voice);
+    });
 
     // only the text boxes ever take the keyboard, so your DAW's keys keep playing notes
     setWantsKeyboardFocus (false);
@@ -2033,18 +2054,26 @@ void LivePlanetEditor::applyTheme()
 
 Rectangle<int> LivePlanetEditor::tabBounds (int i) const
 {
-    static const int widths[] = { 64, 72, 52, 64 };
+    static const int widths[] = { 64, 72, 52, 64, 64 };
     int x = 300;
     for (int k = 0; k < i; ++k) x += widths[k] + 22;
     return { x, 20, widths[i], 30 };
 }
 
+// the experimental Voice page: off unless switched on (Settings), or LP_VOICE=1 for testing
+bool LivePlanetEditor::voiceOn() const
+{
+    return (bool) lp::setting ("voiceLab", false) || std::getenv ("LP_VOICE") != nullptr;
+}
+
 void LivePlanetEditor::setPage (int p)
 {
+    if (p == Voice && ! voiceOn()) p = Write;
     page = p;
     if (p != Edit) trackEditor.stopLive(); // the drum editor's loop stops when you leave it
     const bool write = p == Write, studio = p == Studio, edit = p == Edit, sound = p == Sound, sky = false; // (the weather page is gone)
     trackEditor.setVisible (edit);
+    voicePage.setVisible (p == Voice);
     studioKey.setVisible (studio);
     studioMode.setVisible (studio);
     masterBox.setVisible (studio);
@@ -2352,8 +2381,8 @@ void LivePlanetEditor::paint (Graphics& g)
         g.setColour (th.grassLight);
         g.drawText ("BETA", badge, Justification::centred, false);
 
-        static const char* tabs[] = { "WRITE", "STUDIO", "EDIT", "SOUND" };
-        for (int i = 0; i < 4; ++i)
+        static const char* tabs[] = { "WRITE", "STUDIO", "EDIT", "SOUND", "VOICE" };
+        for (int i = 0; i < (voiceOn() ? 5 : 4); ++i)
         {
             auto t = tabBounds (i).toFloat();
             g.setFont (lp::ui::mono (12.0f, i == page, 0.14f));
@@ -2501,7 +2530,7 @@ void LivePlanetEditor::mouseDown (const MouseEvent& e)
         pb.giveAwayKeyboardFocus();
     if (e.eventComponent == this && ! undoChip.isEmpty() && undoChip.contains (e.position)) { proc.songJob.undo(); repaint(); return; }
     if (e.eventComponent == this)
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < (voiceOn() ? 5 : 4); ++i)
             if (tabBounds (i).expanded (8, 10).contains (e.getPosition())) { setPage (i); return; }
 }
 
@@ -2577,6 +2606,7 @@ void LivePlanetEditor::resized()
     masterInfo.setBounds (masterBox.getX() - 8 - 240, cardTimeline.getY() + 12, 240, 26);
     masterMeter.setBounds (masterBox.getX() - 26, cardTimeline.getY() + 8, 13, 34);
     trackEditor.setBounds (M + 24, 84 + 18, W - 2 * M - 48, 644 - 36);
+    voicePage.setBounds (M, 84, W - 2 * M, 644);
     if (page == Edit) playButton.setBounds (W - M - 24 - 44, 84 + 644 - 18 - 44, 44, 44);
 
     // ---- sound: the instrument on the left, three knob cards on the right

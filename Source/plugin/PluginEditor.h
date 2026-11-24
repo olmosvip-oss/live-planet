@@ -1,4 +1,5 @@
 #pragma once
+#include "VoiceHelper.h"
 #include "../song/Tune.h"
 #include <set>
 #include "Meter.h"
@@ -772,6 +773,53 @@ private:
                      undoBtn { "undo" }, bigBtn { "bigger" };
 };
 
+// VOICE (experimental): lyrics and a style, sung over a part of your song by the local voice helper,
+// with every stage shown live and the versions to hear and drag out (VoicePage.cpp)
+class VoicePage : public juce::Component, private juce::Timer
+{
+public:
+    VoicePage (LivePlanetProcessor&, const lp::ui::Theme*& theme);
+    ~VoicePage() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void setSnapshot (const lp::voice::Snapshot&);
+    void setSong (const juce::StringArray& sectionNames, int pick, const juce::String& keyText, const juce::String& bpmText);
+
+private:
+    struct ResultRow : public juce::Component
+    {
+        ResultRow (LivePlanetProcessor&, const lp::ui::Theme*&);
+        void set (const lp::voice::Result&);
+        void paint (juce::Graphics&) override;
+        void resized() override;
+        LivePlanetProcessor& proc;
+        const lp::ui::Theme*& th;
+        lp::voice::Result res;
+        juce::File vocalFile;
+        juce::TextButton play { "play" }, toTrack { "add as track" };
+        FilePill drag;
+    };
+    void timerCallback() override;
+    void markStyles();
+    void refreshButtons();
+    juce::Rectangle<float> lyricsCard() const, styleCard() const, setupCard() const, progressCard() const, resultsArea() const;
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    lp::voice::Snapshot snap;
+    juce::String songKey, songBpm;
+    float phase = 0.0f;
+    juce::TextEditor lyrics, style;
+    juce::OwnedArray<juce::TextButton> tagChips, styleChips;
+    juce::ComboBox section, voice;
+    juce::TextButton addVoice { "add" }, create { "Create vocal" }, stop { "Stop" };
+    int takesN = 4, versionsN = 2;
+    Segmented takes { { "2", "4", "6", "8" }, [this] { return takesN / 2 - 1; }, [this] (int i) { takesN = (i + 1) * 2; repaint(); }, th },
+              versions { { "1", "2", "3" }, [this] { return versionsN - 1; }, [this] (int i) { versionsN = i + 1; repaint(); }, th };
+    juce::Slider tuning, runs;
+    juce::ToggleButton clean { "remove background noise" }, consent { "this is my voice, or I have the singer's permission" };
+    juce::OwnedArray<ResultRow> rows;
+};
+
 class TrackEditor : public juce::Component
 {
 public:
@@ -925,7 +973,7 @@ private:
     void runSearch();
     void setPage (int p);
     void applyTheme();
-    enum Page { Write = 0, Studio, Edit, Sound };
+    enum Page { Write = 0, Studio, Edit, Sound, Voice };
     juce::Rectangle<int> tabBounds (int i) const;
 
     struct Knob
@@ -950,6 +998,8 @@ private:
     SongView songView;
     StudioView studioView;
     TrackEditor trackEditor;
+    VoicePage voicePage;
+    bool voiceOn() const; // the experimental Voice page is switched on
     juce::ComboBox studioKey, studioMode;   // the song's key, at the top of the studio
     juce::ComboBox masterBox;               // mastering: off, or a platform's loudness
     juce::TextButton masterAB { "after" };  // hear the master, or the mix before it
