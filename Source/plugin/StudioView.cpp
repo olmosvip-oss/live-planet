@@ -345,7 +345,8 @@ void StudioView::paint (Graphics& g)
         const auto& t = st.tracks[(size_t) i];
         auto& m = proc.studio.mix[(size_t) i];
         auto row = rowBounds (i);
-        const Colour tc = t.colour != 0 ? Colour (t.colour) : trackColour (i);
+        // the theme colour (picked at the bottom of the window), unless you gave this track its own
+        const Colour tc = t.colour != 0 ? Colour (t.colour) : accent.brighter (0.15f);
         const bool picked = selectedTrack && selectedTrack() == i;
         {
             // its head: lit when it's open below (outlined when Delete would remove it)
@@ -805,7 +806,7 @@ void StudioView::mouseDown (const MouseEvent& e)
                         colours.addItem (it);
                     }
                     colours.addSeparator();
-                    colours.addItem (99, "Automatic", st.tracks[(size_t) i].colour != 0);
+                    colours.addItem (99, "Theme colour (automatic)", st.tracks[(size_t) i].colour != 0);
                     m.addSubMenu ("Track colour", colours);
                 }
                 m.addSeparator();
@@ -867,7 +868,7 @@ void StudioView::mouseDown (const MouseEvent& e)
                     colours.addItem (it);
                 }
                 colours.addSeparator();
-                colours.addItem (99, "Automatic", tr.colour != 0);
+                colours.addItem (99, "Theme colour (automatic)", tr.colour != 0);
                 m.addSubMenu ("Colour", colours);
             }
             m.addSeparator();

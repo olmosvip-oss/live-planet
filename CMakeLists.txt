@@ -33,6 +33,8 @@ if(LP_BUILD_PLUGIN)
 juce_add_plugin(LivePlanet
     PRODUCT_NAME "Loopwright"
     COMPANY_NAME "Loopwright"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon/icon-1024.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon/icon-256.png"
     BUNDLE_ID "com.loopwright.loopwright"
     PLUGIN_MANUFACTURER_CODE Lpwt
     PLUGIN_CODE Lpw1
