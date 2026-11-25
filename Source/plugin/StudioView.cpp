@@ -791,7 +791,7 @@ void StudioView::mouseDown (const MouseEvent& e)
                     for (int b = 0; b < st.song.sections[(size_t) sc].bars; ++b)
                         anyGone = anyGone || st.tracks[(size_t) i].silentBars.count (st.song.sections[(size_t) sc].startBar + b) > 0;
                 PopupMenu m;
-                m.addSectionHeader (String (st.tracks[(size_t) i].name).toUpperCase() + (sc >= 0 ? "  \xc2\xb7  " + String (st.song.sections[(size_t) sc].name).toUpperCase() : String()));
+                m.addSectionHeader (String (st.tracks[(size_t) i].name).toUpperCase() + (sc >= 0 ? String::fromUTF8 ("  \xc2\xb7  ") + String (st.song.sections[(size_t) sc].name).toUpperCase() : String()));
                 m.addItem (1, pickedClips.size() > 1 ? "Delete " + String ((int) pickedClips.size()) + " clips" : String ("Delete this clip"), ! pickedClips.empty());
                 m.addItem (2, "Bring it back (the bars deleted here)", anyGone);
                 {

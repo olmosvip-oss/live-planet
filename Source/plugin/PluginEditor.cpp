@@ -2697,7 +2697,7 @@ void LivePlanetEditor::paint (Graphics& g)
         {
             g.setFont (lp::ui::mono (10.0f, false, 0.14f));
             g.setColour (th.inkDim);
-            g.drawText ("THE OPEN TRACK IS HIDDEN  \xc2\xb7  CLICK A TRACK, OR DOUBLE-CLICK THE LINE ABOVE, TO SHOW IT",
+            g.drawText (String::fromUTF8 ("THE OPEN TRACK IS HIDDEN  \xc2\xb7  CLICK A TRACK, OR DOUBLE-CLICK THE LINE ABOVE, TO SHOW IT"),
                         cardDock.reduced (20, 0), Justification::centredLeft, true);
         }
         else
