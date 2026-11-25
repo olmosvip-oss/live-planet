@@ -2608,7 +2608,7 @@ void LivePlanetEditor::paint (Graphics& g)
     }
     if (page == Studio && ! studioView.isVisible())
     {
-        auto r = Rectangle<int> (28, 84, getWidth() - 56, 644);
+        auto r = Rectangle<int> (28, 84, getWidth() - 56, getHeight() - 32 - 84);
         card (g, r, th);
         g.setFont (font (16.0f, lp::ui::Medium));
         g.setColour (th.inkDim);
@@ -2702,7 +2702,7 @@ void LivePlanetEditor::mouseDrag (const MouseEvent& e)
 {
     if (! draggingSplit) return;
     dockCollapsed = false;
-    studioSplit = jlimit (200, 560, splitDragFrom + e.getDistanceFromDragStartY());
+    studioSplit = jlimit (200, getHeight() - 32 - 84 - 120, splitDragFrom + e.getDistanceFromDragStartY());
     resized();
     repaint();
 }
@@ -2775,7 +2775,9 @@ void LivePlanetEditor::resized()
 {
     auto k = [this] (const char* id) { return &knobById[id]->slider; };
     const int W = getWidth(), M = 28;
-    themeDots.setBounds (W - M - (lp::ui::numThemes * 22 + 4), kH - 34, lp::ui::numThemes * 22 + 4, 24);
+    // (the window can be any size: the pages grow to fill it; B is where they end)
+    const int B = getHeight() - 32;
+    themeDots.setBounds (W - M - (lp::ui::numThemes * 22 + 4), getHeight() - 34, lp::ui::numThemes * 22 + 4, 24);
     tourBtn.setBounds (210, 26, 18, 18);  // right after the logo's beta badge
     if (tour != nullptr) tour->setBounds (getLocalBounds());
     sourcesPanel.setBounds (getLocalBounds());
@@ -2783,9 +2785,9 @@ void LivePlanetEditor::resized()
     // ---- write: the hero + settings (song panel), the song, the drag buttons
     songPanel.setBounds (M, 84, W - 2 * M, 342);
     // the studio: the arrangement (sections over every track's lane), and the open track docked under it
-    cardTimeline = page == Studio ? Rectangle<int> (M, 84, W - 2 * M, dockCollapsed ? 728 - 84 - 10 - 40 : dockTall ? jmin (232, studioSplit) : studioSplit)
-                                  : Rectangle<int> (M, 442, W - 2 * M, 286);
-    cardDock = { M, cardTimeline.getBottom() + 10, W - 2 * M, 728 - cardTimeline.getBottom() - 10 };
+    cardTimeline = page == Studio ? Rectangle<int> (M, 84, W - 2 * M, dockCollapsed ? B - 84 - 10 - 40 : dockTall ? jmin (232, studioSplit) : studioSplit)
+                                  : Rectangle<int> (M, 442, W - 2 * M, B - 442);
+    cardDock = { M, cardTimeline.getBottom() + 10, W - 2 * M, B - cardTimeline.getBottom() - 10 };
     if (page == Studio)
     {
         studioView.setBounds (cardTimeline.getX() + 2, cardTimeline.getY() + 82, cardTimeline.getWidth() - 4, cardTimeline.getHeight() - 86);
@@ -2828,9 +2830,9 @@ void LivePlanetEditor::resized()
     vocalTabs.setBounds (M, 84, 420, 28);
     {
         const int top = voiceOn() ? 124 : 84;
-        voicePage.setBounds (M, top, W - 2 * M, 728 - top);
-        vocalsHub.setBounds (M, top, W - 2 * M, 728 - top);
-        drawSing.setBounds (M, top, W - 2 * M, 728 - top);
+        voicePage.setBounds (M, top, W - 2 * M, B - top);
+        vocalsHub.setBounds (M, top, W - 2 * M, B - top);
+        drawSing.setBounds (M, top, W - 2 * M, B - top);
     }
     if (page == Studio) playButton.setBounds (cardTimeline.getX() + 150, cardTimeline.getY() + 6, 30, 30);
 
@@ -2976,23 +2978,28 @@ LivePlanetWindow::LivePlanetWindow (LivePlanetProcessor& p) : AudioProcessorEdit
 {
     // the size you left it at, last time (read before anything can resize the window)
     const double scale = jlimit (0.6, 2.0, (double) lp::setting ("uiScale", 1.0));
+    const int w0 = (int) lp::setting ("uiWidth", roundToInt (kW * scale)), h0 = (int) lp::setting ("uiHeight", roundToInt (kH * scale));
     addAndMakeVisible (view);
     view.setBounds (0, 0, kW, kH);
     setResizable (true, true);
-    setResizeLimits ((int) (kW * 0.6), (int) (kH * 0.6), kW * 2, kH * 2);
-    if (auto* c = getConstrainer()) c->setFixedAspectRatio ((double) kW / (double) kH);
-    setSize (roundToInt (kW * scale), roundToInt (kH * scale));
+    // any shape: as big as your screen (the pages grow into the room), or smaller (everything scales down)
+    setResizeLimits ((int) (kW * 0.6), (int) (kH * 0.6), 8000, 5000);
+    setSize (jmax ((int) (kW * 0.6), w0), jmax ((int) (kH * 0.6), h0));
     ready = true;
 }
 
 void LivePlanetWindow::resized()
 {
-    const float scale = (float) getWidth() / (float) kW;
+    // drawn at the scale that fits the window's narrower side; the other side gets more room (not stretched)
+    const float scale = jlimit (0.6f, 2.0f, jmin ((float) getWidth() / (float) kW, (float) getHeight() / (float) kH));
+    view.setBounds (0, 0, roundToInt (getWidth() / scale), roundToInt (getHeight() / scale));
     view.setTransform (AffineTransform::scale (scale));
-    if (ready && std::abs ((double) scale - lastSaved) > 0.01) // (remembered once you've dragged it to a new size)
+    if (ready && (std::abs ((double) scale - lastSaved) > 0.01 || getWidth() != lastW || getHeight() != lastH)) // (remembered)
     {
-        lastSaved = scale;
+        lastSaved = scale; lastW = getWidth(); lastH = getHeight();
         lp::setSetting ("uiScale", (double) scale);
+        lp::setSetting ("uiWidth", getWidth());
+        lp::setSetting ("uiHeight", getHeight());
     }
 }
 

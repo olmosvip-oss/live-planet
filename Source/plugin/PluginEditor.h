@@ -840,6 +840,9 @@ private:
     std::function<void()> onClosed;
     juce::OwnedArray<juce::TextButton> chips;
     juce::String kind, message;
+    int loopBars = 0; // 0: a part played through; else a loop this many bars long, repeated
+    juce::TextButton asPart { "Instrumental" }, asLoop { "Loop" }, loop1 { "1 bar" }, loop2 { "2 bars" }, loop4 { "4 bars" };
+    void showType();
     juce::TextEditor describe;
     juce::TextButton go { "Generate" }, cancel { "Cancel" };
 };
@@ -1333,5 +1336,6 @@ private:
     LivePlanetEditor view;
     bool ready = false;
     double lastSaved = -1.0;
+    int lastW = 0, lastH = 0;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivePlanetWindow)
 };

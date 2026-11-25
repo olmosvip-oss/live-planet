@@ -17,18 +17,41 @@ String helperKeyName (const lp::song::Song& song)
 }
 
 // the helper's file (it starts where the section starts), padded with silence from the song's first bar
-static bool padToSongStart (const File& in, const File& out, double startSeconds, const std::vector<lp::song::stack::Bend>& bends = {})
+static bool padToSongStart (const File& in, const File& out, double startSeconds, const std::vector<lp::song::stack::Bend>& bends = {},
+                            double loopSeconds = 0.0, double totalSeconds = 0.0)
 {
     AudioFormatManager fm;
     fm.registerBasicFormats();
     std::unique_ptr<AudioFormatReader> rd (fm.createReaderFor (in));
     if (rd == nullptr || rd->sampleRate <= 0 || rd->lengthInSamples > (int64) (rd->sampleRate * 600)) return false;
-    const int len = (int) rd->lengthInSamples;
-    AudioBuffer<float> raw (2, len);
+    AudioBuffer<float> raw (2, (int) rd->lengthInSamples);
     raw.clear();
-    rd->read (&raw, 0, len, 0, true, rd->numChannels > 1);
-    if (rd->numChannels == 1) raw.copyFrom (1, 0, raw, 0, 0, len);
+    rd->read (&raw, 0, raw.getNumSamples(), 0, true, rd->numChannels > 1);
+    if (rd->numChannels == 1) raw.copyFrom (1, 0, raw, 0, 0, raw.getNumSamples());
     lp::song::stack::express (raw, rd->sampleRate, bends); // (a drawn melody's vibrato and slides)
+    if (loopSeconds > 0.0 && totalSeconds > loopSeconds)
+    {
+        // a loop: its bars, exactly, repeated over the whole stretch (each repeat blended in over 5 ms)
+        const int L = jmin (raw.getNumSamples(), (int) std::round (loopSeconds * rd->sampleRate));
+        const int T = (int) std::round (totalSeconds * rd->sampleRate), xf = jmin (L / 4, (int) (0.005 * rd->sampleRate));
+        if (L > 64 && T > L)
+        {
+            AudioBuffer<float> tiled (2, T);
+            tiled.clear();
+            for (int at = 0; at < T; at += L)
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < L + xf && at + i < T; ++i)
+                    {
+                        const int k = i % L == i ? i : i - L; // (past the end: the loop's start again, faded)
+                        float v = raw.getSample (ch, i < L ? i : k);
+                        if (i >= L) v *= 1.0f - (float) (i - L) / (float) xf;
+                        if (at > 0 && i < xf) v *= (float) i / (float) xf;
+                        tiled.addSample (ch, at + i, v);
+                    }
+            raw = std::move (tiled);
+        }
+    }
+    const int len = raw.getNumSamples();
     const double ratio = rd->sampleRate / StudioPlayer::fileRate;
     const int pad = (int) std::round (startSeconds * StudioPlayer::fileRate), outLen = (int) (len / ratio);
     AudioBuffer<float> buf (2, pad + outLen);
@@ -142,9 +165,11 @@ void AutoAdd::tick (LivePlanetProcessor& proc)
             if (tag.size() > 3) if (auto b = bends.find (tag[3]); b != bends.end()) bend = b->second;
             LivePlanetProcessor::DrawnMerge merge;
             if (tag.size() > 3) if (auto m = proc.drawnMerge.find (tag[3]); m != proc.drawnMerge.end()) merge = m->second;
-            Thread::launch ([p, in = f->second, out, start, name, about, layer, bend, tag, merge]
+            // a loop layer: "layer|start|kind|length|loopSeconds"
+            const double loopSecs = layer && tag.size() > 4 ? tag[4].getDoubleValue() : 0.0, totalSecs = layer && tag.size() > 3 ? tag[3].getDoubleValue() : 0.0;
+            Thread::launch ([p, in = f->second, out, start, name, about, layer, bend, tag, merge, loopSecs, totalSecs]
             {
-                if (! padToSongStart (in, out, start, bend)) return;
+                if (! padToSongStart (in, out, start, bend, loopSecs, totalSecs)) return;
                 if (merge.base != nullptr && ! mergeInto (out, merge)) return;
                 MessageManager::callAsync ([p, out, name, about, layer, token = tag.size() > 3 ? tag[3] : String()]
                 {
@@ -172,6 +197,21 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
         addAndMakeVisible (b);
     }
     pickKind (chips[1]);
+    struct T { TextButton* b; const char* tip; };
+    for (auto [b, tip] : { T { &asPart, "A part played all the way through your bars, following the song" },
+                           T { &asLoop, "A short loop that repeats over your bars, like a sample loop (quicker to make)" },
+                           T { &loop1, "a 1-bar loop" }, T { &loop2, "a 2-bar loop" }, T { &loop4, "a 4-bar loop" } })
+    {
+        b->setTooltip (tip);
+        b->setWantsKeyboardFocus (false);
+        addAndMakeVisible (*b);
+    }
+    asPart.onClick = [this] { loopBars = 0; showType(); };
+    asLoop.onClick = [this] { if (loopBars == 0) loopBars = 2; showType(); };
+    loop1.onClick = [this] { loopBars = 1; showType(); };
+    loop2.onClick = [this] { loopBars = 2; showType(); };
+    loop4.onClick = [this] { loopBars = 4; showType(); };
+    showType();
     describe.setTextToShowWhenEmpty ("describe it: funky disco bass, syncopated", Colours::grey);
     describe.setFont (font (14.0f));
     describe.setIndents (12, 9);
@@ -180,6 +220,17 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
     go.getProperties().set ("primary", true);
     go.onClick = [this] { start(); };
     cancel.onClick = [this] { if (onClosed) onClosed(); };
+}
+
+void LayerPopup::showType()
+{
+    auto lit = [] (TextButton& b, bool on) { b.getProperties().set ("primary", on); b.repaint(); };
+    lit (asPart, loopBars == 0);
+    lit (asLoop, loopBars > 0);
+    lit (loop1, loopBars == 1);
+    lit (loop2, loopBars == 2);
+    lit (loop4, loopBars == 4);
+    for (auto* b : { &loop1, &loop2, &loop4 }) b->setVisible (loopBars > 0);
 }
 
 void LayerPopup::pickKind (TextButton* b)
@@ -209,6 +260,11 @@ void LayerPopup::start()
     for (int i = firstSection; i < firstSection + sectionCount; ++i) bars += st.song.sections[(size_t) i].bars;
     // (the layer's place in the song: where it starts, what it is, how long: shown pulsing until it's made)
     r.tag = "layer|" + String (a.startBar * 240.0 / st.song.bpm, 3) + "|" + kind + "|" + String (bars * 240.0 / st.song.bpm, 3);
+    if (loopBars > 0)
+    {
+        r.loopBars = jmin (loopBars, bars);
+        r.tag << "|" << String (r.loopBars * 240.0 / st.song.bpm, 4); // (Loopwright repeats it over the bars)
+    }
     r.renderTrack = [&pr = proc, f = firstSection, n = sectionCount] { return pr.renderSectionForVoice (f, n); };
     proc.voiceClient.create (std::move (r));
     if (onClosed) onClosed();
@@ -218,6 +274,16 @@ void LayerPopup::resized()
 {
     auto c = cardBounds().reduced (24, 20);
     c.removeFromTop (54);
+    {
+        // what kind: a part played through, or a loop (and how long)
+        auto t = c.removeFromTop (30);
+        asPart.setBounds (t.removeFromLeft (120));
+        t.removeFromLeft (8);
+        asLoop.setBounds (t.removeFromLeft (80));
+        t.removeFromLeft (16);
+        for (auto* b : { &loop1, &loop2, &loop4 }) { b->setBounds (t.removeFromLeft (64)); t.removeFromLeft (6); }
+        c.removeFromTop (14);
+    }
     auto row = c.removeFromTop (30);
     int x = row.getX();
     for (auto* b : chips)
@@ -236,7 +302,7 @@ void LayerPopup::resized()
     go.setBounds (bt);
 }
 
-Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (560, 330); }
+Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (560, 374); }
 
 void LayerPopup::paint (Graphics& g)
 {

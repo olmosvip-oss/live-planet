@@ -102,6 +102,7 @@ public:
         std::function<juce::var()> melodies; // "Write melody": the written melodies, one a version (made on the background thread)
         juce::String layer; // "Generate a layer": the instrument the helper plays over the section instead of singing (bass, drums...)
         bool quick = false; // Draw & sing: just sing it (no word check, no mix: the take straight back)
+        int loopBars = 0;   // a layer as a loop: just this many bars made (Loopwright repeats it over the section)
     };
     void create (Request r) { push ({ Cmd::Create, std::move (r), {}, {}, 0, {} }); }
     void cancel (const juce::String& id) { if (validJobId (id)) push ({ Cmd::Cancel, {}, id, {}, 0, {} }); }
@@ -364,6 +365,7 @@ private:
             if (melodies.isArray()) o->setProperty ("melodies", melodies);
             if (c.req.layer.isNotEmpty()) o->setProperty ("layer", c.req.layer);
             if (c.req.quick) o->setProperty ("quick", true);
+            if (c.req.loopBars > 0) o->setProperty ("loop_bars", c.req.loopBars);
             const auto v = callJson ("/api/create", &body, code);
             say (code == 200 ? juce::String ("Started") : errorOf (v, code), code != 200);
             if (code == 200)
