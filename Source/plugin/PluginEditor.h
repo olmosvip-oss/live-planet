@@ -9,6 +9,12 @@
 
 namespace lp::ui
 {
+// where a full-window panel goes (the vocal chain, chop pads...): over the whole plugin, at its own scale
+juce::Component* overlayHost (juce::Component* from);
+}
+
+namespace lp::ui
+{
     enum Weight { Light, Medium, Bold };
     juce::Font font (float size, Weight w = Light, float kerning = 0.0f);
     // small uppercase labels, buttons and numbers
@@ -518,9 +524,15 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
     void refresh(); // every frame
+    // the Studio: a slim ruler over the track lanes (each section full height, lined up with them)
+    void setRuler (bool r) { if (ruler != r) { ruler = r; resized(); repaint(); } }
 
 private:
+    bool ruler = false;
+    std::set<int> picked; // the sections picked (shift-click for more): remove takes them all out
+    void pickOnly (int i) { picked.clear(); if (i >= 0) picked.insert (i); }
     juce::Rectangle<float> lane() const;
     juce::Rectangle<float> blockRect (int i) const;
     int totalDraftBars() const;
@@ -545,8 +557,8 @@ public:
     HelpDot hFeel { "Feel", "Shape the whole song at once (double-click any of them to undo it). Pump: everything ducks under the kick and swells back. "
                             "Bright: brighter and airier, or darker and warmer. Sparse: the quieter sections (intro, verses, bridge) thin out to their core, so the choruses hit harder. "
                             "Punch: drums and bass forward. Auto mix: the bass dips under each kick, chords and melodies stay out of the low end and make room for a voice." },
-            hTracks { "Your tracks", "Click a track's name to open it in Edit. M mutes, S solos, the padlock locks a track you love: 'write the rest again' then gives every unlocked track a new take. "
-                                     "Swap: another sound for the same part. Rev: backwards. - / +: pitch. x deletes the track (undo brings it back). The green bar by each volume shows what it's playing." };
+            hTracks { "Your tracks", "Click a track (its name or its lane) to open it below. Right-click it to swap, reverse, re-pitch or remove it. M mutes, S solos, the padlock locks a track you love: 'write the rest again' then gives every unlocked track a new take. "
+                                     "The bar by each volume shows what it's playing; each lane shows its sound in every section." };
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
@@ -555,7 +567,11 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     std::function<void()> onMixChanged;
     std::function<void (int)> onOpenTrack; // clicking a track's name opens it in the editor
+    std::function<int()> selectedTrack;    // the track open below (lit in the list)
     bool mixDirty = false;
+    // where the lanes are (the sections ruler above lines up with them)
+    float laneLeft() const { return 310.0f; }
+    float laneRight() const { return (float) getWidth() - 12.0f; }
 
 private:
     enum Col { None, Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
@@ -581,6 +597,11 @@ private:
     std::array<lp::ui::MeterBallistics, StudioPlayer::maxTracks> meterL {}, meterR {};
     juce::Rectangle<float> pumpBounds() const;
     bool draggingPump = false;
+    // each track's stem as a loudness line, read in the background
+    struct Env { std::vector<float> peaks; double rate = 0.0; juce::int64 length = 0; };
+    struct Envs { std::mutex lock; std::map<juce::String, Env> done; std::set<juce::String> pending; };
+    std::shared_ptr<Envs> envs = std::make_shared<Envs>();
+    const Env* envelopeOf (const juce::File&);
     // the song's feel, along the bottom: pump, bright, sparse, punch, and the auto mix switch
     juce::Rectangle<float> feelBar (int i) const;     // 0 pump, 1 bright, 2 sparse, 3 punch
     juce::Rectangle<float> autoMixBounds() const;
@@ -775,6 +796,35 @@ private:
 
 // VOICE (experimental): lyrics and a style, sung over a part of your song by the local voice helper,
 // with every stage shown live and the versions to hear and drag out (VoicePage.cpp)
+// VOCALS, "Your vocals": every vocal in the song (its chain, chop pads, auto-tune) and ways to add one
+class VocalsHub : public juce::Component
+{
+public:
+    VocalsHub (LivePlanetProcessor&, const lp::ui::Theme*& theme);
+    ~VocalsHub() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void refresh(); // every frame while showing
+    std::function<void (int)> onOpenInStudio;
+
+private:
+    struct Row { int track = 0; juce::String name, source; juce::Rectangle<int> area;
+                 juce::TextButton chain { "Vocal chain" }, chops { "Chop pads" }, tune { "Auto-tune" }, studio { "In Studio" }; };
+    std::vector<int> vocalTracks() const;
+    void rebuild();
+    void open (int which, int track); // 0 chain, 1 chop pads, 2 auto-tune
+    juce::Rectangle<int> listCard() const, addCard() const;
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    std::vector<std::unique_ptr<Row>> rows;
+    juce::String shownKey;
+    juce::TextButton addChops { "+ Vocal chops from my samples" }, addMyChops { "+ Chops from my own vocal..." },
+                     addTuned { "+ My vocal, auto-tuned..." }, addTunedHard { "+ My vocal, hard-tuned..." };
+    juce::Rectangle<int> nextNote;
+    std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<juce::Component> window;
+};
+
 class VoicePage : public juce::Component, public juce::FileDragAndDropTarget, private juce::Timer
 {
 public:
@@ -876,6 +926,11 @@ public:
     void refresh();     // message thread, every frame while showing
     int selected() const { return track; }
     void stopLive() { drumGrid.stopLoop(); }
+    // docked under the arrangement (the Studio): one view at a time, 0 the sample / its notes, 1 its sound (dials)
+    void setDockPage (int p) { if (dockPage != p) { dockPage = p; resized(); repaint(); } }
+    int getDockPage() const { return dockPage; }
+    // docked, showing a drum grid or notes made bigger: the panel wants more of the window
+    bool wantsTall() const { return dockPage == 0 && (showingDrums() || notesTrack) && (notesTrack && ! showingDrums() ? noteBig : drumBig); }
 
 private:
     // a dial is either live (the mixer: plays as you turn it) or re-records the track when you let go (grains)
@@ -912,7 +967,8 @@ private:
     bool notesTrack = false;
     bool noteBig = true;      // the note editor opens big (notes need the room); "bigger" toggles it
     juce::Rectangle<int> toolSlot (int i) const;
-    bool bigNow() const { return notesTrack && ! showingDrums() ? noteBig : drumBig; }  // a played part (808, hook, bass line): its notes can be edited
+    bool bigNow() const { return dockPage < 0 && (notesTrack && ! showingDrums() ? noteBig : drumBig); }
+    int dockPage = -1; // -1: the whole editor at once (its own page)  // a played part (808, hook, bass line): its notes can be edited
     juce::TextButton sliceBtn { "Slice into hits" }; // a drum loop -> a drum track you can edit
     juce::TextButton vocalBtn { "Vocal chain" };     // a vocal track: its chain, in its own window
     std::unique_ptr<VocalPanel> vocalPanel;
@@ -922,7 +978,7 @@ private:
     std::unique_ptr<TunePanel> tunePanel;
     juce::TextButton drumPadsBtn { "Drum pads" };  // a drum track: its kit on pads
     std::unique_ptr<DrumPadPanel> drumPadPanel;
-    bool drumBig = false;
+    bool drumBig = true; // (docked: the drum grid opens tall, the arrangement shrinking to make room)
     // one drum's own effects (picked by clicking its name in the drum editor): the mix dials show it instead
     int voice = -1;
     std::array<std::atomic<float>, 8> voiceVals {}; // volume, pan, tone, space, echo, warmth, nostalgia, chorus
@@ -992,7 +1048,7 @@ private:
     std::function<void()> onChange;
 };
 
-class LivePlanetEditor : public juce::AudioProcessorEditor,
+class LivePlanetEditor : public juce::Component,
                          public juce::FileDragAndDropTarget,
                          private juce::Timer
 {
@@ -1043,6 +1099,9 @@ private:
     StudioView studioView;
     TrackEditor trackEditor;
     VoicePage voicePage;
+    VocalsHub vocalsHub;
+    int vocalTab = 0; // the Vocals tab: 0 your vocals, 1 create with AI (the voice helper)
+    Segmented vocalTabs { { "Your vocals", "Create with AI" }, [this] { return vocalTab; }, [this] (int i) { vocalTab = i; setPage (Voice); }, lnf.th };
     bool voiceOn() const; // the experimental Voice page is switched on
     juce::ComboBox studioKey, studioMode;   // the song's key, at the top of the studio
     juce::ComboBox masterBox;               // mastering: off, or a platform's loudness
@@ -1097,9 +1156,29 @@ private:
     bool keyPressed (const juce::KeyPress&) override;
     juce::Rectangle<int> cardTimeline, cardInstrument, cardSky, cardWeather, plateMix, plateTex, plateFx;
     int page = 0;
+    static int tabPage (int tab) { static const int pages[] = { Write, Studio, Voice, Sound }; return pages[juce::jlimit (0, 3, tab)]; }
+    juce::Rectangle<int> cardDock; // the Studio: the open track, under the arrangement
+    int dockPageShown = 0;
+    bool dockTall = false; // the open track's grid made bigger: the arrangement shrinks to its sections and a few lanes
+    Segmented dockTabs { { "Sample", "Sound", "Grains" }, [this] { return dockPageShown; }, [this] (int i) { dockPageShown = i; trackEditor.setDockPage (i); repaint(); }, lnf.th };
     bool dragging = false;
 
     juce::String cityText, headerText, nowText, statusText;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivePlanetEditor)
+};
+
+// The plugin's window: the whole of Loopwright, drawn at any size you drag the window to (it keeps its shape)
+class LivePlanetWindow : public juce::AudioProcessorEditor
+{
+public:
+    explicit LivePlanetWindow (LivePlanetProcessor&);
+    void resized() override;
+    void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff0d0d10)); }
+
+private:
+    LivePlanetEditor view;
+    bool ready = false;
+    double lastSaved = -1.0;
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivePlanetWindow)
 };

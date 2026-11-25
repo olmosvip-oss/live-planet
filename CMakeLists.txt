@@ -69,6 +69,7 @@ target_sources(LivePlanet PRIVATE
     Source/plugin/TunePanel.cpp
     Source/plugin/DrumPadPanel.cpp
     Source/plugin/VoicePage.cpp
+    Source/plugin/VocalsHub.cpp
     Source/plugin/GrainView.cpp
     Source/plugin/SourcesPanel.cpp
     Source/plugin/WeatherService.cpp)

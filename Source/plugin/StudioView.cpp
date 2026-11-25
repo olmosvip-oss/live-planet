@@ -7,12 +7,12 @@ using lp::ui::font;
 
 Rectangle<float> StudioView::rowBounds (int row) const
 {
-    return { 10.0f, 30.0f + (float) (row - scroll) * 27.0f, (float) getWidth() - 20.0f, 25.0f };
+    return { 10.0f, 26.0f + (float) (row - scroll) * 24.0f, (float) getWidth() - 20.0f, 22.0f };
 }
 
 int StudioView::visibleRows() const
 {
-    return std::max (1, (int) ((getHeight() - 30 - 50) / 27)); // (the feel row and the "how it was made" line below)
+    return std::max (1, (int) ((getHeight() - 26 - 34) / 24)); // (the feel row below)
 }
 
 void StudioView::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
@@ -31,30 +31,23 @@ void StudioView::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
 
 Rectangle<float> StudioView::colBounds (int row, Col c) const
 {
-    // columns spread over the width: name, volume, pan, tone, then the remix buttons on the right
+    // the track's head, left of its lane: mute, solo, lock, its name, its volume
     auto r = rowBounds (row);
-    const float x = r.getX(), y = r.getY(), h = r.getHeight(), w = r.getWidth();
+    const float x = r.getX(), y = r.getY();
     switch (c)
     {
-        case Mute:      return { x + 6, y + 3, 19, 19 };
-        case Solo:      return { x + 28, y + 3, 19, 19 };
-        case Lock:      return { x + 50, y + 3, 19, 19 };
-        case Volume:    return { x + w * 0.42f, y + 8, w * 0.18f, 9 };
-        case Pan:       return { x + w * 0.63f, y + 8, w * 0.08f, 9 };
-        case Tone:      return { x + w * 0.74f, y + 8, w * 0.08f, 9 };
-        case Swap:      return { r.getRight() - 178, y + 2, 44, h - 4 };
-        case Reverse:   return { r.getRight() - 130, y + 2, 38, h - 4 };
-        case PitchDown: return { r.getRight() - 86, y + 2, 24, h - 4 };
-        case PitchUp:   return { r.getRight() - 56, y + 2, 24, h - 4 };
-        case Remove:    return { r.getRight() - 24, y + 2, 22, h - 4 };
-        default:        return {};
+        case Mute:   return { x + 2, y + 2, 18, 18 };
+        case Solo:   return { x + 23, y + 2, 18, 18 };
+        case Lock:   return { x + 44, y + 2, 18, 18 };
+        case Volume: return { laneLeft() - 70.0f, y + 7, 54.0f, 8 };
+        default:     return {};
     }
 }
 
 Rectangle<float> StudioView::addBounds (int numTracks) const
 {
     auto r = rowBounds (numTracks);
-    return { r.getX() + 76.0f, r.getY() + 2.0f, 150.0f, r.getHeight() - 4.0f };
+    return { r.getX() + 2.0f, r.getY() + 1.0f, 150.0f, r.getHeight() - 2.0f };
 }
 
 // next to "add instrument": a new take of every track you haven't locked
@@ -113,33 +106,251 @@ void StudioView::showAddMenu()
 
 StudioView::Col StudioView::colAt (int row, Point<float> p) const
 {
-    for (Col c : { Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove })
+    for (Col c : { Mute, Solo, Lock, Volume })
         if (colBounds (row, c).expanded (2.0f, 4.0f).contains (p)) return c;
     return None;
+}
+
+// a track's whole stem, as a loudness line (read in the background, once per file version)
+const StudioView::Env* StudioView::envelopeOf (const File& f)
+{
+    if (! f.existsAsFile()) return nullptr;
+    const auto key = f.getFullPathName() + "|" + String (f.getLastModificationTime().toMilliseconds());
+    {
+        const std::lock_guard<std::mutex> l (envs->lock);
+        auto it = envs->done.find (key);
+        if (it != envs->done.end()) return &it->second;
+        if (envs->pending.count (key) > 0) return nullptr;
+        envs->pending.insert (key);
+    }
+    auto shared = envs;
+    SafePointer<StudioView> self (this);
+    Thread::launch ([shared, f, key, self]
+    {
+        Env e;
+        AudioFormatManager fm;
+        fm.registerBasicFormats();
+        if (std::unique_ptr<AudioFormatReader> rd { fm.createReaderFor (f) })
+        {
+            e.rate = rd->sampleRate;
+            e.length = rd->lengthInSamples;
+            const int n = 4000;
+            e.peaks.assign ((size_t) n, 0.0f);
+            const int64 per = std::max<int64> (1, e.length / n);
+            AudioBuffer<float> buf ((int) rd->numChannels, (int) std::min<int64> (per, 1 << 16));
+            for (int i = 0; i < n; ++i)
+            {
+                const int64 at = (int64) i * per;
+                if (at >= e.length) break;
+                const int len = (int) std::min<int64> ({ per, e.length - at, (int64) buf.getNumSamples() });
+                rd->read (&buf, 0, len, at, true, rd->numChannels > 1);
+                float m = 0.0f;
+                for (int ch = 0; ch < buf.getNumChannels(); ++ch) m = std::max (m, buf.getMagnitude (ch, 0, len));
+                e.peaks[(size_t) i] = m;
+            }
+        }
+        {
+            const std::lock_guard<std::mutex> l (shared->lock);
+            shared->done[key] = std::move (e);
+            shared->pending.erase (key);
+        }
+        MessageManager::callAsync ([self] { if (self != nullptr) self->repaint(); });
+    });
+    return nullptr;
 }
 
 void StudioView::paint (Graphics& g)
 {
     auto b = getLocalBounds().toFloat();
     const auto& th = lp::ui::theme (proc.themeIndex.load());
-    g.setColour (th.body);
-    g.fillRoundedRectangle (b, 14.0f);
     const auto st = proc.songJob.getStatus();
     const Colour txt = th.ink, dim = th.inkDim, accent = th.grass;
 
-    g.setColour (th.line);
-    g.drawRoundedRectangle (b.reduced (0.5f), 14.0f, 1.0f);
     g.setFont (lp::ui::mono (10.0f, false, 0.14f));
     g.setColour (dim);
-    auto head = Rectangle<float> (12.0f, 8.0f, b.getWidth() - 24.0f, 16.0f);
-    g.drawText ("TRACKS", head.withTrimmedLeft (6.0f), Justification::centredLeft, false);
-    g.drawText ("CLICK A TRACK TO EDIT IT", head.withTrimmedLeft (110.0f).withWidth (260.0f), Justification::centredLeft, false);
+    auto head = Rectangle<float> (12.0f, 4.0f, laneLeft() - 12.0f, 16.0f);
+    g.drawText (String (st.tracks.size()) + " TRACKS", head, Justification::centredLeft, false);
+    if (st.editing)
+    {
+        g.setColour (accent);
+        g.drawText ("updating...", head.withTrimmedRight (20.0f), Justification::centredRight, false);
+    }
+    {
+        const int total = (int) st.tracks.size() + 1;
+        scroll = jlimit (0, std::max (0, total - visibleRows()), scroll);
+        const int hiddenBelow = total - (scroll + visibleRows()), hiddenAbove = scroll;
+        if (hiddenBelow > 0 || hiddenAbove > 0)
+        {
+            g.setColour (accent);
+            g.setFont (font (10.5f, lp::ui::Medium));
+            String more;
+            if (hiddenAbove > 0) more << hiddenAbove << " above";
+            if (hiddenBelow > 0) more << (more.isEmpty() ? "" : ", ") << hiddenBelow << " below";
+            g.drawText (more + " (scroll)", Rectangle<float> (112.0f, 4.0f, laneLeft() - 120.0f, 16.0f), Justification::centredLeft, false);
+        }
+    }
+
+    // ---- the lanes: where the song's sections are, then each track's sound in them
+    const float lx = laneLeft(), lw = laneRight() - lx;
+    const int totalBars = std::max (1, st.song.totalBars());
+    auto xOfBar = [&] (double bar) { return lx + lw * (float) (bar / totalBars); };
+    if (! st.song.sections.empty())
+    {
+        // a faint line where each section starts, down through every lane
+        g.setColour (Colours::white.withAlpha (0.05f));
+        for (auto& sc : st.song.sections)
+            g.drawVerticalLine ((int) xOfBar (sc.startBar), 22.0f, (float) getHeight() - 32.0f);
+    }
+
+    for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
+    {
+        if (! rowShown (i)) continue;
+        const auto& t = st.tracks[(size_t) i];
+        auto& m = proc.studio.mix[(size_t) i];
+        auto row = rowBounds (i);
+        const bool picked = selectedTrack && selectedTrack() == i;
+        if (picked || i == hoverRow)
+        {
+            g.setColour (Colours::white.withAlpha (picked ? 0.07f : 0.04f));
+            g.fillRoundedRectangle (row.withRight (lx - 6.0f), 5.0f);
+        }
+        if (picked)
+        {
+            g.setColour (accent);
+            g.fillRoundedRectangle (Rectangle<float> (row.getX() - 6.0f, row.getY() + 3.0f, 3.0f, row.getHeight() - 6.0f), 1.5f);
+        }
+
+        auto pill = [&g] (Rectangle<float> r, const String& label, bool on, Colour onCol)
+        {
+            g.setColour (on ? onCol : Colours::white.withAlpha (0.08f));
+            g.fillRoundedRectangle (r, 4.0f);
+            g.setColour (on ? Colour (0xff0b1015) : Colours::white.withAlpha (0.75f));
+            g.setFont (font (10.5f, lp::ui::Medium));
+            g.drawText (label, r, Justification::centred, false);
+        };
+        pill (colBounds (i, Mute), "M", m.mute.load(), Colour (0xfff2a33a));
+        pill (colBounds (i, Solo), "S", m.solo.load(), th.grassLight);
+        {
+            // the lock: a track you love stays when the rest is written again
+            const auto lb = colBounds (i, Lock);
+            g.setColour (t.locked ? th.grass : Colours::white.withAlpha (0.08f));
+            g.fillRoundedRectangle (lb, 4.0f);
+            g.setColour (t.locked ? Colours::white : Colours::white.withAlpha (0.55f));
+            const auto c = lb.getCentre();
+            g.fillRoundedRectangle (Rectangle<float> (c.x - 4.0f, c.y - 1.0f, 8.0f, 6.0f), 1.2f);
+            Path shackle;
+            shackle.addCentredArc (c.x + (t.locked ? 0.0f : 2.0f), c.y - 1.5f, 2.6f, 3.0f, 0.0f, -MathConstants<float>::halfPi, MathConstants<float>::halfPi, true);
+            g.strokePath (shackle, PathStrokeType (1.3f));
+        }
+
+        // its name and where it came from
+        auto nameArea = Rectangle<float> (row.getX() + 68.0f, row.getY(), colBounds (i, Volume).getX() - 22.0f - row.getX() - 72.0f, row.getHeight());
+        String name = t.name;
+        if (t.reversed) name << " (rev)";
+        if (t.pitch != 0) name << " " << (t.pitch > 0 ? "+" : "") << t.pitch;
+        g.setColour (txt);
+        g.setFont (font (11.5f, lp::ui::Medium));
+        g.drawText (name, nameArea.removeFromTop (12.0f), Justification::bottomLeft, true);
+        g.setColour (! t.source.startsWith ("loopwright") ? accent.brighter (0.3f) : dim);
+        g.setFont (font (9.0f));
+        g.drawText (SongJob::niceSource (t.source), nameArea, Justification::topLeft, true);
+
+        // its volume, and its level just left of it
+        {
+            const auto r = colBounds (i, Volume);
+            g.setColour (Colours::white.withAlpha (0.1f));
+            g.fillRoundedRectangle (r, 4.0f);
+            g.setColour (accent);
+            g.fillRoundedRectangle (r.withWidth (std::max (r.getHeight(), r.getWidth() * jmap (m.gainDb.load(), -30.0f, 6.0f, 0.0f, 1.0f))), 4.0f);
+            meterL[(size_t) i].update (proc.studio.peakL[(size_t) i].exchange (0.0f));
+            meterR[(size_t) i].update (proc.studio.peakR[(size_t) i].exchange (0.0f));
+            lp::ui::drawStereoMeter (g, Rectangle<float> (r.getX() - 16.0f, row.getY() + 2.0f, 9.0f, row.getHeight() - 4.0f), meterL[(size_t) i], meterR[(size_t) i]);
+        }
+
+        // its lane: a clip in each section it plays in, with its real waveform as a thin line
+        const auto* env = envelopeOf (t.stem);
+        const bool muted = m.mute.load();
+        const Colour clipCol = (picked ? accent : accent.withSaturation (accent.getSaturation() * 0.6f)).withAlpha (muted ? 0.12f : picked ? 0.42f : 0.26f);
+        const Colour waveCol = (picked ? Colours::white : th.grassLight).withAlpha (muted ? 0.2f : 0.7f);
+        if (env == nullptr || env->peaks.empty() || env->rate <= 0.0)
+        {
+            g.setColour (Colours::white.withAlpha (0.04f));
+            g.fillRoundedRectangle (Rectangle<float> (lx, row.getY() + 1.0f, lw, row.getHeight() - 2.0f), 4.0f);
+            continue;
+        }
+        const double barSamples = 4.0 * 60.0 / std::max (40.0, st.song.bpm) * env->rate;
+        const int n = (int) env->peaks.size();
+        auto bucketOf = [&] (double bar) { return jlimit (0, n, (int) (bar * barSamples / (double) std::max<int64> (1, env->length) * n)); };
+        float top = 0.0f;
+        for (float v : env->peaks) top = std::max (top, v);
+        if (top <= 0.0f) continue;
+        // how loud it is on average in each section: a section where it's (nearly) silent gets no clip
+        std::vector<float> avg;
+        float loudest = 0.0f;
+        for (auto& sc : st.song.sections)
+        {
+            const int b0 = bucketOf (sc.startBar), b1 = bucketOf (sc.startBar + sc.bars);
+            double sum = 0.0;
+            for (int k = b0; k < b1; ++k) sum += env->peaks[(size_t) k];
+            avg.push_back (b1 > b0 ? (float) (sum / (b1 - b0)) : 0.0f);
+            loudest = std::max (loudest, avg.back());
+        }
+        for (size_t si = 0; si < st.song.sections.size(); ++si)
+        {
+            const auto& sc = st.song.sections[si];
+            if (avg[si] < loudest * 0.12f) continue; // (only a tail or silence here)
+            const float x0 = xOfBar (sc.startBar) + 1.0f, x1 = xOfBar (sc.startBar + sc.bars) - 1.0f;
+            auto clip = Rectangle<float> (x0, row.getY() + 1.0f, x1 - x0, row.getHeight() - 2.0f);
+            g.setColour (clipCol);
+            g.fillRoundedRectangle (clip, 3.0f);
+            // one thin line per pixel: the loudest moment under it
+            g.setColour (waveCol);
+            const float mid = clip.getCentreY(), half = clip.getHeight() * 0.5f - 2.0f;
+            for (float x = clip.getX() + 1.0f; x < clip.getRight() - 1.0f; x += 1.0f)
+            {
+                const double barA = sc.startBar + (x - clip.getX()) / clip.getWidth() * sc.bars;
+                const double barB = sc.startBar + (x + 1.0f - clip.getX()) / clip.getWidth() * sc.bars;
+                const int ka = bucketOf (barA), kb = std::max (ka + 1, bucketOf (barB));
+                float v = 0.0f;
+                for (int k = ka; k < kb && k < n; ++k) v = std::max (v, env->peaks[(size_t) k]);
+                const float h = std::max (0.5f, v / top * half);
+                g.drawVerticalLine ((int) x, mid - h, mid + h);
+            }
+        }
+    }
+
+    // where the song is playing, down through the lanes
+    if (proc.studio.length() > 0 && proc.songIsPlaying())
+    {
+        const float frac = (float) jlimit (0.0, 1.0, proc.playheadPos.load() / (double) proc.studio.length());
+        g.setColour (Colours::white.withAlpha (0.9f));
+        g.drawVerticalLine ((int) (lx + lw * frac), 22.0f, (float) getHeight() - 32.0f);
+    }
+
+    // add another instrument from your library, and write the unlocked tracks again
+    if (! st.tracks.empty() && (int) st.tracks.size() < StudioPlayer::maxTracks && rowShown ((int) st.tracks.size()))
+    {
+        auto r = addBounds ((int) st.tracks.size());
+        g.setColour (Colours::white.withAlpha (hoverAdd ? 0.16f : 0.08f));
+        g.fillRoundedRectangle (r, 5.0f);
+        g.setColour (Colours::white.withAlpha (0.85f));
+        g.setFont (font (11.0f, lp::ui::Medium));
+        g.drawText ("+  add instrument", r, Justification::centred, false);
+        int locked = 0;
+        for (auto& tr : st.tracks) locked += tr.locked ? 1 : 0;
+        auto w = rewriteBounds ((int) st.tracks.size());
+        g.setColour (hoverRewrite ? th.grass.withAlpha (0.45f) : th.grass.withAlpha (0.22f));
+        g.fillRoundedRectangle (w, 5.0f);
+        g.setColour (Colours::white.withAlpha (0.9f));
+        g.drawText (locked > 0 ? "write the rest again (" + String (locked) + " locked)" : String ("write the rest again"), w, Justification::centred, false);
+    }
+
+    // ---- the song's feel, for the whole song at once (one line along the bottom)
     if (! st.tracks.empty())
     {
-        // ---- the song's feel, for the whole song at once
-        const float y = (float) getHeight() - 44.0f;
+        const float y = (float) getHeight() - 24.0f;
         g.setColour (th.line);
-        g.drawHorizontalLine ((int) y - 8, 12.0f, b.getRight() - 12.0f);
+        g.drawHorizontalLine ((int) y - 6, 12.0f, b.getRight() - 12.0f);
         g.setFont (lp::ui::mono (10.0f, true, 0.14f));
         g.setColour (txt);
         g.drawText ("FEEL", Rectangle<float> (18.0f, y, 90.0f, 16.0f), Justification::centredLeft, false);
@@ -172,155 +383,6 @@ void StudioView::paint (Graphics& g)
         g.setColour (am ? Colours::white : dim);
         g.drawText (am ? "AUTO MIX ON" : "AUTO MIX OFF", ab, Justification::centred, false);
     }
-    for (auto [label, c] : { std::pair { "VOLUME", Volume }, { "PAN", Pan }, { "TONE", Tone }, { "SWAP", Swap }, { "REV", Reverse }, { "PITCH", PitchDown } })
-        g.drawText (label, Rectangle<float> (colBounds (scroll, c).getX(), 8.0f, 80.0f, 16.0f), Justification::centredLeft, false);
-    if (st.editing)
-    {
-        g.setColour (accent);
-        g.drawText ("updating...", head, Justification::centredRight, false);
-    }
-
-    {
-        const int total = (int) st.tracks.size() + 1;
-        scroll = jlimit (0, std::max (0, total - visibleRows()), scroll);
-        const int hiddenBelow = total - (scroll + visibleRows()), hiddenAbove = scroll;
-        if (hiddenBelow > 0 || hiddenAbove > 0)
-        {
-            g.setColour (accent);
-            g.setFont (font (10.5f, lp::ui::Medium));
-            String more;
-            if (hiddenAbove > 0) more << hiddenAbove << " more above";
-            if (hiddenBelow > 0) more << (more.isEmpty() ? "" : "  -  ") << hiddenBelow << " more below";
-            g.drawText (more + "  (scroll)", Rectangle<float> (110.0f, 8.0f, 160.0f, 16.0f), Justification::centredLeft, false);
-        }
-    }
-    for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
-    {
-        if (! rowShown (i)) continue;
-        const auto& t = st.tracks[(size_t) i];
-        auto& m = proc.studio.mix[(size_t) i];
-        auto row = rowBounds (i);
-        if (i == hoverRow) { g.setColour (Colours::white.withAlpha (0.05f)); g.fillRoundedRectangle (row, 6.0f); }
-
-        auto pill = [&g] (Rectangle<float> r, const String& label, bool on, Colour onCol)
-        {
-            g.setColour (on ? onCol : Colours::white.withAlpha (0.08f));
-            g.fillRoundedRectangle (r, 5.0f);
-            g.setColour (on ? Colour (0xff0b1015) : Colours::white.withAlpha (0.75f));
-            g.setFont (font (11.0f, lp::ui::Medium));
-            g.drawText (label, r, Justification::centred, false);
-        };
-        pill (colBounds (i, Mute), "M", m.mute.load(), Colour (0xfff2a33a));
-        pill (colBounds (i, Solo), "S", m.solo.load(), th.grassLight);
-        {
-            // the lock: a track you love stays when the rest is written again
-            const auto lb = colBounds (i, Lock);
-            g.setColour (t.locked ? th.grass : Colours::white.withAlpha (0.08f));
-            g.fillRoundedRectangle (lb, 5.0f);
-            g.setColour (t.locked ? Colours::white : Colours::white.withAlpha (0.55f));
-            const auto c = lb.getCentre();
-            g.fillRoundedRectangle (Rectangle<float> (c.x - 4.0f, c.y - 1.0f, 8.0f, 6.0f), 1.2f);
-            Path shackle;
-            shackle.addCentredArc (c.x + (t.locked ? 0.0f : 2.0f), c.y - 1.5f, 2.6f, 3.0f, 0.0f, -MathConstants<float>::halfPi, MathConstants<float>::halfPi, true);
-            g.strokePath (shackle, PathStrokeType (1.3f));
-        }
-
-        auto nameArea = Rectangle<float> (row.getX() + 76, row.getY(), row.getWidth() * 0.42f - 88, row.getHeight());
-        g.setColour (txt);
-        g.setFont (font (12.0f, lp::ui::Medium));
-        String name = t.name;
-        if (t.reversed) name << "  -  reversed";
-        if (t.pitch != 0) name << "  -  " << (t.pitch > 0 ? "+" : "") << t.pitch << " st";
-        g.drawText (name, nameArea.removeFromTop (13.0f), Justification::bottomLeft, true);
-        g.setColour (! t.source.startsWith ("loopwright") ? accent.brighter (0.3f) : dim);
-        g.setFont (font (10.0f));
-        g.drawText (SongJob::niceSource (t.source), nameArea, Justification::topLeft, true);
-        if (t.keyText.isNotEmpty())
-        {
-            // what happened to its key, right after the name
-            g.setFont (lp::ui::mono (9.5f, false, 0.06f));
-            g.setColour (t.keyText.endsWith ("already") ? dim : accent.brighter (0.4f));
-            const float nw = GlyphArrangement::getStringWidth (font (12.0f, lp::ui::Medium), t.name) + 12.0f;
-            g.drawText (t.keyText.toUpperCase(), Rectangle<float> (row.getX() + 76.0f + nw, row.getY() + 1.0f, colBounds (i, Volume).getX() - row.getX() - 88.0f - nw, 13.0f),
-                        Justification::bottomLeft, true);
-        }
-
-        auto bar = [&g, accent] (Rectangle<float> r, float v, bool centred)
-        {
-            g.setColour (Colours::white.withAlpha (0.1f));
-            g.fillRoundedRectangle (r, 4.5f);
-            g.setColour (accent);
-            if (centred)
-            {
-                const float mid = r.getCentreX(), x = r.getX() + r.getWidth() * (v * 0.5f + 0.5f);
-                g.fillRoundedRectangle (Rectangle<float> (std::min (mid, x), r.getY(), std::max (2.0f, std::abs (x - mid)), r.getHeight()), 4.0f);
-            }
-            else
-                g.fillRoundedRectangle (r.withWidth (std::max (r.getHeight(), r.getWidth() * v)), 4.5f);
-        };
-        bar (colBounds (i, Volume), jmap (m.gainDb.load(), -30.0f, 6.0f, 0.0f, 1.0f), false);
-        {
-            // its level meter (what it's playing right now), just left of the volume
-            const auto row = rowBounds (i);
-            meterL[(size_t) i].update (proc.studio.peakL[(size_t) i].exchange (0.0f));
-            meterR[(size_t) i].update (proc.studio.peakR[(size_t) i].exchange (0.0f));
-            lp::ui::drawStereoMeter (g, Rectangle<float> (colBounds (i, Volume).getX() - 22.0f, row.getY() + 2.0f, 9.0f, row.getHeight() - 4.0f),
-                                     meterL[(size_t) i], meterR[(size_t) i]);
-        }
-        bar (colBounds (i, Pan), m.pan.load(), true);
-        bar (colBounds (i, Tone), m.tone.load(), true);
-
-        auto button = [&g] (Rectangle<float> r, const String& label, bool enabled, bool on)
-        {
-            g.setColour (Colours::white.withAlpha (! enabled ? 0.03f : (on ? 0.25f : 0.09f)));
-            g.fillRoundedRectangle (r, 5.0f);
-            g.setColour (Colours::white.withAlpha (enabled ? 0.85f : 0.25f));
-            g.setFont (font (11.0f, lp::ui::Medium));
-            g.drawText (label, r, Justification::centred, false);
-        };
-        button (colBounds (i, Swap), "swap", t.canSwap, false);
-        button (colBounds (i, Reverse), "rev", t.canReverse, t.reversed);
-        button (colBounds (i, PitchDown), "-", true, false);
-        button (colBounds (i, PitchUp), "+", true, false);
-        {
-            // take the track out of the song
-            const auto rb = colBounds (i, Remove);
-            const bool hot = i == hoverRow && rb.expanded (2.0f, 4.0f).contains (lastMouse);
-            g.setColour (hot ? Colour (0xffe5484d) : Colours::white.withAlpha (0.06f));
-            g.fillRoundedRectangle (rb, 5.0f);
-            g.setColour (Colours::white.withAlpha (hot ? 1.0f : 0.55f));
-            const auto c = rb.getCentre();
-            g.drawLine (c.x - 3.5f, c.y - 3.5f, c.x + 3.5f, c.y + 3.5f, 1.4f);
-            g.drawLine (c.x - 3.5f, c.y + 3.5f, c.x + 3.5f, c.y - 3.5f, 1.4f);
-        }
-    }
-
-    // add another instrument from your library
-    if (! st.tracks.empty() && (int) st.tracks.size() < StudioPlayer::maxTracks && rowShown ((int) st.tracks.size()))
-    {
-        auto r = addBounds ((int) st.tracks.size());
-        g.setColour (Colours::white.withAlpha (hoverAdd ? 0.16f : 0.08f));
-        g.fillRoundedRectangle (r, 6.0f);
-        g.setColour (Colours::white.withAlpha (0.85f));
-        g.setFont (font (11.5f, lp::ui::Medium));
-        g.drawText ("+  add instrument", r, Justification::centred, false);
-        int locked = 0;
-        for (auto& tr : st.tracks) locked += tr.locked ? 1 : 0;
-        auto w = rewriteBounds ((int) st.tracks.size());
-        g.setColour (hoverRewrite ? th.grass.withAlpha (0.45f) : th.grass.withAlpha (0.22f));
-        g.fillRoundedRectangle (w, 6.0f);
-        g.setColour (Colours::white.withAlpha (0.9f));
-        g.drawText (locked > 0 ? "write the rest again (" + String (locked) + " locked)" : String ("write the rest again"), w, Justification::centred, false);
-    }
-
-    // how the hovered track was made
-    if (hoverRow >= 0 && hoverRow < (int) st.tracks.size())
-    {
-        g.setColour (dim);
-        g.setFont (font (11.0f));
-        g.drawText ("how it was made: " + st.tracks[(size_t) hoverRow].remix, Rectangle<float> (12.0f, b.getBottom() - 20.0f, b.getWidth() - 24.0f, 16.0f),
-                    Justification::centredLeft, true);
-    }
 }
 
 void StudioView::setFromX (int row, Col c, float x)
@@ -340,12 +402,12 @@ Rectangle<float> StudioView::pumpBounds() const { return feelBar (0); }
 // the feel row: four bars and the auto mix switch, along the bottom
 Rectangle<float> StudioView::feelBar (int i) const
 {
-    const float y = (float) getHeight() - 44.0f, w = ((float) getWidth() - 120.0f - 150.0f) / 4.0f;
+    const float y = (float) getHeight() - 24.0f, w = ((float) getWidth() - 120.0f - 150.0f) / 4.0f;
     return { 120.0f + (float) i * w + 62.0f, y + 4.0f, w - 80.0f, 9.0f };
 }
 Rectangle<float> StudioView::autoMixBounds() const
 {
-    return { (float) getWidth() - 140.0f, (float) getHeight() - 46.0f, 126.0f, 20.0f };
+    return { (float) getWidth() - 140.0f, (float) getHeight() - 26.0f, 126.0f, 20.0f };
 }
 float StudioView::feelValue (int i) const
 {
@@ -412,15 +474,31 @@ void StudioView::mouseDown (const MouseEvent& e)
         if (! rowShown (i) || ! rowBounds (i).expanded (0.0f, 1.0f).contains (e.position)) continue;
         if (e.mods.isPopupMenu())
         {
+            const auto& tr = st.tracks[(size_t) i];
             PopupMenu m;
-            m.addItem (1, "Remove \"" + st.tracks[(size_t) i].name + "\" from the song", st.tracks.size() > 1);
-            m.showMenuAsync (PopupMenu::Options(), [this, i] (int r) { if (r == 1) askRemove (i); });
+            m.addSectionHeader (String (tr.name).toUpperCase());
+            m.addItem (2, "Swap: another sound for this part", tr.canSwap);
+            m.addItem (3, tr.reversed ? "Play it forwards again" : "Reverse it", tr.canReverse);
+            m.addItem (4, "Pitch up a semitone");
+            m.addItem (5, "Pitch down a semitone");
+            m.addSeparator();
+            m.addItem (1, "Remove \"" + tr.name + "\" from the song", st.tracks.size() > 1);
+            m.showMenuAsync (PopupMenu::Options(), [this, i] (int r)
+            {
+                if (r == 1) askRemove (i);
+                else if (r == 2) proc.songJob.editTrack (i, SongJob::EditOp::Swap);
+                else if (r == 3) proc.songJob.editTrack (i, SongJob::EditOp::Reverse);
+                else if (r == 4) proc.songJob.editTrack (i, SongJob::EditOp::PitchUp);
+                else if (r == 5) proc.songJob.editTrack (i, SongJob::EditOp::PitchDown);
+            });
+            if (onOpenTrack) onOpenTrack (i);
             return;
         }
         const auto c = colAt (i, e.position);
-        if (c == None && e.position.x > rowBounds (i).getX() + 72.0f && e.position.x < colBounds (i, Volume).getX() - 10.0f)
+        if (c == None)
         {
-            if (onOpenTrack) onOpenTrack (i);
+            if (onOpenTrack) onOpenTrack (i); // (its name or its lane: it opens below)
+            repaint();
             return;
         }
         auto& m = proc.studio.mix[(size_t) i];
@@ -485,7 +563,7 @@ void StudioView::mouseMove (const MouseEvent& e)
         if (rowShown (i) && rowBounds (i).contains (e.position)) h = i;
     const auto n = (int) proc.songJob.getStatus().tracks.size();
     const bool ha = n > 0 && rowShown (n) && addBounds (n).contains (e.position);
-    const bool hx = h >= 0 && colBounds (h, Remove).expanded (2.0f, 4.0f).contains (e.position);
+    const bool hx = false;
     const bool hr = n > 0 && rowShown (n) && rewriteBounds (n).contains (e.position);
     if (h != hoverRow || ha != hoverAdd || hx != hoverRemove || hr != hoverRewrite) { hoverRow = h; hoverAdd = ha; hoverRemove = hx; hoverRewrite = hr; repaint(); }
 }
@@ -507,6 +585,6 @@ String StudioView::getTooltip()
 
 void StudioView::resized()
 {
-    hFeel.setTopLeftPosition (18 + (int) GlyphArrangement::getStringWidth (lp::ui::mono (10.0f, true, 0.14f), "FEEL") + 8, getHeight() - 44);
-    hTracks.setTopLeftPosition (18 + (int) GlyphArrangement::getStringWidth (lp::ui::mono (10.0f, false, 0.14f), "TRACKS") + 8, 8);
+    hFeel.setTopLeftPosition (18 + (int) GlyphArrangement::getStringWidth (lp::ui::mono (10.0f, true, 0.14f), "FEEL") + 8, getHeight() - 24);
+    hTracks.setTopLeftPosition (88, 4);
 }
