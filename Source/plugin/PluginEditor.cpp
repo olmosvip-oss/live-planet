@@ -1806,9 +1806,10 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     vocalsHub.onOpenInStudio = [this] (int t) { trackEditor.select (t); setPage (Studio); };
     songView.onLayer = [this] (int first, int count)
     {
-        layerPopup = std::make_unique<lp::ai::LayerPopup> (proc, lnf.th, first, count, [this]
+        Component::SafePointer<LivePlanetEditor> sp (this);
+        layerPopup = std::make_unique<lp::ai::LayerPopup> (proc, lnf.th, first, count, [sp]
         {
-            MessageManager::callAsync ([sp = Component::SafePointer<LivePlanetEditor> (this)] { if (sp != nullptr) sp->layerPopup.reset(); });
+            MessageManager::callAsync ([sp] { if (sp != nullptr) sp->layerPopup.reset(); });
         });
         addAndMakeVisible (*layerPopup);
         layerPopup->setBounds (getLocalBounds());
