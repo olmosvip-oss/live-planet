@@ -1415,12 +1415,14 @@ public:
     // a vocal sung by the voice helper (from the Voice page) as a new track: it starts at bar 1 (silent until its
     // section), keeps its recording untouched (so Auto-tune can work on it) and has the Vocal chain
     // a file made for this song (a sung vocal, or an AI layer: an instrument), as a new track playing from bar 1
-    void addSungVocal (const juce::File& vocal, const juce::String& name, const juce::String& about, bool isVocal = true)
+    void addSungVocal (const juce::File& vocal, const juce::String& name, const juce::String& about, bool isVocal = true,
+                       const juce::String& source = "voice helper")
     {
         {
             const juce::ScopedLock sl (lock);
             pendingSung = { vocal, name, about };
             pendingSungIsVocal = isVocal;
+            pendingSungSource = source;
             edits.push_back ({ 0, EditOp::AddSung });
             status.editing = true;
         }
@@ -2949,10 +2951,11 @@ private:
         lp::song::Song song;
         std::tuple<juce::File, juce::String, juce::String> what;
         bool isVocal = true;
+        juce::String sungSource;
         {
             const juce::ScopedLock sl (lock);
             if (current.parts.empty() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
-            song = current; what = pendingSung; isVocal = pendingSungIsVocal;
+            song = current; what = pendingSung; isVocal = pendingSungIsVocal; sungSource = pendingSungSource;
         }
         const auto& [file, name, about] = what;
         if (! file.existsAsFile()) return;
@@ -2963,7 +2966,7 @@ private:
         if (isVocal) part.tune.source = file.getFullPathName();     // Auto-tune starts from it, untouched
         part.tune.key = song.minor ? song.key : (song.key + 9) % 12;
         part.tune.scale = 1;
-        part.source = "voice helper: " + name;
+        part.source = sungSource + ": " + name;
         part.remix = about;
         song.parts.push_back (part);
         juce::AudioBuffer<float> buf;
@@ -4444,6 +4447,7 @@ private:
     double pendingBpm = 0.0;
     std::tuple<juce::File, juce::String, juce::String> pendingSung;
     bool pendingSungIsVocal = true;
+    juce::String pendingSungSource;
     mutable std::map<int, float> kitGain; // (drumHits) each drum track's kit loudness
     std::map<int, std::pair<int, int>> pendingDrumSwap;
     std::map<int, std::map<int, lp::song::VoiceFx>> pendingVoiceFx; // track -> note -> settings, waiting to be recorded

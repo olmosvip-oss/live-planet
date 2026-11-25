@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "../song/Stack.h"
 
 using namespace juce;
 using lp::ui::font;
@@ -33,6 +34,52 @@ VocalsHub::VocalsHub (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
 }
 
 VocalsHub::~VocalsHub() = default;
+
+// a double, a harmony or a choir from one of the vocals: made in the background from its track, then added
+void VocalsHub::makeStack (int track, int kind)
+{
+    const auto st = proc.songJob.getStatus();
+    if (busy->load() || track < 0 || track >= (int) st.tracks.size()) return;
+    const auto& t = st.tracks[(size_t) track];
+    const auto k = (lp::song::stack::Kind) jlimit (0, 3, kind);
+    lp::song::tune::Settings s;
+    s.key = st.song.minor ? st.song.key : (st.song.key + 9) % 12; // (a major song: its relative minor, the same notes)
+    s.scale = 1;
+    const auto in = t.stem;
+    const auto out = st.files.folder.getChildFile ("voice").getChildFile (String (lp::song::stack::nameOf (k)) + " of " + String (t.name).retainCharacters (
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ()-") + " " + String (Time::currentTimeMillis() % 100000) + ".wav");
+    String base = t.name;
+    if (base.startsWith ("vocal (") && base.endsWith (")")) base = base.substring (7, base.length() - 1); // ("vocal (tuned)" -> "tuned")
+    const String name = String (lp::song::stack::nameOf (k)) + ", " + base;
+    working = "Making the " + String (lp::song::stack::nameOf (k)) + " of " + t.name + "...";
+    repaint();
+    busy->store (true);
+    auto flag = busy;
+    SafePointer<VocalsHub> self (this);
+    auto* p = &proc;
+    Thread::launch ([flag, self, p, in, out, s, k, name]
+    {
+        bool ok = false;
+        AudioFormatManager fm;
+        fm.registerBasicFormats();
+        if (std::unique_ptr<AudioFormatReader> rd { fm.createReaderFor (in) }; rd != nullptr && rd->lengthInSamples > 0)
+        {
+            AudioBuffer<float> buf ((int) rd->numChannels, (int) rd->lengthInSamples);
+            rd->read (&buf, 0, buf.getNumSamples(), 0, true, true);
+            const auto stack = lp::song::stack::make (buf, rd->sampleRate, s, k);
+            out.getParentDirectory().createDirectory();
+            WavAudioFormat wav;
+            if (std::unique_ptr<AudioFormatWriter> w { wav.createWriterFor (new FileOutputStream (out), rd->sampleRate, 2, 24, {}, 0) })
+                ok = w->writeFromAudioSampleBuffer (stack, 0, stack.getNumSamples());
+        }
+        MessageManager::callAsync ([flag, self, p, out, ok, name]
+        {
+            flag->store (false);
+            if (ok) p->songJob.addSungVocal (out, name, "made here from your vocal: " + name, true, "stacked from your vocal");
+            if (self != nullptr) { self->working = ok ? String() : "Couldn't make the " + name; self->repaint(); }
+        });
+    });
+}
 
 // the song's vocal tracks: a vocal, chops, a tuned vocal
 std::vector<int> VocalsHub::vocalTracks() const
@@ -80,6 +127,17 @@ void VocalsHub::rebuild()
             setup (r->tune, "Auto-tune: key and scale, retune speed, humanize, its notes and pitch line", true);
             r->tune.onClick = [this, i] { open (2, i); };
         }
+        setup (r->stack, "Doubles, harmonies or a choir from this vocal, made here in a few seconds, as a new track", true);
+        r->stack.onClick = [this, i, b = &r->stack]
+        {
+            PopupMenu m;
+            m.addSectionHeader ("STACK THIS VOCAL (A NEW TRACK)");
+            m.addItem (1, "Double it (sung again, left and right)");
+            m.addItem (2, "Harmony a third above (follows the melody, in key)");
+            m.addItem (3, "Harmony a fifth below (in key)");
+            m.addItem (4, "Choir (six voices: doubles and both harmonies)");
+            m.showMenuAsync (PopupMenu::Options().withTargetComponent (b), [this, i] (int r) { if (r > 0) makeStack (i, r - 1); });
+        };
         setup (r->studio, "Open it in the Studio: its sample, its sound and effects", false);
         r->studio.onClick = [this, i] { if (onOpenInStudio) onOpenInStudio (i); };
         rows.push_back (std::move (r));
@@ -122,11 +180,11 @@ void VocalsHub::resized()
     {
         auto row = l.removeFromTop (52);
         l.removeFromTop (8);
-        auto bt = row.withTrimmedLeft (row.getWidth() / 2).withTrimmedRight (12).reduced (0, 11);
-        for (auto* b : { &r->studio, &r->chain, &r->chops, &r->tune })
+        auto bt = row.withTrimmedLeft (row.getWidth() / 3).withTrimmedRight (12).reduced (0, 11);
+        for (auto* b : { &r->studio, &r->chain, &r->stack, &r->chops, &r->tune })
         {
             if (! b->isVisible()) continue;
-            b->setBounds (bt.removeFromRight (b == &r->studio ? 92 : 104));
+            b->setBounds (bt.removeFromRight (b == &r->studio ? 84 : 98));
             bt.removeFromRight (8);
         }
         r->area = row;
@@ -176,13 +234,19 @@ void VocalsHub::paint (Graphics& g)
     {
         g.setColour (Colours::white.withAlpha (0.04f));
         g.fillRoundedRectangle (r->area.toFloat(), 10.0f);
-        auto txt = r->area.reduced (16, 8).withWidth (r->area.getWidth() / 2 - 16);
+        auto txt = r->area.reduced (16, 8).withWidth (r->area.getWidth() / 3 - 16);
         g.setFont (font (15.0f, lp::ui::Medium));
         g.setColour (t.ink);
         g.drawText (r->name.substring (0, 1).toUpperCase() + r->name.substring (1), txt.removeFromTop (20), Justification::centredLeft, true);
         g.setFont (lp::ui::mono (9.5f, false, 0.1f));
         g.setColour (t.inkDim);
         g.drawText (r->source.toUpperCase(), txt, Justification::centredLeft, true);
+    }
+    if (working.isNotEmpty())
+    {
+        g.setFont (font (12.5f, lp::ui::Medium));
+        g.setColour (working.startsWith ("Couldn't") ? Colour (0xffff8f8f) : t.grassLight);
+        g.drawText (working, listCard().reduced (22, 14).removeFromBottom (20), Justification::centredLeft, true);
     }
     g.setFont (font (12.0f));
     g.setColour (t.inkDim);

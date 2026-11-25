@@ -848,7 +848,10 @@ public:
 
 private:
     struct Row { int track = 0; juce::String name, source; juce::Rectangle<int> area;
-                 juce::TextButton chain { "Vocal chain" }, chops { "Chop pads" }, tune { "Auto-tune" }, studio { "In Studio" }; };
+                 juce::TextButton chain { "Vocal chain" }, chops { "Chop pads" }, tune { "Auto-tune" }, studio { "In Studio" }, stack { "Stack it..." }; };
+    void makeStack (int track, int kind); // a double, a harmony or a choir from a vocal, as a new track
+    juce::String working;                 // what's being made right now
+    std::shared_ptr<std::atomic<bool>> busy = std::make_shared<std::atomic<bool>> (false);
     std::vector<int> vocalTracks() const;
     void rebuild();
     void open (int which, int track); // 0 chain, 1 chop pads, 2 auto-tune
