@@ -855,6 +855,7 @@ public:
     std::function<juce::String()> statusText; // what the helper is doing with it
     lp::ai::AutoAdd* autoAdd = nullptr;        // where a melody's vibrato and slides are left for its result
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseMagnify (const juce::MouseEvent&, float scale) override; // (pinch on a trackpad: zoom)
 
 private:
     using Note = lp::song::lyricmelody::Note;
@@ -891,6 +892,15 @@ private:
     void renderVoice();          // (in the background) the section in your voice, from the notes as they are now
     void previewNote (int index); // the note being moved, in your voice (or the tone)
     bool isVoiced (const Note&) const;
+    bool needsSinging() const;   // notes the take doesn't have yet (new ones, or new words): those phrases are sung
+    void bake();                 // only moved, stretched or re-pitched: the edited take goes into the track, no AI
+    juce::String bakedKey;
+    // undo / redo: the notes as they were before each change (a drag is one change)
+    std::vector<std::vector<Note>> undoStack, redoStack;
+    std::vector<Note> committed;
+    juce::String committedKey;
+    juce::TextButton undoBtn { "undo" }, redoBtn { "redo" };
+    void undo (bool back);
 public:
     void leave();                // the page is left: the song plays the sung track again
 private:

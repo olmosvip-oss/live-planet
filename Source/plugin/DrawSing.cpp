@@ -22,6 +22,8 @@ struct DrawSing::Voiced
     std::map<int, Seg> cache;                           // by note id: its piece, re-pitched and re-timed
     std::atomic<int> generation { 0 };
     std::vector<float> env;                             // how loud the take is, 200 times a second (the notes' shapes)
+    std::shared_ptr<AudioBuffer<float>> lastRender;     // the section in your voice, as the notes are now
+    String renderedKey;                                 // (which notes it was rendered from)
 
     const lp::song::lyricmelody::Note* sungOf (int id) const
     {
@@ -88,7 +90,7 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
     addVoiceBtn.setWantsKeyboardFocus (false);
     addVoiceBtn.onClick = [this]
     {
-        voiceChooser = std::make_unique<FileChooser> ("Your voice: 10 to 30 seconds of clean singing or rapping, no music", File(), "*.wav;*.aif;*.aiff");
+        voiceChooser = std::make_unique<FileChooser> ("Your voice: 10 to 30 seconds of clean singing or rapping, no music", File(), "*.wav;*.m4a;*.mp3;*.aif;*.aiff;*.flac;*.caf;*.aac");
         voiceChooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
         {
             if (! fc.getResult().existsAsFile()) return;
@@ -118,6 +120,11 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
         addAndMakeVisible (*b);
     }
     sing.getProperties().set ("primary", true);
+    for (auto* b : { &undoBtn, &redoBtn }) { b->setWantsKeyboardFocus (false); addAndMakeVisible (*b); }
+    undoBtn.setTooltip ("Undo the last change to the notes (Cmd+Z)");
+    redoBtn.setTooltip ("Redo it (Shift+Cmd+Z)");
+    undoBtn.onClick = [this] { undo (true); };
+    redoBtn.onClick = [this] { undo (false); };
     struct T { TextButton* b; const char* tip; };
     for (auto [b, tip] : { T { &octUp, "Show higher notes (or scroll)" }, T { &octDown, "Show lower notes (or scroll)" },
                            T { &holdBtn, "Hold word (H): this note keeps singing the word before it, on its own pitch (\"you\": \"yu\" on one note, \"oo\" on the next)" },
@@ -227,8 +234,27 @@ void DrawSing::refresh()
     if (hear.getButtonText() == "stop" && ! proc.previewPlaying.load()) hear.setButtonText ("play section");
     // sing as I draw: once the notes have stood still a moment
     if (const auto k = noteKey(); k != shownKey) { shownKey = k; changedAt = Time::getMillisecondCounter(); }
+    // undo: each settled change remembered (a whole drag is one change)
+    if (shownKey != committedKey && drag == Drag::None && ! wordBox.isVisible())
+    {
+        if (committedKey.isNotEmpty() || ! committed.empty())
+        {
+            undoStack.push_back (committed);
+            if (undoStack.size() > 200) undoStack.erase (undoStack.begin());
+            redoStack.clear();
+        }
+        committed = notes;
+        committedKey = shownKey;
+    }
+    undoBtn.setEnabled (! undoStack.empty());
+    redoBtn.setEnabled (! redoStack.empty());
+    // only moved since the take: the edit goes into the track by itself, no singing (once it's rendered)
+    if (autoSing.getToggleState() && ! notes.empty() && shownKey != sentKey && drag == Drag::None && ! wordBox.isVisible()
+        && ! needsSinging() && voiced != nullptr && voiced->renderedKey == shownKey && Time::getMillisecondCounter() - changedAt > 2500)
+        bake();
     if (autoSing.getToggleState() && consent.getToggleState() && connected && ! notes.empty() && shownKey != sentKey && drag == Drag::None
-        && ! wordBox.isVisible() && ! snap.sending && Time::getMillisecondCounter() - changedAt > 2500 && voice.getText().isNotEmpty())
+        && ! wordBox.isVisible() && ! snap.sending && Time::getMillisecondCounter() - changedAt > 2500 && voice.getText().isNotEmpty()
+        && needsSinging() && (voiced == nullptr || voiced->renderedKey == shownKey))
     {
         // (a take of an older version still singing: stopped, the new one goes instead)
         bool waiting = false;
@@ -448,6 +474,7 @@ bool DrawSing::keyPressed (const KeyPress& k)
         repaint();
         return true;
     }
+    if (k.isKeyCode ('Z') && k.getModifiers().isCommandDown()) { undo (! k.getModifiers().isShiftDown()); return true; }
     if (k.getTextCharacter() == 'h' || k.getTextCharacter() == 'H') { toggle (0); return true; }
     if (k.getTextCharacter() == 'v' || k.getTextCharacter() == 'V') { toggle (1); return true; }
     if (k.getTextCharacter() == 's' || k.getTextCharacter() == 'S') { toggle (2); return true; }
@@ -585,11 +612,41 @@ void DrawSing::singIt()
         bends.push_back ({ n.beat * spb, (n.beat + n.len) * spb, n.vibrato, n.slide && i > 0 ? (float) (notes[i - 1].pitch - n.pitch) : 0.0f });
     }
     const String token = String::toHexString (Random::getSystemRandom().nextInt64()).substring (0, 10);
+    // a take already there: only the phrases with new notes or new words are sung, and put into it
+    auto sendLines = lines;
+    if (voiced != nullptr && voiced->lastRender != nullptr && voiced->renderedKey == noteKey())
+    {
+        std::vector<lp::song::lyricmelody::Line> changed;
+        std::vector<std::pair<double, double>> ranges;
+        for (auto& l : lines)
+        {
+            bool any = false;
+            for (auto& n : l.notes) any = any || ! isVoiced (n);
+            if (! any || l.notes.empty()) continue;
+            changed.push_back (l);
+            const double t0 = l.notes.front().beat * spb - 0.15;
+            double t1 = 0;
+            for (auto& n : l.notes) t1 = jmax (t1, (n.beat + n.len) * spb);
+            ranges.push_back ({ jmax (0.0, t0), t1 + 0.3 });
+        }
+        if (! changed.empty() && changed.size() < lines.size())
+        {
+            sendLines = changed;
+            proc.drawnMerge[token] = { voiced->lastRender, sectionStartSeconds(), ranges };
+        }
+    }
     sentKey = noteKey();
     sentNotes[token] = notes; // (the notes this take is sung from: your voice is played live from it once it's in)
     lastToken = token;
     if (autoAdd != nullptr) autoAdd->bends[token] = bends;
-    const auto score = lp::song::lyricmelody::toScore (lines, st.song.bpm);
+    auto score = lp::song::lyricmelody::toScore (sendLines, st.song.bpm);
+    {
+        // the whole melody's middle note: a phrase sung on its own lands in the same octave as the rest
+        std::vector<int> ps;
+        for (auto& n : notes) ps.push_back (n.pitch);
+        std::nth_element (ps.begin(), ps.begin() + (long) ps.size() / 2, ps.end());
+        if (auto* o = score.getDynamicObject()) o->setProperty ("reference_pitch", ps[ps.size() / 2]);
+    }
     lp::voice::Client::Request r;
     r.lyrics = words.joinIntoString (" ");
     r.style = "";
@@ -599,11 +656,13 @@ void DrawSing::singIt()
     r.takes = r.results = 1;
     r.consent = consent.getToggleState();
     r.clean = false;
+    r.quick = true;
     r.tag = "drawn|" + String (sectionStartSeconds(), 3) + "|" + String (st.song.sections[(size_t) c].name) + "|" + token;
     r.melodies = [score] { return var (Array<var> { score }); };
     r.renderTrack = [&pr = proc, c] { return pr.renderSectionForVoice (c, 1); };
     proc.voiceClient.create (std::move (r));
-    message = "Singing it: the section's drawn track gets the new take when it's done.";
+    message = sendLines.size() < lines.size() ? "Singing just the changed phrase" + String (sendLines.size() > 1 ? "s" : "") + "..."
+                                              : String ("Singing it: the section's drawn track gets the new take when it's done.");
     repaint();
 }
 
@@ -629,9 +688,9 @@ void DrawSing::resized()
     }
     showTools();
     auto bottom = rollCard().reduced (18, 16).removeFromBottom (32);
-    for (auto* b : { &fromLyrics, &fillWords, &clearAll })
+    for (auto* b : { &fromLyrics, &fillWords, &clearAll, &undoBtn, &redoBtn })
     {
-        b->setBounds (bottom.removeFromLeft (b == &fromLyrics ? 170 : 120));
+        b->setBounds (bottom.removeFromLeft (b == &fromLyrics ? 160 : b == &undoBtn || b == &redoBtn ? 64 : 110));
         bottom.removeFromLeft (8);
     }
     hear.setBounds (bottom.removeFromRight (100));
@@ -678,7 +737,7 @@ void DrawSing::paint (Graphics& g)
     g.setFont (font (11.0f));
     g.setColour (t.inkDim);
     g.drawText ("Click to draw a note, drag to move it, drag its end to make it longer. Double-click: its word. Alt-click or Delete: gone.",
-                rollCard().reduced (18, 16).removeFromBottom (32).withLeft (clearAll.getRight() + 12).withRight (hear.getX() - 10), Justification::centredLeft, true);
+                rollCard().reduced (18, 16).removeFromBottom (32).withLeft (redoBtn.getRight() + 12).withRight (hear.getX() - 10), Justification::centredLeft, true);
     label ("THE SECTION AND THE VOICE", sideCard().reduced (20, 18).removeFromTop (24));
 
     // ---- the roll
@@ -799,7 +858,74 @@ bool DrawSing::isVoiced (const Note& n) const
 {
     if (voiced == nullptr) return false;
     const auto* s = voiced->sungOf (n.id);
-    return s != nullptr && s->word == n.word && s->slur == n.slur;
+    return s != nullptr && s->word == n.word && s->slur == n.slur && s->vibrato == n.vibrato && s->slide == n.slide;
+}
+
+// back to how the notes were before the last change (or forward again)
+void DrawSing::undo (bool back)
+{
+    auto& from = back ? undoStack : redoStack;
+    auto& to = back ? redoStack : undoStack;
+    if (from.empty()) return;
+    to.push_back (notes);
+    notes = from.back();
+    from.pop_back();
+    committed = notes;
+    committedKey = noteKey();
+    selectedNote = -1;
+    showTools();
+    repaint();
+}
+
+bool DrawSing::needsSinging() const
+{
+    if (voiced == nullptr) return true;
+    for (auto& n : notes) if (! isVoiced (n)) return true;
+    return false;
+}
+
+void DrawSing::mouseMagnify (const MouseEvent& e, float scale)
+{
+    if (scale > 0.0f) zoom (1.0 / scale, e.position.x);
+}
+
+// only moved, stretched or re-pitched since the take: the edited version (already heard live) goes into the
+// section's drawn track, straight away, with no singing
+void DrawSing::bake()
+{
+    if (voiced == nullptr || voiced->lastRender == nullptr) return;
+    const auto st = proc.songJob.getStatus();
+    const int c = section.getSelectedItemIndex();
+    if (! st.haveSong || c < 0 || c >= (int) st.song.sections.size()) return;
+    const String token = String::toHexString (Random::getSystemRandom().nextInt64()).substring (0, 10);
+    const auto file = st.files.folder.getChildFile ("voice").getChildFile ("drawn " + String (st.song.sections[(size_t) c].name) + " " + token + ".wav");
+    const String name = "drawn, " + String (st.song.sections[(size_t) c].name);
+    sentNotes[token] = notes;
+    lastToken = loadedToken = token; // (your voice keeps coming from the take as sung: it isn't loaded again)
+    sentKey = bakedKey = shownKey;
+    auto render = voiced->lastRender;
+    const double start = sectionStartSeconds();
+    auto* p = &proc;
+    Thread::launch ([p, render, start, file, name, token]
+    {
+        const int a = (int) (start * StudioPlayer::fileRate);
+        AudioBuffer<float> out (2, a + render->getNumSamples());
+        out.clear();
+        for (int ch = 0; ch < 2; ++ch) out.copyFrom (ch, a, *render, ch, 0, render->getNumSamples());
+        file.getParentDirectory().createDirectory();
+        WavAudioFormat wav;
+        bool ok = false;
+        if (std::unique_ptr<AudioFormatWriter> w { wav.createWriterFor (new FileOutputStream (file), StudioPlayer::fileRate, 2, 24, {}, 0) })
+            ok = w->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
+        if (ok)
+            MessageManager::callAsync ([p, file, name, token]
+            {
+                p->drawnFiles[token] = file;
+                p->songJob.addSungVocal (file, name, "your drawn melody, edited", true, "drawn and sung", true);
+            });
+    });
+    message = "Your changes are in the track (no singing needed: only notes moved).";
+    repaint();
 }
 
 // a sung take has come in: kept (just this section of it) to play your voice from as you edit
@@ -851,7 +977,8 @@ void DrawSing::renderVoice()
     const double bpm = v->bpm, start = sectionStartSeconds(), len = sectionBeats() * 60.0 / bpm + 2.0;
     const int gen = ++v->generation;
     auto* p = &proc;
-    Thread::launch ([v, list, use, bpm, start, len, gen, p]
+    const String key = noteKey();
+    Thread::launch ([v, list, use, bpm, start, len, gen, p, key]
     {
         const double sr = StudioPlayer::fileRate, spb = 60.0 / bpm;
         auto out = std::make_shared<AudioBuffer<float>> (2, (int) (len * sr));
@@ -867,9 +994,12 @@ void DrawSing::renderVoice()
                 for (int k = 0; k < seg->getNumSamples(); ++k)
                     if (at + k >= 0 && at + k < out->getNumSamples()) out->addSample (ch, at + k, seg->getSample (ch, k));
         }
-        MessageManager::callAsync ([v, out, gen, p, start]
+        MessageManager::callAsync ([v, out, gen, p, start, key]
         {
-            if (v->generation.load() == gen) p->setVoicePreview (out, (int64) (start * StudioPlayer::fileRate));
+            if (v->generation.load() != gen) return;
+            p->setVoicePreview (out, (int64) (start * StudioPlayer::fileRate));
+            v->lastRender = out;
+            v->renderedKey = key;
         });
     });
 }

@@ -166,6 +166,9 @@ public:
     }
     juce::int64 voicePreviewOffset = 0;
     std::map<juce::String, juce::File> drawnFiles; // (message thread) Draw & sing's sung takes, by token, once they're in the song
+    // a phrase sung again on its own: put into the take it belongs to (the rest of the section as it is now)
+    struct DrawnMerge { std::shared_ptr<const juce::AudioBuffer<float>> base; double start = 0; std::vector<std::pair<double, double>> ranges; };
+    std::map<juce::String, DrawnMerge> drawnMerge; // (message thread) by token
     // a short sound played once, straight away (Draw & sing: the note you're moving, in your voice); null = the tone
     void auditionBuffer (std::shared_ptr<juce::AudioBuffer<float>> b)
     {

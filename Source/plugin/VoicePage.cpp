@@ -184,10 +184,10 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
     stop.setWantsKeyboardFocus (false);
     stop.onClick = [this] { if (! snap.jobs.empty()) proc.voiceClient.cancel (snap.jobs.front().id); };
     addChildComponent (stop);
-    addVoice.setTooltip ("Add a voice: a clean WAV of the singer, 10 to 30 seconds, no music. It stays on this computer, with the voice helper.");
+    addVoice.setTooltip ("Add a voice: a clean recording of the singer (WAV, or a phone voice memo), 10 to 30 seconds, no music. It stays on this computer, with the voice helper.");
     addVoice.onClick = [this]
     {
-        chooser = std::make_unique<FileChooser> ("A clean recording of the voice (WAV, no music)", File(), "*.wav");
+        chooser = std::make_unique<FileChooser> ("A clean recording of the voice (no music)", File(), "*.wav;*.m4a;*.mp3;*.aif;*.aiff;*.flac;*.caf;*.aac");
         chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
         {
             if (fc.getResult().existsAsFile()) proc.voiceClient.addVoice (fc.getResult());

@@ -40,6 +40,43 @@ static bool padToSongStart (const File& in, const File& out, double startSeconds
     return w != nullptr && w->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
 }
 
+// a phrase sung again on its own, put into the rest of the take: the take as it is now everywhere else, the new
+// phrase where it was sung again (with short crossfades at each end)
+static bool mergeInto (const File& padded, const LivePlanetProcessor::DrawnMerge& m)
+{
+    AudioFormatManager fm;
+    fm.registerBasicFormats();
+    AudioBuffer<float> fresh;
+    double rate = StudioPlayer::fileRate;
+    {
+        std::unique_ptr<AudioFormatReader> rd (fm.createReaderFor (padded));
+        if (rd == nullptr) return false;
+        rate = rd->sampleRate;
+        fresh.setSize (2, (int) rd->lengthInSamples);
+        rd->read (&fresh, 0, fresh.getNumSamples(), 0, true, true);
+    }
+    const auto& base = *m.base;
+    const int a = (int) (m.start * rate);
+    AudioBuffer<float> out (2, jmax (fresh.getNumSamples(), a + base.getNumSamples()));
+    out.clear();
+    for (int ch = 0; ch < 2; ++ch) out.copyFrom (ch, a, base, jmin (ch, base.getNumChannels() - 1), 0, base.getNumSamples());
+    const int xf = (int) (0.03 * rate);
+    for (auto [s0, s1] : m.ranges)
+    {
+        const int r0 = jmax (0, a + (int) (s0 * rate)), r1 = jmin (fresh.getNumSamples(), a + (int) (s1 * rate));
+        for (int i = r0; i < r1; ++i)
+        {
+            const float w = jmin (1.0f, jmin ((float) (i - r0) / (float) xf, (float) (r1 - i) / (float) xf));
+            for (int ch = 0; ch < 2; ++ch)
+                out.setSample (ch, i, out.getSample (ch, i) * (1.0f - w) + fresh.getSample (ch, i) * w);
+        }
+    }
+    padded.deleteFile();
+    WavAudioFormat wav;
+    std::unique_ptr<AudioFormatWriter> w (wav.createWriterFor (new FileOutputStream (padded), rate, 2, 24, {}, 0));
+    return w != nullptr && w->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
+}
+
 // every frame: the helper's layer and drawn-melody jobs, fetched when done and added to the song once
 void AutoAdd::tick (LivePlanetProcessor& proc)
 {
@@ -90,9 +127,12 @@ void AutoAdd::tick (LivePlanetProcessor& proc)
             auto* p = &proc;
             std::vector<lp::song::stack::Bend> bend;
             if (tag.size() > 3) if (auto b = bends.find (tag[3]); b != bends.end()) bend = b->second;
-            Thread::launch ([p, in = f->second, out, start, name, about, layer, bend, tag]
+            LivePlanetProcessor::DrawnMerge merge;
+            if (tag.size() > 3) if (auto m = proc.drawnMerge.find (tag[3]); m != proc.drawnMerge.end()) merge = m->second;
+            Thread::launch ([p, in = f->second, out, start, name, about, layer, bend, tag, merge]
             {
                 if (! padToSongStart (in, out, start, bend)) return;
+                if (merge.base != nullptr && ! mergeInto (out, merge)) return;
                 MessageManager::callAsync ([p, out, name, about, layer, token = tag.size() > 3 ? tag[3] : String()]
                 {
                     p->songJob.addSungVocal (out, name, about, ! layer, layer ? "AI layer" : "drawn and sung", ! layer);

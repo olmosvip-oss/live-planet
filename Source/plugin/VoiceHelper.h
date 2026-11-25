@@ -101,6 +101,7 @@ public:
         juce::File guide; // "Sing it yourself": your take over the section (sent instead of a melody being written)
         std::function<juce::var()> melodies; // "Write melody": the written melodies, one a version (made on the background thread)
         juce::String layer; // "Generate a layer": the instrument the helper plays over the section instead of singing (bass, drums...)
+        bool quick = false; // Draw & sing: just sing it (no word check, no mix: the take straight back)
     };
     void create (Request r) { push ({ Cmd::Create, std::move (r), {}, {}, 0, {} }); }
     void cancel (const juce::String& id) { if (validJobId (id)) push ({ Cmd::Cancel, {}, id, {}, 0, {} }); }
@@ -274,7 +275,30 @@ private:
         {
             juce::String err;
             setSending (true);
-            const auto name = upload (c.file, "voice", err);
+            // a phone recording (m4a, mp3...) made into the WAV the helper takes: mono, at most 30 seconds
+            juce::File src = c.file, made;
+            if (! c.file.hasFileExtension ("wav"))
+            {
+                juce::AudioFormatManager fm;
+                fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (c.file));
+                if (rd == nullptr) { setSending (false); say ("Couldn't read that recording: try a WAV, M4A or MP3", true); return; }
+                const int len = (int) juce::jmin<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 30.0));
+                juce::AudioBuffer<float> b ((int) rd->numChannels, len);
+                rd->read (&b, 0, len, 0, true, true);
+                juce::AudioBuffer<float> mono (1, len);
+                mono.clear();
+                for (int ch = 0; ch < b.getNumChannels(); ++ch) mono.addFrom (0, 0, b, ch, 0, len, 1.0f / (float) b.getNumChannels());
+                made = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile (c.file.getFileNameWithoutExtension() + ".wav");
+                made.deleteFile();
+                juce::WavAudioFormat wav;
+                std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (made), rd->sampleRate, 1, 16, {}, 0));
+                if (w == nullptr || ! w->writeFromAudioSampleBuffer (mono, 0, len)) { setSending (false); say ("Couldn't convert that recording", true); return; }
+                w.reset();
+                src = made;
+            }
+            const auto name = upload (src, "voice", err);
+            if (made != juce::File()) made.deleteFile();
             setSending (false);
             say (name.isNotEmpty() ? "Added the voice \"" + name + "\"" : err, name.isEmpty());
         }
@@ -339,6 +363,7 @@ private:
             if (guide.isNotEmpty()) o->setProperty ("guide", guide);
             if (melodies.isArray()) o->setProperty ("melodies", melodies);
             if (c.req.layer.isNotEmpty()) o->setProperty ("layer", c.req.layer);
+            if (c.req.quick) o->setProperty ("quick", true);
             const auto v = callJson ("/api/create", &body, code);
             say (code == 200 ? juce::String ("Started") : errorOf (v, code), code != 200);
             if (code == 200)
