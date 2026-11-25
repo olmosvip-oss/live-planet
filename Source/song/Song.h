@@ -348,6 +348,9 @@ struct Part
     std::set<int> stutterBars;       // the last beat stutters
     std::set<int> gapBars;           // the last beat drops out (right before a chorus hits)
     std::set<int> swellBars;         // a reversed swell of the loop rising into the next bar
+    juce::uint32 flipSeed = 0;       // a flipped sample: its slices re-ordered, reversed, stuttered (0 = played as it is)
+    int flipAmount = 2;              // 1 light, 2 medium, 3 heavy
+    std::set<int> silentBars;        // bars you deleted from this track in the arrangement (it's silent there)
     std::vector<FxHit> fxHits;       // Fx parts: the transition sounds and where they land
     float mixDb = 0.0f;              // where it sits in the mix vs. its kind's usual level (lead up, background down)
     int regionStart = 0, regionBars = 0; // loops: play only this part of the sample (in the song's bars; 0 = all of it)

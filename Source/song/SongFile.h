@@ -54,6 +54,8 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("barFilter", bf);
     o->setProperty ("chop", ints (p.chopBars)); o->setProperty ("stutter", ints (p.stutterBars));
     o->setProperty ("gap", ints (p.gapBars)); o->setProperty ("swell", ints (p.swellBars));
+    o->setProperty ("silent", ints (p.silentBars));
+    o->setProperty ("flipSeed", (int) p.flipSeed); o->setProperty ("flipAmount", p.flipAmount);
     juce::Array<juce::var> fx;
     for (auto& h : p.fxHits) fx.add (juce::Array<juce::var> { h.path, h.beat, h.peakOnBeat, h.gainDb });
     o->setProperty ("fxHits", fx);
@@ -125,6 +127,8 @@ inline Part partFromVar (const juce::var& v)
     for (int x : readInts (v["stutter"])) p.stutterBars.insert (x);
     for (int x : readInts (v["gap"])) p.gapBars.insert (x);
     for (int x : readInts (v["swell"])) p.swellBars.insert (x);
+    for (int x : readInts (v["silent"])) p.silentBars.insert (x);
+    p.flipSeed = (juce::uint32) (int) v["flipSeed"]; p.flipAmount = v.getProperty ("flipAmount", 2);
     if (auto* a = v["fxHits"].getArray()) for (auto& e : *a) p.fxHits.push_back ({ e[0].toString(), (double) e[1], (bool) e[2], (float) e[3] });
     p.mixDb = v["mixDb"]; p.regionStart = v["regionStart"]; p.regionBars = v["regionBars"];
     p.grainAmount = v["grainAmount"]; p.grainSizeMs = v.getProperty ("grainSizeMs", 120.0f); p.grainChaos = v["grainChaos"];

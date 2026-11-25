@@ -511,6 +511,51 @@ private:
     juce::Rectangle<int> hero, settings;
 };
 
+// The Studio's arrangement: which bars are in view (zoomed in, scrolled along), shared by the sections ruler and the lanes
+struct ArrView
+{
+    double start = 0.0; // the first bar shown
+    double bars = 0.0;  // how many bars are shown (0: the whole song)
+    std::function<void()> changed;
+    double shown (int total) const { return bars <= 0.0 ? (double) juce::jmax (1, total) : juce::jmin (bars, (double) juce::jmax (1, total)); }
+    double first (int total) const { return juce::jlimit (0.0, juce::jmax (0.0, total - shown (total)), start); }
+    float xOf (double bar, float lx, float lw, int total) const { return lx + lw * (float) ((bar - first (total)) / shown (total)); }
+    double barAt (float x, float lx, float lw, int total) const { return first (total) + (double) ((x - lx) / juce::jmax (1.0f, lw)) * shown (total); }
+    bool zoomed (int total) const { return shown (total) < total - 1e-6; }
+    // closer in (factor < 1) or further out, keeping the bar under the mouse where it is
+    void zoom (double factor, double anchorBar, int total)
+    {
+        const double s = shown (total), f = first (total);
+        const double ns = juce::jlimit (juce::jmin (2.0, (double) total), (double) juce::jmax (1, total), s * factor);
+        const double t = (anchorBar - f) / s;
+        bars = ns >= total - 1e-6 ? 0.0 : ns;
+        start = juce::jlimit (0.0, juce::jmax (0.0, total - ns), anchorBar - t * ns);
+        if (changed) changed();
+    }
+    void pan (double dBars, int total)
+    {
+        start = juce::jlimit (0.0, juce::jmax (0.0, total - shown (total)), first (total) + dBars);
+        if (changed) changed();
+    }
+    void fit() { start = 0.0; bars = 0.0; if (changed) changed(); }
+    // a wheel or trackpad over the timeline: cmd/ctrl zooms, sideways (or shift) scrolls along. true: it was used
+    bool wheel (const juce::MouseEvent& e, const juce::MouseWheelDetails& w, float lx, float lw, int total)
+    {
+        if (e.mods.isCommandDown() || e.mods.isCtrlDown())
+        {
+            zoom (std::exp (-(double) w.deltaY * (w.isSmooth ? 1.6 : 2.4)), barAt (e.position.x, lx, lw, total), total);
+            return true;
+        }
+        const double dx = e.mods.isShiftDown() && std::abs (w.deltaX) < 1e-4 ? w.deltaY : -w.deltaX;
+        if (std::abs (dx) > 1e-4 && (e.mods.isShiftDown() || std::abs (w.deltaX) > std::abs (w.deltaY)))
+        {
+            if (zoomed (total)) pan (-dx * shown (total) * 0.6, total);
+            return true;
+        }
+        return false;
+    }
+};
+
 // Song mode, on the screen: the song's sections as a timeline, and progress
 // The song's shape: its sections as blocks. Edit the structure here: click a section to pick it,
 // drag it to move it, drag its right edge to make it longer or shorter; add, duplicate or remove
@@ -532,6 +577,12 @@ public:
     // "+ AI layer" on the sections picked (the voice helper switched on): first section, how many
     std::function<void (int, int)> onLayer;
     bool layerAvailable = false;
+    ArrView* view = nullptr; // the Studio: the bars in view (shared with the lanes below)
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseMagnify (const juce::MouseEvent&, float) override;
+    void requestLayer() { layerBtn.onClick(); }   // over the sections picked (none: the whole song)
+    bool layerReady() const { return ! dirty && ! waiting && ! draft.empty(); }
+    int pickedCount() const { return (int) std::max<size_t> (picked.size(), selected >= 0 ? 1u : 0u); }
 
 private:
     bool ruler = false;
@@ -570,6 +621,11 @@ public:
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override { hoverRow = -1; hoverAdd = false; repaint(); }
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseMagnify (const juce::MouseEvent&, float) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    ArrView* view = nullptr;               // the bars in view (zoom, scroll along), shared with the sections ruler
+    int rowStep = 34;                      // how tall each track's lane is (+ the gap)
+    std::function<void (int)> onRowStep;   // (remembered)
     std::function<void()> onMixChanged;
     std::function<void (int)> onOpenTrack; // clicking a track's name opens it in the editor
     std::function<int()> selectedTrack;    // the track open below (lit in the list)
@@ -585,6 +641,16 @@ public:
 
 private:
     enum Col { None, Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
+    static constexpr float rowsTop = 30.0f;  // (the bar numbers above)
+    struct ClipHit { int track, section; juce::Rectangle<float> r; };
+    std::vector<ClipHit> clipHits;           // where each clip was drawn (for clicks)
+    std::set<std::pair<int, int>> pickedClips; // (track, section): Delete silences them
+    bool trackPicked = false;                // a track's name was clicked: Delete removes the track
+    juce::Rectangle<float> zoomBtn (int i) const;   // 0 out, 1 in, 2 the whole song
+    juce::Rectangle<float> heightBtn (int i) const; // lane height: small, medium, large
+    int sectionAt (float x) const;
+    void deletePicked();
+    double wheelZoomRows = 0.0;
     juce::Rectangle<float> rewriteBounds (int numTracks) const;
     bool hoverRewrite = false;
     void askRemove (int track);
@@ -830,7 +896,9 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent& e) override { if (! cardBounds().contains (e.getPosition()) && onClosed) onClosed(); }
+    void setBackdrop (juce::Image img); // what's behind it (blurred, seen through the glass)
 private:
+    juce::Image backdrop;
     juce::Rectangle<int> cardBounds() const;
     void pickKind (juce::TextButton*);
     void start();
@@ -842,6 +910,10 @@ private:
     juce::String kind, message;
     int loopBars = 0; // 0: a part played through; else a loop this many bars long, repeated
     juce::TextButton asPart { "Instrumental" }, asLoop { "Loop" }, loop1 { "1 bar" }, loop2 { "2 bars" }, loop4 { "4 bars" };
+    // flip a sample from your library (chopped into something new) or have the AI play it
+    bool flipMode = true;
+    int flipAmount = 2;
+    juce::TextButton modeFlip { "Flip a sample" }, modeAi { "AI generate" }, amtLight { "Light flip" }, amtMed { "Medium" }, amtHeavy { "Heavy" };
     void showType();
     juce::TextEditor describe;
     juce::TextButton go { "Generate" }, cancel { "Cancel" };
@@ -1260,6 +1332,8 @@ private:
     Segmented vocalTabs { { "Your vocals", "Draw & sing", "Create with AI" }, [this] { return vocalTab; }, [this] (int i) { vocalTab = i; setPage (Voice); }, lnf.th };
     bool voiceOn() const; // the experimental Voice page is switched on
     juce::ComboBox studioKey, studioMode;   // the song's key, at the top of the studio
+    juce::TextButton aiLayer { "AI layer" }; // the Studio: an instrument the AI plays over the sections picked
+    ArrView arrView;                         // the arrangement's zoom (bars in view)
     juce::ComboBox masterBox;               // mastering: off, or a platform's loudness
     juce::TextButton masterAB { "after" };  // hear the master, or the mix before it
     juce::Label masterInfo;                 // what the master came out at

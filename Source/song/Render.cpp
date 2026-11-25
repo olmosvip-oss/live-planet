@@ -1065,6 +1065,69 @@ juce::AudioBuffer<float> renderDrumHit (const Song& song, const Part& part, int 
     return out;
 }
 
+// A flipped sample: each bar cut into slices (16ths for drums, 8ths otherwise) and played in a new order, the way a producer
+// chops a loop so it isn't the same one everyone has: the downbeats stay put (it still grooves), other slices swap with
+// ones in the same place in the beat, some play backwards, some stutter. The pattern repeats with the loop, so it's a
+// riff, not noise. Stays in the song's time and key (slices are only moved, never re-pitched).
+static void flipSlices (juce::AudioBuffer<float>& buf, double sr, double spb, const Song& song, const Part& part)
+{
+    const bool drums = part.name.find ("drum") != std::string::npos || part.name.find ("perc") != std::string::npos;
+    const int steps = drums ? 16 : 8;
+    const double barLen = spb * 4.0, stepLen = barLen / steps;
+    const int n = buf.getNumSamples(), chans = buf.getNumChannels();
+    const float amt = juce::jlimit (1, 3, part.flipAmount) / 3.0f; // 0.33 .. 1
+    const int cycle = std::max (1, std::min (4, part.loopBars > 0 ? part.loopBars : 2)); // (the pattern repeats with the loop)
+    const juce::AudioBuffer<float> src (buf);
+    const int fade = std::max (8, (int) (0.003 * sr));
+    for (int bar = 0; bar < song.totalBars(); ++bar)
+    {
+        const int b0 = (int) std::round (bar * barLen);
+        if (b0 >= n) break;
+        // (only bars where it plays)
+        if (src.getMagnitude (0, b0, std::min ((int) barLen, n - b0)) < 1e-4f) continue;
+        juce::Random rng ((juce::int64) part.flipSeed * 7919 + (bar % cycle) * 104729);
+        std::vector<int> from ((size_t) steps);
+        std::vector<bool> back ((size_t) steps, false);
+        for (int k = 0; k < steps; ++k)
+        {
+            from[(size_t) k] = k;
+            const bool downbeat = k % (steps / 2) == 0;   // 1 and 3 stay
+            if (downbeat) continue;
+            if (rng.nextFloat() < 0.35f + 0.5f * amt)
+            {
+                // a slice from the same place in a beat (an offbeat for an offbeat), so the groove holds
+                const int per = steps / 4, pos = k % per;
+                from[(size_t) k] = rng.nextInt (4) * per + (rng.nextFloat() < 0.25f * amt ? rng.nextInt (per) : pos);
+            }
+            back[(size_t) k] = rng.nextFloat() < (drums ? 0.06f : 0.14f) * amt * 1.5f;
+        }
+        // the end of every other bar: a stutter (the slice before, repeated)
+        if (bar % 2 == 1 && rng.nextFloat() < 0.4f + 0.4f * amt)
+            for (int k = steps - (drums ? 3 : 2); k < steps; ++k) from[(size_t) k] = from[(size_t) (steps - (drums ? 4 : 3))];
+        for (int k = 0; k < steps; ++k)
+        {
+            const int d0 = b0 + (int) std::round (k * stepLen), s0 = b0 + (int) std::round (from[(size_t) k] * stepLen);
+            const int len = std::min ({ (int) std::round (stepLen), n - d0, n - s0 });
+            if (len <= 0) continue;
+            // (a fade only where the slice is cut from something else, so straight runs stay seamless)
+            const bool joinPrev = k > 0 && ! back[(size_t) k] && ! back[(size_t) k - 1] && from[(size_t) k] == from[(size_t) k - 1] + 1;
+            const bool joinNext = k + 1 < steps && ! back[(size_t) k] && ! back[(size_t) k + 1] && from[(size_t) k + 1] == from[(size_t) k] + 1;
+            for (int ch = 0; ch < chans; ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                const auto* s = src.getReadPointer (ch);
+                for (int i = 0; i < len; ++i)
+                {
+                    float g = 1.0f;
+                    if (! joinPrev && i < fade) g = (float) i / fade;
+                    if (! joinNext && len - 1 - i < fade) g = std::min (g, (float) (len - 1 - i) / fade);
+                    d[d0 + i] = (back[(size_t) k] ? s[s0 + len - 1 - i] : s[s0 + i]) * g;
+                }
+            }
+        }
+    }
+}
+
 bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs, juce::AudioBuffer<float>& buf,
                  std::function<bool()> shouldStop)
 {
@@ -1477,6 +1540,30 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
         buf.applyGain (1, 0, buf.getNumSamples(), std::min (1.0f, gr));
     }
     shapeForMix (song, part, buf, sr);
+    if (part.flipSeed != 0) flipSlices (buf, sr, spb, song, part);
+    // the bars you deleted: silent (a short fade either side, so nothing clicks; a tail rings on a little)
+    if (! part.silentBars.empty())
+    {
+        const double barLen = spb * 4.0;
+        const int fade = (int) (0.008 * sr), tail = (int) (0.06 * sr);
+        const int n = buf.getNumSamples();
+        for (int bar : part.silentBars)
+        {
+            if (part.silentBars.count (bar - 1)) continue; // (a run of bars: done from its first)
+            int last = bar;
+            while (part.silentBars.count (last + 1)) ++last;
+            const int a = juce::jlimit (0, n, (int) std::round (bar * barLen) + (bar > 0 ? tail : 0));
+            const int b = juce::jlimit (0, n, (int) std::round ((last + 1) * barLen));
+            if (b <= a) continue;
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                for (int i = 0; i < fade && a - fade + i >= 0; ++i) d[a - fade + i] *= 1.0f - (float) i / (float) fade;
+                for (int i = a; i < b; ++i) d[i] = 0.0f;
+                for (int i = 0; i < fade && b + i < n; ++i) d[b + i] *= (float) i / (float) fade;
+            }
+        }
+    }
     return true;
 }
 

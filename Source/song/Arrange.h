@@ -104,7 +104,7 @@ inline Song rebuild (const Song& old, const std::vector<Item>& plan)
             }
         }
         part.barFilter.clear();
-        part.chopBars.clear(); part.stutterBars.clear(); part.gapBars.clear(); part.swellBars.clear();
+        part.chopBars.clear(); part.stutterBars.clear(); part.silentBars.clear(); part.gapBars.clear(); part.swellBars.clear();
         std::vector<int> starts;
         for (int nb = 0; nb < newBars; ++nb)
         {
@@ -112,6 +112,7 @@ inline Song rebuild (const Song& old, const std::vector<Item>& plan)
             if (auto f = was.barFilter.find (ob); f != was.barFilter.end()) part.barFilter[nb] = f->second;
             if (was.chopBars.count (ob)) part.chopBars.insert (nb);
             if (was.stutterBars.count (ob)) part.stutterBars.insert (nb);
+            if (was.silentBars.count (ob)) part.silentBars.insert (nb);
             // drop-outs and swells lead into the next section: only where a section still ends
             bool sectionEnd = false;
             for (auto& sec : s.sections) sectionEnd = sectionEnd || nb == sec.startBar + sec.bars - 1;

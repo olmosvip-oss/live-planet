@@ -24,7 +24,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -181,6 +181,32 @@ public:
         startIfNeeded();
     }
     double songBpmNow() const { const juce::ScopedLock sl (lock); return current.parts.empty() ? 0.0 : current.bpm; }
+
+    // "flip a sample": a loop of this kind from your library, in the song's key and tempo, chopped into something new,
+    // over these sections (amount 1 light .. 3 heavy)
+    void flipLayer (lp::song::LoopKind kind, int firstSection, int sections, int amount)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingFlip = { firstSection, sections, amount };
+            edits.push_back ({ (int) kind, EditOp::Flip });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
+    // the arrangement: delete bars of a track (it goes silent there), or bring them back (on = false)
+    void silenceBars (int track, std::set<int> bars, bool on = true)
+    {
+        if (bars.empty()) return;
+        {
+            const juce::ScopedLock sl (lock);
+            pendingSilence.push_back ({ track, { std::move (bars), on } });
+            edits.push_back ({ track, EditOp::Silence });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
 
     // play only part of a track's sample (in the song's bars; bars 0 = all of it)
     void setRegion (int track, int startBar, int bars)
@@ -2347,7 +2373,9 @@ private:
     }
 
     // adds a track: a loop of one kind from your library, in tempo and in key, placed where that kind fits
-    void addInstrument (lp::song::LoopKind kind)
+    std::array<int, 3> pendingFlip { 0, 0, 2 };
+    // flipSections > 0: a flipped sample over those sections only (else the loop as it is, where a producer would put it)
+    void addInstrument (lp::song::LoopKind kind, int flipFirst = 0, int flipSections = 0, int flipAmount = 2)
     {
         using LK = lp::song::LoopKind;
         lp::song::Song song;
@@ -2406,8 +2434,25 @@ private:
         part.samplePath = part.candidates[0];
         part.autoTune = part.candidateTunes[0];
         part.loopBars = bars;
+        const bool flip = flipSections > 0;
         std::vector<std::string> where { "verse", "chorus" };
-        if (kind == LK::Pad)                            where = { "intro", "bridge", "outro" };
+        if (flip)
+        {
+            // over the sections you picked, the loop repeated
+            where.clear();
+            const int a = juce::jlimit (0, (int) song.sections.size() - 1, flipFirst);
+            const int b = juce::jlimit (a + 1, (int) song.sections.size(), flipFirst + flipSections);
+            const int from = song.sections[(size_t) a].startBar, to = song.sections[(size_t) b - 1].startBar + song.sections[(size_t) b - 1].bars;
+            for (int bb = from; bb < to; bb += bars) part.loopStartBars.push_back (bb);
+            // (a loop longer than what's left still plays its first bars, then stops at the end of the stretch)
+            ensureBarSrc (part, song.totalBars());
+            for (int bb = 0; bb < (int) part.barSrc.size(); ++bb) if (bb < from || bb >= to) part.barSrc[(size_t) bb] = -1;
+            juce::Random r;
+            part.flipSeed = (juce::uint32) r.nextInt (0x7ffffff0) + 1u;
+            part.flipAmount = flipAmount;
+            part.name = "flip (" + std::string (lp::song::loopKindName (kind)) + ")";
+        }
+        else if (kind == LK::Pad)                            where = { "intro", "bridge", "outro" };
         else if (kind == LK::FX)                        where = { "pre-chorus" };
         else if (kind == LK::Perc || kind == LK::Drums) where = { "pre-chorus", "chorus" };
         else if (kind == LK::Vocal)                     where = { "chorus", "bridge" };
@@ -2419,7 +2464,7 @@ private:
         if (part.loopStartBars.empty())
             for (int b = 0; b + bars <= song.totalBars(); b += bars) part.loopStartBars.push_back (b);
         part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
-        part.remix = remixText (part, 0.0, song) + " (added by you)";
+        part.remix = remixText (part, 0.0, song) + (flip ? " (flipped: chopped and re-ordered)" : " (added by you)");
         saveFeatures();
         song.parts.push_back (part);
         juce::AudioBuffer<float> buf;
@@ -3068,6 +3113,8 @@ private:
             case EditOp::PitchUp: case EditOp::PitchDown: return on ("pitch");
             case EditOp::Add: return "add instrument";
             case EditOp::Region: return on ("bars of");
+            case EditOp::Silence: return on ("delete in");
+            case EditOp::Flip: return "flip a sample";
             case EditOp::Grains: return on ("grains on");
             case EditOp::Key: return "key change";
             case EditOp::Notes: return on ("notes of");
@@ -3538,6 +3585,13 @@ private:
     void applyEdit (int tr, EditOp op)
     {
         if (op == EditOp::Add) { addInstrument ((lp::song::LoopKind) tr); return; }
+        if (op == EditOp::Flip)
+        {
+            std::array<int, 3> f;
+            { const juce::ScopedLock sl (lock); f = pendingFlip; }
+            addInstrument ((lp::song::LoopKind) tr, f[0], f[1], f[2]);
+            return;
+        }
         if (op == EditOp::AddHook || op == EditOp::AddChops) { addHook (op == EditOp::AddChops); return; }
         if (op == EditOp::FromTake) { applyFromTake (tr); return; }
         if (op == EditOp::Add808) { add808(); return; }
@@ -3723,6 +3777,18 @@ private:
             part.notes = std::move (notes);
             part.remix = "your own pattern";
         }
+        if (op == EditOp::Silence)
+        {
+            const juce::ScopedLock sl (lock);
+            for (auto it = pendingSilence.begin(); it != pendingSilence.end(); ++it)
+                if (it->first == tr)
+                {
+                    for (int b : it->second.first)
+                        if (it->second.second) part.silentBars.insert (b); else part.silentBars.erase (b);
+                    pendingSilence.erase (it);
+                    break;
+                }
+        }
         if (op == EditOp::Region)
         {
             const juce::ScopedLock sl (lock);
@@ -3730,6 +3796,7 @@ private:
             part.regionStart = r.first;
             part.regionBars = r.second >= part.loopBars ? 0 : r.second;
         }
+        if (op == EditOp::Swap && part.flipSeed != 0) part.flipSeed = (part.flipSeed * 1664525u + 1013904223u) | 1u; // (a flip: chopped a new way too)
         if (op == EditOp::PitchUp) part.pitchSemis = std::min (12, part.pitchSemis + 1);
         if (op == EditOp::PitchDown) part.pitchSemis = std::max (-12, part.pitchSemis - 1);
         if (op == EditOp::Swap && ((part.kind == PK::Melody && part.name == "hook" && part.candidates.size() > 1 && part.variant % 2 == 1)
@@ -4451,6 +4518,7 @@ private:
     juce::uint32 currentSeed = 1;
     std::vector<std::pair<int, EditOp>> edits;
     std::map<int, std::pair<int, int>> pendingRegion;
+    std::vector<std::pair<int, std::pair<std::set<int>, bool>>> pendingSilence; // track -> bars, deleted (or back)
     std::map<int, GrainSettings> pendingGrains;
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
     std::map<int, std::pair<std::vector<lp::song::ChopSlice>, std::vector<int>>> pendingChops;

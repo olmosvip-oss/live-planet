@@ -5,22 +5,110 @@ using lp::ui::font;
 
 // The studio: one row per track, showing where its sound came from, with a mixer and remix tools.
 
+namespace
+{
+    // each track its own colour, the way a DAW does it
+    Colour trackColour (int i)
+    {
+        static const uint32 pal[] = { 0xffff8a5c, 0xfff2c94c, 0xff8fd16a, 0xff4fd1c5, 0xff5aa9ff, 0xffa08cff, 0xffe57ad1, 0xffff6b81, 0xffd4a373, 0xff6fd3ff };
+        return Colour (pal[(size_t) ((i % 10) + 10) % 10]);
+    }
+    const int heights[] = { 24, 34, 52 };
+}
+
 Rectangle<float> StudioView::rowBounds (int row) const
 {
-    return { 10.0f, 26.0f + (float) (row - scroll) * 24.0f, (float) getWidth() - 20.0f, 22.0f };
+    return { 10.0f, rowsTop + (float) (row - scroll) * (float) rowStep, (float) getWidth() - 20.0f, (float) rowStep - 2.0f };
 }
 
 int StudioView::visibleRows() const
 {
-    return std::max (1, (int) ((getHeight() - 26 - 34) / 24)); // (the feel row below)
+    return std::max (1, (int) (((float) getHeight() - rowsTop - 34.0f) / (float) rowStep)); // (the feel row below)
 }
 
-void StudioView::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
+Rectangle<float> StudioView::zoomBtn (int i) const
 {
-    const int total = (int) proc.songJob.getStatus().tracks.size() + 1; // + the "add" row
+    const float r = laneRight();
+    if (i == 2) return { r - 40.0f, 5.0f, 40.0f, 18.0f };
+    return { r - 40.0f - 6.0f - (float) (2 - i) * 22.0f, 5.0f, 20.0f, 18.0f };
+}
+
+Rectangle<float> StudioView::heightBtn (int i) const
+{
+    return { laneLeft() - 82.0f + (float) i * 22.0f, 5.0f, 20.0f, 18.0f };
+}
+
+int StudioView::sectionAt (float x) const
+{
+    const auto st = proc.songJob.getStatus();
+    const int total = std::max (1, st.song.totalBars());
+    const double bar = view != nullptr ? view->barAt (x, laneLeft(), laneRight() - laneLeft(), total)
+                                       : (double) ((x - laneLeft()) / std::max (1.0f, laneRight() - laneLeft())) * total;
+    for (int i = 0; i < (int) st.song.sections.size(); ++i)
+        if (bar >= st.song.sections[(size_t) i].startBar && bar < st.song.sections[(size_t) i].startBar + st.song.sections[(size_t) i].bars) return i;
+    return -1;
+}
+
+void StudioView::deletePicked()
+{
+    // each picked clip's bars go silent on its track (undo brings them back)
+    const auto st = proc.songJob.getStatus();
+    std::map<int, std::set<int>> byTrack;
+    for (auto [tr, sc] : pickedClips)
+        if (tr >= 0 && tr < (int) st.song.parts.size() && sc >= 0 && sc < (int) st.song.sections.size())
+            for (int b = 0; b < st.song.sections[(size_t) sc].bars; ++b) byTrack[tr].insert (st.song.sections[(size_t) sc].startBar + b);
+    pickedClips.clear();
+    for (auto& [tr, bars] : byTrack) proc.songJob.silenceBars (tr, bars);
+    repaint();
+}
+
+bool StudioView::keyPressed (const KeyPress& k)
+{
+    if (k == KeyPress::deleteKey || k == KeyPress::backspaceKey)
+    {
+        if (! pickedClips.empty()) { deletePicked(); return true; }
+        if (trackPicked && selectedTrack) { askRemove (selectedTrack()); return true; }
+    }
+    if (k == KeyPress::escapeKey && (! pickedClips.empty() || trackPicked)) { pickedClips.clear(); trackPicked = false; repaint(); return true; }
+    if (view != nullptr && (k.getTextCharacter() == '=' || k.getTextCharacter() == '+' || k.getTextCharacter() == '-'))
+    {
+        const int total = std::max (1, proc.songJob.getStatus().song.totalBars());
+        view->zoom (k.getTextCharacter() == '-' ? 1.5 : 1.0 / 1.5, view->first (total) + view->shown (total) * 0.5, total);
+        return true;
+    }
+    return false;
+}
+
+void StudioView::mouseMagnify (const MouseEvent& e, float scale)
+{
+    if (view == nullptr || scale <= 0.0f) return;
+    const int total = std::max (1, proc.songJob.getStatus().song.totalBars());
+    view->zoom (1.0 / scale, view->barAt (e.position.x, laneLeft(), laneRight() - laneLeft(), total), total);
+}
+
+void StudioView::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
+{
+    const auto st = proc.songJob.getStatus();
+    const int totalBars = std::max (1, st.song.totalBars());
+    if (view != nullptr && view->wheel (e, w, laneLeft(), laneRight() - laneLeft(), totalBars)) return;
+    if (e.mods.isAltDown())
+    {
+        // option + scroll: taller or shorter lanes
+        wheelZoomRows += (double) w.deltaY * (w.isSmooth ? 40.0 : 60.0);
+        const int d = (int) wheelZoomRows;
+        if (d != 0)
+        {
+            wheelZoomRows -= d;
+            rowStep = jlimit (22, 72, rowStep + d);
+            if (onRowStep) onRowStep (rowStep);
+            repaint();
+        }
+        return;
+    }
+    const int total = (int) st.tracks.size() + 1; // + the "add" row
     const int maxScroll = std::max (0, total - visibleRows());
     // as far as you scroll: a trackpad's many small steps add up to a row at a time
-    wheelRows -= (double) w.deltaY * (w.isSmooth ? 6.0 : 10.0);
+    wheelRows -= (double) w.deltaY * (w.isSmooth ? 6.0 : 10.0) * 24.0 / rowStep;
     const int rows = (int) wheelRows;
     if (rows == 0) return;
     wheelRows -= rows;
@@ -33,7 +121,7 @@ Rectangle<float> StudioView::colBounds (int row, Col c) const
 {
     // the track's head, left of its lane: mute, solo, lock, its name, its volume
     auto r = rowBounds (row);
-    const float x = r.getX(), y = r.getY();
+    const float x = r.getX() + 4.0f, y = r.getCentreY() - 11.0f;
     switch (c)
     {
         case Mute:   return { x + 2, y + 2, 18, 18 };
@@ -47,7 +135,7 @@ Rectangle<float> StudioView::colBounds (int row, Col c) const
 Rectangle<float> StudioView::addBounds (int numTracks) const
 {
     auto r = rowBounds (numTracks);
-    return { r.getX() + 2.0f, r.getY() + 1.0f, 150.0f, r.getHeight() - 2.0f };
+    return { r.getX() + 2.0f, r.getY() + 1.0f, 150.0f, std::min (24.0f, r.getHeight() - 2.0f) };
 }
 
 // next to "add instrument": a new take of every track you haven't locked
@@ -168,21 +256,8 @@ void StudioView::paint (Graphics& g)
 
     g.setFont (lp::ui::mono (10.0f, false, 0.14f));
     g.setColour (dim);
-    auto head = Rectangle<float> (12.0f, 4.0f, laneLeft() - 12.0f, 16.0f);
+    auto head = Rectangle<float> (16.0f, 6.0f, laneLeft() - 16.0f, 16.0f);
     g.drawText (String (st.tracks.size()) + " TRACKS", head, Justification::centredLeft, false);
-    if (st.editing)
-    {
-        g.setColour (accent);
-        g.drawText ("updating...", head.withTrimmedRight (20.0f), Justification::centredRight, false);
-    }
-    if (statusText)
-        if (const auto s = statusText(); s.isNotEmpty())
-        {
-            // what the AI is making for the song, over the lanes
-            g.setFont (font (11.0f, lp::ui::Medium));
-            g.setColour (s.contains ("didn't work") ? Colour (0xffff8f8f) : th.grassLight);
-            g.drawText (s, Rectangle<float> (laneLeft(), 4.0f, laneRight() - laneLeft(), 16.0f), Justification::centredRight, true);
-        }
     {
         const int total = (int) st.tracks.size() + 1;
         scroll = jlimit (0, std::max (0, total - visibleRows()), scroll);
@@ -194,20 +269,74 @@ void StudioView::paint (Graphics& g)
             String more;
             if (hiddenAbove > 0) more << hiddenAbove << " above";
             if (hiddenBelow > 0) more << (more.isEmpty() ? "" : ", ") << hiddenBelow << " below";
-            g.drawText (more + " (scroll)", Rectangle<float> (112.0f, 4.0f, laneLeft() - 120.0f, 16.0f), Justification::centredLeft, false);
+            g.drawText (more + " (scroll)", Rectangle<float> (112.0f, 6.0f, laneLeft() - 200.0f, 16.0f), Justification::centredLeft, false);
         }
     }
 
-    // ---- the lanes: where the song's sections are, then each track's sound in them
+    // ---- the lanes: a bar ruler, then each track's clips, zoomed to the bars in view
     const float lx = laneLeft(), lw = laneRight() - lx;
     const int totalBars = std::max (1, st.song.totalBars());
-    auto xOfBar = [&] (double bar) { return lx + lw * (float) (bar / totalBars); };
-    if (! st.song.sections.empty())
+    auto xOfBar = [&] (double bar) { return view != nullptr ? view->xOf (bar, lx, lw, totalBars) : lx + lw * (float) (bar / totalBars); };
+    const double firstBar = view != nullptr ? view->first (totalBars) : 0.0, shownBars = view != nullptr ? view->shown (totalBars) : (double) totalBars;
+    const float pxPerBar = lw / (float) shownBars;
+    const float lanesBottom = rowsTop + (float) visibleRows() * (float) rowStep;
+    clipHits.clear();
     {
-        // a faint line where each section starts, down through every lane
-        g.setColour (Colours::white.withAlpha (0.05f));
+        // the bar numbers (as many as fit), and a faint grid down through the lanes: every bar, stronger every 4
+        Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (Rectangle<float> (lx, 0.0f, lw, lanesBottom).toNearestInt());
+        int every = 1;
+        while (every * pxPerBar < 30.0f && every < 64) every *= 2;
+        const int b0 = std::max (0, (int) std::floor (firstBar)), b1 = std::min (totalBars, (int) std::ceil (firstBar + shownBars));
+        g.setFont (lp::ui::mono (9.5f, false, 0.06f));
+        for (int bar = b0; bar <= b1; ++bar)
+        {
+            const float x = xOfBar (bar);
+            const bool four = bar % 4 == 0;
+            if (pxPerBar >= 9.0f || four)
+            {
+                g.setColour (Colours::white.withAlpha (four ? 0.07f : 0.03f));
+                g.drawVerticalLine ((int) x, rowsTop - 2.0f, lanesBottom);
+            }
+            if (bar % every == 0 && bar < totalBars)
+            {
+                g.setColour (Colours::white.withAlpha (0.18f));
+                g.drawVerticalLine ((int) x, 17.0f, 26.0f);
+                g.setColour (dim);
+                g.drawText (String (bar + 1), Rectangle<float> (x + 3.0f, 9.0f, 40.0f, 14.0f), Justification::centredLeft, false);
+            }
+        }
+        g.setColour (Colours::white.withAlpha (0.08f));
+        g.drawHorizontalLine (26, lx, lx + lw);
+        // where each section starts
+        g.setColour (Colours::white.withAlpha (0.13f));
         for (auto& sc : st.song.sections)
-            g.drawVerticalLine ((int) xOfBar (sc.startBar), 22.0f, (float) getHeight() - 32.0f);
+            g.drawVerticalLine ((int) xOfBar (sc.startBar), rowsTop - 2.0f, lanesBottom);
+    }
+    // zoom: out, in, the whole song (or cmd + scroll, pinch, - and + keys); lane height: small, medium, large
+    {
+        const char* zl[] = { "-", "+", "FIT" };
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto zb = zoomBtn (i);
+            const bool on = i == 2 && view != nullptr && view->zoomed (totalBars);
+            g.setColour (Colours::white.withAlpha (zb.contains (lastMouse) ? 0.16f : 0.07f));
+            g.fillRoundedRectangle (zb, 4.0f);
+            g.setColour (on ? th.grassLight : txt.withAlpha (0.85f));
+            g.setFont (i == 2 ? lp::ui::mono (9.0f, true, 0.1f) : font (14.0f, lp::ui::Medium));
+            g.drawText (zl[i], zb.translated (0.0f, i == 2 ? 0.0f : -1.0f), Justification::centred, false);
+        }
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto hb = heightBtn (i);
+            const bool on = rowStep == heights[i];
+            g.setColour (on ? accent.withAlpha (0.55f) : Colours::white.withAlpha (hb.contains (lastMouse) ? 0.14f : 0.06f));
+            g.fillRoundedRectangle (hb, 4.0f);
+            // little lanes, as tall as they'd be
+            g.setColour (Colours::white.withAlpha (on ? 0.95f : 0.6f));
+            const float hh = 2.0f + (float) i * 2.5f;
+            g.fillRoundedRectangle (hb.withSizeKeepingCentre (12.0f, hh), 1.0f);
+        }
     }
 
     for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
@@ -216,17 +345,24 @@ void StudioView::paint (Graphics& g)
         const auto& t = st.tracks[(size_t) i];
         auto& m = proc.studio.mix[(size_t) i];
         auto row = rowBounds (i);
+        const Colour tc = trackColour (i);
         const bool picked = selectedTrack && selectedTrack() == i;
-        if (picked || i == hoverRow)
         {
-            g.setColour (Colours::white.withAlpha (picked ? 0.07f : 0.04f));
-            g.fillRoundedRectangle (row.withRight (lx - 6.0f), 5.0f);
+            // its head: lit when it's open below (outlined when Delete would remove it)
+            auto hr = row.withRight (lx - 6.0f);
+            g.setColour (Colours::white.withAlpha (picked ? 0.08f : i == hoverRow ? 0.05f : 0.025f));
+            g.fillRoundedRectangle (hr, 5.0f);
+            if (picked && trackPicked)
+            {
+                g.setColour (Colours::white.withAlpha (0.6f));
+                g.drawRoundedRectangle (hr.reduced (0.5f), 5.0f, 1.0f);
+            }
+            g.setColour (tc.withAlpha (m.mute.load() ? 0.35f : 1.0f));
+            g.fillRoundedRectangle (Rectangle<float> (hr.getX(), hr.getY(), 4.0f, hr.getHeight()), 2.0f);
         }
-        if (picked)
-        {
-            g.setColour (accent);
-            g.fillRoundedRectangle (Rectangle<float> (row.getX() - 6.0f, row.getY() + 3.0f, 3.0f, row.getHeight() - 6.0f), 1.5f);
-        }
+        // the lane itself: a faint stripe
+        g.setColour (Colours::white.withAlpha (i % 2 == 0 ? 0.018f : 0.03f));
+        g.fillRect (Rectangle<float> (lx, row.getY(), lw, row.getHeight()));
 
         auto pill = [&g] (Rectangle<float> r, const String& label, bool on, Colour onCol)
         {
@@ -252,7 +388,8 @@ void StudioView::paint (Graphics& g)
         }
 
         // its name and where it came from
-        auto nameArea = Rectangle<float> (row.getX() + 68.0f, row.getY(), colBounds (i, Volume).getX() - 22.0f - row.getX() - 72.0f, row.getHeight());
+        const float hy = row.getCentreY() - 11.0f;
+        auto nameArea = Rectangle<float> (row.getX() + 72.0f, hy, colBounds (i, Volume).getX() - 22.0f - row.getX() - 76.0f, 22.0f);
         String name = t.name;
         if (t.reversed) name << " (rev)";
         if (t.pitch != 0) name << " " << (t.pitch > 0 ? "+" : "") << t.pitch;
@@ -272,26 +409,20 @@ void StudioView::paint (Graphics& g)
             g.fillRoundedRectangle (r.withWidth (std::max (r.getHeight(), r.getWidth() * jmap (m.gainDb.load(), -30.0f, 6.0f, 0.0f, 1.0f))), 4.0f);
             meterL[(size_t) i].update (proc.studio.peakL[(size_t) i].exchange (0.0f));
             meterR[(size_t) i].update (proc.studio.peakR[(size_t) i].exchange (0.0f));
-            lp::ui::drawStereoMeter (g, Rectangle<float> (r.getX() - 16.0f, row.getY() + 2.0f, 9.0f, row.getHeight() - 4.0f), meterL[(size_t) i], meterR[(size_t) i]);
+            lp::ui::drawStereoMeter (g, Rectangle<float> (r.getX() - 16.0f, hy + 2.0f, 9.0f, 18.0f), meterL[(size_t) i], meterR[(size_t) i]);
         }
 
-        // its lane: a clip in each section it plays in, with its real waveform as a thin line
+        // its lane: a clip in each section it plays in (in the track's colour), with its real waveform as a thin line
         const auto* env = envelopeOf (t.stem);
         const bool muted = m.mute.load();
-        const Colour clipCol = (picked ? accent : accent.withSaturation (accent.getSaturation() * 0.6f)).withAlpha (muted ? 0.12f : picked ? 0.42f : 0.26f);
-        const Colour waveCol = (picked ? Colours::white : th.grassLight).withAlpha (muted ? 0.2f : 0.7f);
-        if (env == nullptr || env->peaks.empty() || env->rate <= 0.0)
-        {
-            g.setColour (Colours::white.withAlpha (0.04f));
-            g.fillRoundedRectangle (Rectangle<float> (lx, row.getY() + 1.0f, lw, row.getHeight() - 2.0f), 4.0f);
-            continue;
-        }
+        if (env == nullptr || env->peaks.empty() || env->rate <= 0.0) continue;
         const double barSamples = 4.0 * 60.0 / std::max (40.0, st.song.bpm) * env->rate;
         const int n = (int) env->peaks.size();
         auto bucketOf = [&] (double bar) { return jlimit (0, n, (int) (bar * barSamples / (double) std::max<int64> (1, env->length) * n)); };
         float top = 0.0f;
         for (float v : env->peaks) top = std::max (top, v);
         if (top <= 0.0f) continue;
+        const std::set<int> silent = i < (int) st.song.parts.size() ? st.song.parts[(size_t) i].silentBars : std::set<int>();
         // how loud it is on average in each section: a section where it's (nearly) silent gets no clip
         std::vector<float> avg;
         float loudest = 0.0f;
@@ -303,26 +434,59 @@ void StudioView::paint (Graphics& g)
             avg.push_back (b1 > b0 ? (float) (sum / (b1 - b0)) : 0.0f);
             loudest = std::max (loudest, avg.back());
         }
+        Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (Rectangle<float> (lx, row.getY(), lw, row.getHeight()).toNearestInt());
         for (size_t si = 0; si < st.song.sections.size(); ++si)
         {
             const auto& sc = st.song.sections[si];
             if (avg[si] < loudest * 0.12f) continue; // (only a tail or silence here)
-            const float x0 = xOfBar (sc.startBar) + 1.0f, x1 = xOfBar (sc.startBar + sc.bars) - 1.0f;
-            auto clip = Rectangle<float> (x0, row.getY() + 1.0f, x1 - x0, row.getHeight() - 2.0f);
-            g.setColour (clipCol);
-            g.fillRoundedRectangle (clip, 3.0f);
-            // one thin line per pixel: the loudest moment under it
-            g.setColour (waveCol);
-            const float mid = clip.getCentreY(), half = clip.getHeight() * 0.5f - 2.0f;
-            for (float x = clip.getX() + 1.0f; x < clip.getRight() - 1.0f; x += 1.0f)
+            const bool isPicked = pickedClips.count ({ i, (int) si }) > 0;
+            // the section's bars, less any you deleted: one clip per stretch that still plays
+            for (int bar = sc.startBar; bar < sc.startBar + sc.bars;)
             {
-                const double barA = sc.startBar + (x - clip.getX()) / clip.getWidth() * sc.bars;
-                const double barB = sc.startBar + (x + 1.0f - clip.getX()) / clip.getWidth() * sc.bars;
-                const int ka = bucketOf (barA), kb = std::max (ka + 1, bucketOf (barB));
-                float v = 0.0f;
-                for (int k = ka; k < kb && k < n; ++k) v = std::max (v, env->peaks[(size_t) k]);
-                const float h = std::max (0.5f, v / top * half);
-                g.drawVerticalLine ((int) x, mid - h, mid + h);
+                if (silent.count (bar)) { ++bar; continue; }
+                int end = bar;
+                while (end < sc.startBar + sc.bars && ! silent.count (end)) ++end;
+                const float x0 = xOfBar (bar) + 1.0f, x1 = xOfBar (end) - 1.0f;
+                bar = end;
+                if (x1 < lx || x0 > lx + lw || x1 - x0 < 1.0f) continue;
+                auto clip = Rectangle<float> (x0, row.getY(), x1 - x0, row.getHeight());
+                clipHits.push_back ({ i, (int) si, clip });
+                g.setColour (tc.withAlpha (muted ? 0.10f : isPicked ? 0.55f : 0.26f));
+                g.fillRoundedRectangle (clip, 3.0f);
+                g.setColour (tc.withAlpha (muted ? 0.2f : 0.6f));
+                g.drawRoundedRectangle (clip.reduced (0.5f), 3.0f, 1.0f);
+                auto body = clip;
+                if (row.getHeight() >= 32.0f && clip.getWidth() > 30.0f)
+                {
+                    // a name strip along its top, the way a DAW labels a clip
+                    auto strip = body.removeFromTop (12.0f);
+                    g.setColour (tc.withAlpha (muted ? 0.25f : isPicked ? 0.95f : 0.7f));
+                    g.fillRoundedRectangle (strip, 3.0f);
+                    g.fillRect (strip.withTrimmedTop (6.0f));
+                    g.setColour (Colour (0xff101014).withAlpha (0.9f));
+                    g.setFont (font (9.5f, lp::ui::Medium));
+                    g.drawText (t.name, strip.reduced (5.0f, 0.0f), Justification::centredLeft, true);
+                }
+                // one thin line per pixel: the loudest moment under it
+                g.setColour ((isPicked ? Colours::white : tc.brighter (0.45f)).withAlpha (muted ? 0.25f : 0.85f));
+                const float mid = body.getCentreY(), half = body.getHeight() * 0.5f - 2.0f;
+                const float xa = std::max (body.getX() + 1.0f, lx), xb = std::min (body.getRight() - 1.0f, lx + lw);
+                for (float x = xa; x < xb; x += 1.0f)
+                {
+                    const double barA = view != nullptr ? view->barAt (x, lx, lw, totalBars) : (x - lx) / lw * totalBars;
+                    const double barB = view != nullptr ? view->barAt (x + 1.0f, lx, lw, totalBars) : (x + 1.0f - lx) / lw * totalBars;
+                    const int ka = bucketOf (barA), kb = std::max (ka + 1, bucketOf (barB));
+                    float v = 0.0f;
+                    for (int k = ka; k < kb && k < n; ++k) v = std::max (v, env->peaks[(size_t) k]);
+                    const float h = std::max (0.5f, v / top * half);
+                    g.drawVerticalLine ((int) x, mid - h, mid + h);
+                }
+                if (isPicked)
+                {
+                    g.setColour (Colours::white);
+                    g.drawRoundedRectangle (clip.reduced (0.75f), 3.0f, 1.5f);
+                }
             }
         }
     }
@@ -347,7 +511,9 @@ void StudioView::paint (Graphics& g)
             for (auto& gh : list)
             {
                 const float x0 = xOfBar (gh.start / secsPerBar), x1 = xOfBar ((gh.start + gh.len) / secsPerBar);
-                auto clip = Rectangle<float> (x0 + 1.0f, rb.getY() + 1.0f, std::max (8.0f, x1 - x0 - 2.0f), rb.getHeight() - 2.0f);
+                auto clip = Rectangle<float> (x0 + 1.0f, rb.getY() + 1.0f, std::max (8.0f, x1 - x0 - 2.0f), rb.getHeight() - 2.0f)
+                                .getIntersection (Rectangle<float> (lx, rb.getY(), lw, rb.getHeight()));
+                if (clip.isEmpty()) continue;
                 g.setColour (accent.withAlpha (0.18f + 0.32f * pulse));
                 g.fillRoundedRectangle (clip, 3.0f);
                 g.setColour (th.grassLight.withAlpha (0.5f + 0.5f * pulse));
@@ -388,7 +554,14 @@ void StudioView::paint (Graphics& g)
     {
         const float frac = (float) jlimit (0.0, 1.0, proc.playheadPos.load() / (double) proc.studio.length());
         g.setColour (Colours::white.withAlpha (0.9f));
-        g.drawVerticalLine ((int) (lx + lw * frac), 22.0f, (float) getHeight() - 32.0f);
+        const float px = xOfBar (frac * (totalBars + 2.0)); // (the stems run two bars past the end, for tails)
+        if (px >= lx && px <= lx + lw)
+        {
+            g.drawVerticalLine ((int) px, 8.0f, lanesBottom);
+            Path tri;
+            tri.addTriangle (px - 5.0f, 6.0f, px + 5.0f, 6.0f, px, 12.0f);
+            g.fillPath (tri);
+        }
     }
 
     // add another instrument from your library, and write the unlocked tracks again
@@ -447,6 +620,25 @@ void StudioView::paint (Graphics& g)
         g.setColour (am ? Colours::white : dim);
         g.drawText (am ? "AUTO MIX ON" : "AUTO MIX OFF", ab, Justification::centred, false);
     }
+
+    // what's happening (an edit being made, what the AI is making), in a pill over the bar numbers, left of the zoom
+    {
+        String msg = statusText ? statusText() : String();
+        if (msg.isEmpty() && st.editing) msg = "updating...";
+        if (msg.isNotEmpty())
+        {
+            const auto f = font (11.0f, lp::ui::Medium);
+            const float w = std::min (laneRight() - laneLeft() - 140.0f, GlyphArrangement::getStringWidth (f, msg) + 22.0f);
+            auto pr = Rectangle<float> (zoomBtn (0).getX() - 10.0f - w, 4.0f, w, 20.0f);
+            g.setColour (th.body.withAlpha (0.92f));
+            g.fillRoundedRectangle (pr, 10.0f);
+            g.setColour ((msg.contains ("didn't work") ? Colour (0xffff8f8f) : th.grassLight).withAlpha (0.5f));
+            g.drawRoundedRectangle (pr.reduced (0.5f), 10.0f, 1.0f);
+            g.setFont (f);
+            g.setColour (msg.contains ("didn't work") ? Colour (0xffff8f8f) : th.grassLight);
+            g.drawText (msg, pr.reduced (11.0f, 0.0f), Justification::centred, true);
+        }
+    }
 }
 
 void StudioView::setFromX (int row, Col c, float x)
@@ -500,12 +692,45 @@ void StudioView::setFeel (int i, float x)
 
 Rectangle<float> StudioView::scrollBar() const
 {
-    return { (float) getWidth() - 7.0f, 26.0f, 5.0f, (float) visibleRows() * 24.0f - 2.0f };
+    return { (float) getWidth() - 7.0f, rowsTop, 5.0f, (float) visibleRows() * (float) rowStep - 2.0f };
 }
 
 void StudioView::mouseDown (const MouseEvent& e)
 {
     const auto st = proc.songJob.getStatus();
+    setWantsKeyboardFocus (true); // (the window turns it off for everything but text boxes; Delete needs it here)
+    grabKeyboardFocus();
+    {
+        const int totalBars = std::max (1, st.song.totalBars());
+        for (int i = 0; i < 3; ++i)
+            if (view != nullptr && zoomBtn (i).expanded (2.0f).contains (e.position))
+            {
+                if (i == 2) view->fit();
+                else view->zoom (i == 0 ? 1.6 : 1.0 / 1.6, view->first (totalBars) + view->shown (totalBars) * 0.5, totalBars);
+                return;
+            }
+        for (int i = 0; i < 3; ++i)
+            if (heightBtn (i).expanded (1.0f).contains (e.position))
+            {
+                rowStep = heights[i];
+                if (onRowStep) onRowStep (rowStep);
+                repaint();
+                return;
+            }
+        // a click on the bar numbers: play from there (and with cmd: zoom to the section)
+        if (e.position.y < rowsTop - 2.0f && e.position.x >= laneLeft() && e.position.x <= laneRight())
+        {
+            if (view != nullptr && e.getNumberOfClicks() > 1)
+                if (const int sc = sectionAt (e.position.x); sc >= 0)
+                {
+                    // double-click: just that section
+                    const auto& sec = st.song.sections[(size_t) sc];
+                    view->bars = std::max (2, sec.bars); view->start = sec.startBar;
+                    if (view->changed) view->changed();
+                }
+            return;
+        }
+    }
     if (scrollBar().expanded (4.0f, 0.0f).contains (e.position))
     {
         // a click on the scrollbar: that part of the track list
@@ -550,6 +775,59 @@ void StudioView::mouseDown (const MouseEvent& e)
     for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
     {
         if (! rowShown (i) || ! rowBounds (i).expanded (0.0f, 1.0f).contains (e.position)) continue;
+        if (e.position.x >= laneLeft())
+        {
+            // the lane: pick a clip (shift / cmd for more); Delete takes it out
+            const ClipHit* hit = nullptr;
+            for (auto& h : clipHits) if (h.track == i && h.r.contains (e.position)) hit = &h;
+            const int sc = hit != nullptr ? hit->section : sectionAt (e.position.x);
+            trackPicked = false;
+            if (e.mods.isPopupMenu())
+            {
+                if (hit != nullptr && pickedClips.count ({ i, sc }) == 0) { pickedClips.clear(); pickedClips.insert ({ i, sc }); }
+                bool anyGone = false;
+                if (sc >= 0 && i < (int) st.song.parts.size())
+                    for (int b = 0; b < st.song.sections[(size_t) sc].bars; ++b)
+                        anyGone = anyGone || st.song.parts[(size_t) i].silentBars.count (st.song.sections[(size_t) sc].startBar + b) > 0;
+                PopupMenu m;
+                m.addSectionHeader (String (st.tracks[(size_t) i].name).toUpperCase() + (sc >= 0 ? "  \xc2\xb7  " + String (st.song.sections[(size_t) sc].name).toUpperCase() : String()));
+                m.addItem (1, pickedClips.size() > 1 ? "Delete " + String ((int) pickedClips.size()) + " clips" : String ("Delete this clip"), ! pickedClips.empty());
+                m.addItem (2, "Bring it back (the bars deleted here)", anyGone);
+                m.addSeparator();
+                m.addItem (3, "Remove the whole track \"" + st.tracks[(size_t) i].name + "\"", st.tracks.size() > 1);
+                SafePointer<StudioView> sp (this);
+                m.showMenuAsync (PopupMenu::Options(), [sp, i, sc] (int r)
+                {
+                    if (sp == nullptr) return;
+                    if (r == 1) sp->deletePicked();
+                    else if (r == 2 && sc >= 0)
+                    {
+                        const auto now = sp->proc.songJob.getStatus();
+                        std::set<int> bars;
+                        for (int b = 0; b < now.song.sections[(size_t) sc].bars; ++b) bars.insert (now.song.sections[(size_t) sc].startBar + b);
+                        sp->proc.songJob.silenceBars (i, bars, false);
+                    }
+                    else if (r == 3) sp->askRemove (i);
+                });
+                if (onOpenTrack) onOpenTrack (i);
+                repaint();
+                return;
+            }
+            if (hit != nullptr)
+            {
+                const std::pair<int, int> key { i, sc };
+                if (e.mods.isShiftDown() || e.mods.isCommandDown())
+                {
+                    if (pickedClips.count (key)) pickedClips.erase (key); else pickedClips.insert (key);
+                }
+                else { pickedClips.clear(); pickedClips.insert (key); }
+            }
+            else pickedClips.clear();
+            if (onOpenTrack) onOpenTrack (i);
+            repaint();
+            return;
+        }
+        pickedClips.clear();
         if (e.mods.isPopupMenu())
         {
             const auto& tr = st.tracks[(size_t) i];
@@ -575,6 +853,7 @@ void StudioView::mouseDown (const MouseEvent& e)
         const auto c = colAt (i, e.position);
         if (c == None)
         {
+            trackPicked = true; // (Delete now removes the track)
             if (onOpenTrack) onOpenTrack (i); // (its name or its lane: it opens below)
             repaint();
             return;

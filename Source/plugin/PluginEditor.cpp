@@ -323,10 +323,42 @@ void LivePlanetLookAndFeel::drawButtonBackground (Graphics& g, Button& b, const 
     auto r = b.getLocalBounds().toFloat().reduced (1.0f);
     const bool primary = (bool) b.getProperties().getWithDefault ("primary", false);
     const float rad = r.getHeight() * 0.5f;
+    if ((bool) b.getProperties().getWithDefault ("ai", false))
+    {
+        // the AI's own colour (coral into magenta), glassy: a soft glow, a light top half, a crisp rim
+        const float a = b.isEnabled() ? 1.0f : 0.45f;
+        auto body = r.reduced (2.0f);
+        const float rr = body.getHeight() * 0.5f;
+        for (int i = 3; i >= 1; --i)
+        {
+            g.setColour (Colour (0xffff5a8a).withAlpha (a * (over ? 0.16f : 0.10f) / (float) i));
+            g.fillRoundedRectangle (body.expanded ((float) i * 0.9f), rr + (float) i);
+        }
+        ColourGradient cg (Colour (0xffff8a4c).withMultipliedAlpha (a), body.getX(), body.getY(), Colour (0xffe8418f).withMultipliedAlpha (a), body.getRight(), body.getBottom(), false);
+        g.setGradientFill (cg);
+        g.fillRoundedRectangle (body, rr);
+        if (over || down) { g.setColour (Colours::white.withAlpha (down ? 0.0f : 0.10f)); g.fillRoundedRectangle (body, rr); }
+        if (down) { g.setColour (Colours::black.withAlpha (0.12f)); g.fillRoundedRectangle (body, rr); }
+        ColourGradient gloss (Colours::white.withAlpha (0.30f * a), 0.0f, body.getY(), Colours::white.withAlpha (0.0f), 0.0f, body.getCentreY() + 2.0f, false);
+        g.setGradientFill (gloss);
+        g.fillRoundedRectangle (body.reduced (1.0f).withHeight (body.getHeight() * 0.55f), rr - 1.0f);
+        g.setColour (Colours::white.withAlpha (0.38f * a));
+        g.drawRoundedRectangle (body.reduced (0.5f), rr, 1.0f);
+        return;
+    }
     if (primary)
     {
         g.setColour ((b.isEnabled() ? th->grass : th->grass.withSaturation (0.2f)).brighter (over ? 0.12f : 0.0f).darker (down ? 0.15f : 0.0f));
         g.fillRoundedRectangle (r, rad);
+        return;
+    }
+    if ((bool) b.getProperties().getWithDefault ("glass", false))
+    {
+        // on glass: a clear pill with a fine light rim
+        g.setColour (Colours::white.withAlpha (down ? 0.04f : over ? 0.11f : 0.06f));
+        g.fillRoundedRectangle (r, rad);
+        g.setColour (Colours::white.withAlpha (over ? 0.22f : 0.13f));
+        g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
         return;
     }
     g.setColour (th->bodyLight.brighter (over ? 0.08f : 0.0f).darker (down ? 0.1f : 0.0f));
@@ -344,6 +376,28 @@ void LivePlanetLookAndFeel::drawButtonBackground (Graphics& g, Button& b, const 
 void LivePlanetLookAndFeel::drawButtonText (Graphics& g, TextButton& b, bool, bool)
 {
     const bool primary = (bool) b.getProperties().getWithDefault ("primary", false);
+    if ((bool) b.getProperties().getWithDefault ("ai", false))
+    {
+        // a sparkle, then the words
+        const auto f = font (b.getHeight() >= 34 ? 15.0f : 13.5f, lp::ui::Medium);
+        const float tw = GlyphArrangement::getStringWidth (f, b.getButtonText());
+        const float s = f.getHeight() * 0.36f, gap = 7.0f;
+        const float x0 = ((float) b.getWidth() - (tw + 2.0f * s + gap)) * 0.5f, cy = (float) b.getHeight() * 0.5f;
+        Path star;
+        const float cx = x0 + s;
+        star.startNewSubPath (cx, cy - s);
+        star.quadraticTo (cx, cy, cx + s, cy);
+        star.quadraticTo (cx, cy, cx, cy + s);
+        star.quadraticTo (cx, cy, cx - s, cy);
+        star.quadraticTo (cx, cy, cx, cy - s);
+        star.closeSubPath();
+        g.setColour (Colours::white.withAlpha (b.isEnabled() ? 1.0f : 0.6f));
+        g.fillPath (star);
+        g.fillEllipse (cx + s * 0.9f, cy - s * 1.15f, s * 0.45f, s * 0.45f);
+        g.setFont (f);
+        g.drawText (b.getButtonText(), Rectangle<float> (x0 + 2.0f * s + gap, 0.0f, tw + 4.0f, (float) b.getHeight()), Justification::centredLeft, false);
+        return;
+    }
     g.setFont (font (primary ? 15.0f : 13.0f, lp::ui::Medium));
     g.setColour (primary ? Colours::white : th->ink);
     g.drawText (b.getButtonText(), b.getLocalBounds(), Justification::centred, false);
@@ -1293,7 +1347,8 @@ SongView::SongView (LivePlanetProcessor& p) : proc (p)
     {
         std::vector<int> pk (picked.begin(), picked.end());
         if (pk.empty() && selected >= 0) pk.push_back (selected);
-        if (pk.empty() || dirty || ! onLayer) return;
+        if (pk.empty()) for (int i = 0; i < (int) draft.size(); ++i) pk.push_back (i); // (none picked: the whole song)
+        if (pk.empty() || dirty || waiting || ! onLayer) return;
         const int a = *std::min_element (pk.begin(), pk.end()), b = *std::max_element (pk.begin(), pk.end());
         onLayer (a, b - a + 1); // (from the first picked to the last, in one stretch)
     };
@@ -1350,7 +1405,7 @@ void SongView::refresh()
         rebuildBtn.onClick();
     const bool edit = st.haveSong;
     for (auto* b : { &addBtn, &dupBtn, &removeBtn }) if (b->isVisible() != edit) b->setVisible (edit);
-    if (layerBtn.isVisible() != (edit && ruler && layerAvailable)) layerBtn.setVisible (edit && ruler && layerAvailable);
+    if (layerBtn.isVisible()) layerBtn.setVisible (false); // (the Studio shows its own "AI layer" button, by the title)
     layerBtn.setEnabled ((selected >= 0 || ! picked.empty()) && ! dirty && ! waiting);
     dupBtn.setEnabled (selected >= 0);
     removeBtn.setEnabled ((selected >= 0 || ! picked.empty()) && draft.size() > 1);
@@ -1366,7 +1421,7 @@ void SongView::resized()
     if (ruler)
     {
         // the Studio: the section tools in a row from the left, over the sections they work on
-        for (auto* b : { &layerBtn, &addBtn, &dupBtn, &removeBtn, &undoBtn, &rebuildBtn })
+        for (auto* b : { &addBtn, &dupBtn, &removeBtn, &undoBtn, &rebuildBtn })
         {
             const int w = b == &rebuildBtn ? 120 : b == &addBtn ? 92 : b == &layerBtn ? 104 : 84;
             b->setBounds (head.removeFromLeft (w).withSizeKeepingCentre (w, 24));
@@ -1405,6 +1460,13 @@ Rectangle<float> SongView::blockRect (int i) const
     int start = 0;
     for (int k = 0; k < i; ++k) start += draft[(size_t) k].bars;
     const float total = (float) totalDraftBars();
+    if (ruler && view != nullptr)
+    {
+        // (zoomed: the bars in view, lined up with the lanes)
+        const int tb = totalDraftBars();
+        const float x0 = view->xOf (start, l.getX(), l.getWidth(), tb), x1 = view->xOf (start + draft[(size_t) i].bars, l.getX(), l.getWidth(), tb);
+        return { x0 + 1.0f, l.getY(), x1 - x0 - 2.0f, l.getHeight() };
+    }
     const float x0 = l.getX() + l.getWidth() * (float) start / total, x1 = l.getX() + l.getWidth() * (float) (start + draft[(size_t) i].bars) / total;
     return { x0 + 2.0f, l.getY(), x1 - x0 - 4.0f, l.getHeight() };
 }
@@ -1519,7 +1581,7 @@ void SongView::mouseDown (const MouseEvent& e)
     if (drag == Drag::None) selected = -1;
     pickOnly (selected);
     dragStartX = e.position.x;
-    pxPerBarAtStart = lane().getWidth() / (float) totalDraftBars();
+    pxPerBarAtStart = lane().getWidth() / (float) (ruler && view != nullptr ? view->shown (totalDraftBars()) : totalDraftBars());
     if (dragIndex >= 0 && dragIndex < (int) draft.size()) dragOrigBars = draft[(size_t) dragIndex].bars;
     refresh();
 }
@@ -1551,6 +1613,20 @@ void SongView::mouseDrag (const MouseEvent& e)
 }
 
 void SongView::mouseUp (const MouseEvent&) { drag = Drag::None; refresh(); }
+
+void SongView::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
+{
+    const auto l = lane();
+    if (ruler && view != nullptr && view->wheel (e, w, l.getX(), l.getWidth(), totalDraftBars())) return;
+    Component::mouseWheelMove (e, w);
+}
+
+void SongView::mouseMagnify (const MouseEvent& e, float scale)
+{
+    const auto l = lane();
+    if (ruler && view != nullptr && scale > 0.0f)
+        view->zoom (1.0 / scale, view->barAt (e.position.x, l.getX(), l.getWidth(), totalDraftBars()), totalDraftBars());
+}
 
 // delete or backspace: the sections picked come out
 bool SongView::keyPressed (const KeyPress& k)
@@ -1617,11 +1693,15 @@ void SongView::paint (Graphics& g)
     else
     {
         const auto ln = lane();
+        Graphics::ScopedSaveState clipToLane (g);
+        if (ruler) g.reduceClipRegion (ln.expanded (0.0f, 8.0f).toNearestInt());
+        const bool zoomView = ruler && view != nullptr && st.haveSong;
         for (size_t i = 0; i < blocks.size(); ++i)
         {
             const auto& bl = blocks[i];
-            const float x0 = ln.getX() + ln.getWidth() * (float) bl.start / (float) totalBars;
-            const float x1 = ln.getX() + ln.getWidth() * (float) (bl.start + bl.bars) / (float) totalBars;
+            const float x0 = zoomView ? view->xOf (bl.start, ln.getX(), ln.getWidth(), totalBars) - 1.0f : ln.getX() + ln.getWidth() * (float) bl.start / (float) totalBars;
+            const float x1 = zoomView ? view->xOf (bl.start + bl.bars, ln.getX(), ln.getWidth(), totalBars) + 1.0f : ln.getX() + ln.getWidth() * (float) (bl.start + bl.bars) / (float) totalBars;
+            if (x1 < ln.getX() - 4.0f || x0 > ln.getRight() + 4.0f) continue;
             const float h = ruler ? ln.getHeight() : ln.getHeight() * (0.4f + 0.6f * jlimit (0.0f, 1.0f, bl.energy));
             auto rect = Rectangle<float> (x0 + 2.0f, ln.getBottom() - h, x1 - x0 - 4.0f, h);
             const String n (bl.name);
@@ -1647,7 +1727,7 @@ void SongView::paint (Graphics& g)
         if (st.haveSong && ! dirty && proc.studio.length() > 0 && proc.songIsPlaying())
         {
             const float frac = (float) jlimit (0.0, 1.0, proc.playheadPos.load() / (double) proc.studio.length());
-            const float x = ln.getX() + ln.getWidth() * frac;
+            const float x = zoomView ? view->xOf (frac * (st.song.totalBars() + 2.0), ln.getX(), ln.getWidth(), totalBars) : ln.getX() + ln.getWidth() * frac;
             g.setColour (Colours::white);
             g.drawLine (x, ln.getY() - 4.0f, x, ln.getBottom(), 1.5f);
         }
@@ -1824,6 +1904,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         {
             MessageManager::callAsync ([sp] { if (sp != nullptr) sp->layerPopup.reset(); });
         });
+        layerPopup->setBackdrop (createComponentSnapshot (getLocalBounds(), true, 0.25f));
         addAndMakeVisible (*layerPopup);
         layerPopup->setBounds (getLocalBounds());
         layerPopup->toFront (true);
@@ -1838,6 +1919,12 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     setUpKeyBoxes (p, studioKey, studioMode, studioKeyAtt, studioModeAtt);
     addChildComponent (studioKey);
     addChildComponent (studioMode);
+    addChildComponent (aiLayer);
+    aiLayer.getProperties().set ("ai", true);
+    aiLayer.setWantsKeyboardFocus (false);
+    aiLayer.setMouseClickGrabsKeyboardFocus (false);
+    aiLayer.setTooltip ("The AI plays a new instrument over the sections you picked (shift-click for more; none picked: the whole song): drums, bass, guitar, keys, strings...");
+    aiLayer.onClick = [this] { songView.requestLayer(); };
     // takes
     for (int i = 0; i < 3; ++i)
     {
@@ -1885,6 +1972,12 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         repaint();
     };
     studioSplit = jlimit (200, 560, (int) lp::setting ("studioSplit", 358));
+    // the arrangement's zoom, shared by the sections ruler and the lanes; and how tall the lanes are
+    songView.view = &arrView;
+    studioView.view = &arrView;
+    arrView.changed = [this] { songView.repaint(); studioView.repaint(); };
+    studioView.rowStep = jlimit (22, 72, (int) lp::setting ("laneHeight", 34));
+    studioView.onRowStep = [] (int h) { lp::setSetting ("laneHeight", h); };
     studioView.selectedTrack = [this] { return trackEditor.selected(); };
     dockTabs.setTooltip ("Sample: the track's sample, its drum grid or its notes. Sound: its volume and effects. Grains: re-plays it in tiny slices, in time.");
     addChildComponent (dockTabs);
@@ -2448,6 +2541,14 @@ void LivePlanetEditor::timerCallback()
     // the Studio talks to the voice helper too (its AI layers), in the background
     if (voiceOn() && page == Studio) proc.voiceClient.setWanted (true);
     songView.layerAvailable = voiceOn();
+    {
+        const bool show = page == Studio && proc.songJob.getStatus().haveSong; // (flipping a sample needs no helper)
+        if (aiLayer.isVisible() != show) aiLayer.setVisible (show);
+        aiLayer.setEnabled (songView.layerReady());
+        const int n = songView.pickedCount();
+        const String t = n > 1 ? "AI layer on " + String (n) + " sections" : n == 1 ? String ("AI layer on this section") : String ("AI layer");
+        if (aiLayer.getButtonText() != t) aiLayer.setButtonText (t);
+    }
     repaint (0, 0, getWidth(), 70); // the top bar (library and tempo)
 }
 
@@ -2586,7 +2687,8 @@ void LivePlanetEditor::paint (Graphics& g)
         // the section tools' row label, over the track names
         g.setFont (lp::ui::mono (10.0f, true, 0.16f));
         g.setColour (th.grassLight);
-        g.drawText ("SECTIONS", Rectangle<int> (cardTimeline.getX() + 20, songView.getY() + 4, 120, 24), Justification::centredLeft, false);
+        if (! aiLayer.isVisible())
+            g.drawText ("SECTIONS", Rectangle<int> (cardTimeline.getX() + 20, songView.getY() + 4, 120, 24), Justification::centredLeft, false);
         card (g, cardDock, th);
         if (dockCollapsed)
         {
@@ -2816,6 +2918,8 @@ void LivePlanetEditor::resized()
         hLocators.setTopLeftPosition (pillHelper.getRight() - 24, pillHelper.getY() + 10);
     }
     studioMode.setBounds (cardTimeline.getRight() - 18 - 92, cardTimeline.getY() + 12, 92, 26);
+    // (over the track names, left of the sections it plays over)
+    aiLayer.setBounds (cardTimeline.getX() + 16, songView.getY() + 8, (int) studioView.laneLeft() - 28, 34);
     studioKey.setBounds (cardTimeline.getRight() - 18 - 92 - 8 - 128, cardTimeline.getY() + 12, 128, 26);
     masterAB.setBounds (studioKey.getX() - 24 - 72, cardTimeline.getY() + 12, 72, 26);
     {

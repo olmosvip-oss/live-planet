@@ -193,6 +193,7 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
         auto* b = chips.add (new TextButton (label));
         b->setWantsKeyboardFocus (false);
         b->getProperties().set ("id", id);
+        b->getProperties().set ("glass", true);
         b->onClick = [this, b] { pickKind (b); };
         addAndMakeVisible (b);
     }
@@ -203,9 +204,25 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
                            T { &loop1, "a 1-bar loop" }, T { &loop2, "a 2-bar loop" }, T { &loop4, "a 4-bar loop" } })
     {
         b->setTooltip (tip);
+        b->getProperties().set ("glass", true);
         b->setWantsKeyboardFocus (false);
         addAndMakeVisible (*b);
     }
+    for (auto [b, tip] : { T { &modeFlip, "A loop from your own sample library, in the song's key and tempo, chopped up and re-ordered so it's yours (quick, no AI)" },
+                           T { &modeAi, "The AI plays a new part over your song (needs the voice helper; slower, and hit or miss on drums)" },
+                           T { &amtLight, "A few slices moved: still close to the loop" }, T { &amtMed, "Re-ordered, some slices backwards, a stutter now and then" },
+                           T { &amtHeavy, "Chopped hard: a new riff from the loop's pieces" } })
+    {
+        b->setTooltip (tip);
+        b->getProperties().set ("glass", true);
+        b->setWantsKeyboardFocus (false);
+        addAndMakeVisible (*b);
+    }
+    modeFlip.onClick = [this] { flipMode = true; showType(); resized(); repaint(); };
+    modeAi.onClick = [this] { flipMode = false; showType(); resized(); repaint(); };
+    amtLight.onClick = [this] { flipAmount = 1; showType(); };
+    amtMed.onClick = [this] { flipAmount = 2; showType(); };
+    amtHeavy.onClick = [this] { flipAmount = 3; showType(); };
     asPart.onClick = [this] { loopBars = 0; showType(); };
     asLoop.onClick = [this] { if (loopBars == 0) loopBars = 2; showType(); };
     loop1.onClick = [this] { loopBars = 1; showType(); };
@@ -217,7 +234,11 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
     describe.setIndents (12, 9);
     addAndMakeVisible (describe);
     for (auto* b : { &go, &cancel }) { b->setWantsKeyboardFocus (false); addAndMakeVisible (*b); }
-    go.getProperties().set ("primary", true);
+    go.getProperties().set ("ai", true);
+    cancel.getProperties().set ("glass", true);
+    describe.setColour (TextEditor::backgroundColourId, Colours::white.withAlpha (0.05f));
+    describe.setColour (TextEditor::outlineColourId, Colours::white.withAlpha (0.14f));
+    describe.setColour (TextEditor::focusedOutlineColourId, Colour (0xffff7a6a));
     go.onClick = [this] { start(); };
     cancel.onClick = [this] { if (onClosed) onClosed(); };
 }
@@ -230,7 +251,16 @@ void LayerPopup::showType()
     lit (loop1, loopBars == 1);
     lit (loop2, loopBars == 2);
     lit (loop4, loopBars == 4);
-    for (auto* b : { &loop1, &loop2, &loop4 }) b->setVisible (loopBars > 0);
+    for (auto* b : { &loop1, &loop2, &loop4 }) b->setVisible (! flipMode && loopBars > 0);
+    lit (modeFlip, flipMode);
+    lit (modeAi, ! flipMode);
+    lit (amtLight, flipAmount == 1);
+    lit (amtMed, flipAmount == 2);
+    lit (amtHeavy, flipAmount == 3);
+    for (auto* b : { &asPart, &asLoop }) b->setVisible (! flipMode);
+    for (auto* b : { &amtLight, &amtMed, &amtHeavy }) b->setVisible (flipMode);
+    describe.setVisible (! flipMode);
+    go.setButtonText (flipMode ? "Flip it" : "Generate");
 }
 
 void LayerPopup::pickKind (TextButton* b)
@@ -243,6 +273,20 @@ void LayerPopup::start()
 {
     const auto st = proc.songJob.getStatus();
     if (! st.haveSong || firstSection < 0 || firstSection + sectionCount > (int) st.song.sections.size()) return;
+    if (flipMode)
+    {
+        using LK = lp::song::LoopKind;
+        static const std::map<String, LK> kinds { { "drums", LK::Drums }, { "bass", LK::Bass }, { "guitar", LK::Guitar }, { "keyboard", LK::Keys },
+            { "strings", LK::Strings }, { "synth", LK::Synth }, { "brass", LK::Brass }, { "woodwinds", LK::Woodwind }, { "percussion", LK::Perc },
+            { "fx", LK::FX }, { "backing_vocals", LK::Vocal } };
+        const auto it = kinds.find (kind);
+        const LK k = it != kinds.end() ? it->second : LK::Drums;
+        const int have = (size_t) k < st.kindCounts.size() ? st.kindCounts[(size_t) k] : 0;
+        if (have <= 0) { message = "No loops of that kind in your sample folders yet: add a folder (Write page), or try AI generate."; repaint(); return; }
+        proc.songJob.flipLayer (k, firstSection, sectionCount, flipAmount);
+        if (onClosed) onClosed();
+        return;
+    }
     const auto snap = proc.voiceClient.snapshot();
     if (! snap.connected) { message = "The voice helper isn't running: start it, then try again."; repaint(); return; }
     lp::voice::Client::Request r;
@@ -275,6 +319,22 @@ void LayerPopup::resized()
     auto c = cardBounds().reduced (24, 20);
     c.removeFromTop (54);
     {
+        auto t = c.removeFromTop (32);
+        modeFlip.setBounds (t.removeFromLeft (140));
+        t.removeFromLeft (8);
+        modeAi.setBounds (t.removeFromLeft (124));
+        c.removeFromTop (12);
+    }
+    if (flipMode)
+    {
+        auto t = c.removeFromTop (30);
+        amtLight.setBounds (t.removeFromLeft (100)); t.removeFromLeft (6);
+        amtMed.setBounds (t.removeFromLeft (84)); t.removeFromLeft (6);
+        amtHeavy.setBounds (t.removeFromLeft (80));
+        c.removeFromTop (14);
+    }
+    else
+    {
         // what kind: a part played through, or a loop (and how long)
         auto t = c.removeFromTop (30);
         asPart.setBounds (t.removeFromLeft (120));
@@ -294,27 +354,78 @@ void LayerPopup::resized()
         x += w + 8;
     }
     c.removeFromTop (16);
-    describe.setBounds (c.removeFromTop (38));
-    c.removeFromTop (16);
+    if (! flipMode) { describe.setBounds (c.removeFromTop (38)); c.removeFromTop (16); }
     auto bt = c.removeFromTop (40);
     cancel.setBounds (bt.removeFromRight (100));
     bt.removeFromRight (10);
     go.setBounds (bt);
 }
 
-Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (560, 374); }
+Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (580, flipMode ? 368 : 420); }
+
+void LayerPopup::setBackdrop (Image img)
+{
+    // a soft blur: shrunk a lot, then smoothly stretched back (twice, so no blocks show)
+    if (! img.isValid()) return;
+    const int w = jmax (8, img.getWidth() / 6), h = jmax (8, img.getHeight() / 6);
+    Image small (Image::ARGB, w, h, true);
+    {
+        Graphics sg (small);
+        sg.setImageResamplingQuality (Graphics::highResamplingQuality);
+        sg.drawImage (img, 0, 0, w, h, 0, 0, img.getWidth(), img.getHeight());
+    }
+    Image mid (Image::ARGB, w * 3, h * 3, true);
+    {
+        Graphics mg (mid);
+        mg.setImageResamplingQuality (Graphics::highResamplingQuality);
+        mg.drawImage (small, 0, 0, w * 3, h * 3, 0, 0, w, h);
+    }
+    Image again (Image::ARGB, w / 2 + 1, h / 2 + 1, true);
+    {
+        Graphics ag (again);
+        ag.setImageResamplingQuality (Graphics::highResamplingQuality);
+        ag.drawImage (mid, 0, 0, again.getWidth(), again.getHeight(), 0, 0, mid.getWidth(), mid.getHeight());
+    }
+    backdrop = again;
+    repaint();
+}
 
 void LayerPopup::paint (Graphics& g)
 {
-    g.fillAll (Colours::black.withAlpha (0.55f));
+    // frosted glass: the song behind it, blurred and dimmed; the card a light pane over it
+    if (backdrop.isValid())
+    {
+        g.setImageResamplingQuality (Graphics::highResamplingQuality);
+        g.drawImage (backdrop, getLocalBounds().toFloat(), RectanglePlacement::stretchToFit);
+    }
+    g.fillAll (Colours::black.withAlpha (backdrop.isValid() ? 0.42f : 0.6f));
     const auto r = cardBounds().toFloat();
-    g.setColour (th->body);
-    g.fillRoundedRectangle (r, 16.0f);
-    g.setColour (th->line);
-    g.drawRoundedRectangle (r.reduced (0.5f), 16.0f, 1.0f);
+    const float rad = 18.0f;
+    {
+        Path p;
+        p.addRoundedRectangle (r, rad);
+        DropShadow (Colours::black.withAlpha (0.55f), 40, { 0, 14 }).drawForPath (g, p);
+    }
+    g.setColour (th->body.withAlpha (0.72f));
+    g.fillRoundedRectangle (r, rad);
+    {
+        // a sheen: lighter at the top, a faint coral glow from the top-left corner
+        ColourGradient sheen (Colours::white.withAlpha (0.10f), 0.0f, r.getY(), Colours::white.withAlpha (0.015f), 0.0f, r.getY() + r.getHeight() * 0.6f, false);
+        g.setGradientFill (sheen);
+        g.fillRoundedRectangle (r, rad);
+        ColourGradient glow (Colour (0xffff7a6a).withAlpha (0.13f), r.getX(), r.getY(), Colour (0xffff7a6a).withAlpha (0.0f), r.getX() + 260.0f, r.getY() + 200.0f, true);
+        g.setGradientFill (glow);
+        g.fillRoundedRectangle (r, rad);
+    }
+    // a crisp rim: bright along the top edge, fading down the sides
+    {
+        ColourGradient rim (Colours::white.withAlpha (0.34f), 0.0f, r.getY(), Colours::white.withAlpha (0.07f), 0.0f, r.getBottom(), false);
+        g.setGradientFill (rim);
+        g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
+    }
     auto in = r.reduced (24.0f, 20.0f);
-    g.setFont (font (20.0f, lp::ui::Medium));
-    g.setColour (th->ink);
+    g.setFont (font (21.0f, lp::ui::Medium, -0.01f));
+    g.setColour (Colours::white);
     g.drawText ("Generate a layer", in.removeFromTop (26.0f), Justification::centredLeft, false);
     const auto st = proc.songJob.getStatus();
     String where;
@@ -322,7 +433,8 @@ void LayerPopup::paint (Graphics& g)
         where << (where.isEmpty() ? "" : " + ") << String (st.song.sections[(size_t) i].name);
     g.setFont (font (12.0f));
     g.setColour (th->inkDim);
-    g.drawText ("Played by the AI over " + where + ", in key and in time. It lands as a new track.", in.removeFromTop (20.0f), Justification::centredLeft, true);
+    g.drawText (flipMode ? "A loop from your library flipped over " + where + ": in key, in time, chopped so it's yours."
+                         : "Played by the AI over " + where + ", in key and in time. It lands as a new track.", in.removeFromTop (20.0f), Justification::centredLeft, true);
     if (message.isNotEmpty())
     {
         g.setColour (Colour (0xffff8f8f));
