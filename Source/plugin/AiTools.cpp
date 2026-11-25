@@ -85,6 +85,7 @@ void AutoAdd::tick (LivePlanetProcessor& proc)
     if (! st.haveSong) return;
     const auto folder = st.files.folder.getChildFile ("voice");
     status.clear();
+    pending.clear();
     bool newest = true; // (what the newest one is doing is what's shown)
     for (auto& j : snap.jobs)
     {
@@ -96,6 +97,18 @@ void AutoAdd::tick (LivePlanetProcessor& proc)
         const bool layer = tag[0] == "layer";
         const double start = tag[1].getDoubleValue();
         const String what = tag[2];
+        if (j.live() || (j.state == "done" && handled.count (j.id + "/1") == 0))
+        {
+            // still being made (or just made, on its way in): where it goes, pulsing in the arrangement
+            double len = 0.0;
+            if (layer && tag.size() > 3) len = tag[3].getDoubleValue();
+            if (! layer)
+                for (auto& sc : st.song.sections)
+                    if (String (sc.name) == what) len = sc.bars * 240.0 / jmax (40.0, st.song.bpm);
+            if (len > 0.0)
+                pending.push_back ({ start, len, (layer ? "AI " + what.replace ("_", " ") : String ("singing your melody"))
+                                                   + (j.note.isNotEmpty() ? String::fromUTF8 ("  \xc2\xb7  ") + j.note : String()) });
+        }
         if (newest)
         {
             newest = false;
@@ -192,7 +205,10 @@ void LayerPopup::start()
     r.takes = r.results = 1;
     r.consent = true; // (no voice is used)
     r.clean = false;
-    r.tag = "layer|" + String (a.startBar * 240.0 / st.song.bpm, 3) + "|" + kind;
+    int bars = 0;
+    for (int i = firstSection; i < firstSection + sectionCount; ++i) bars += st.song.sections[(size_t) i].bars;
+    // (the layer's place in the song: where it starts, what it is, how long: shown pulsing until it's made)
+    r.tag = "layer|" + String (a.startBar * 240.0 / st.song.bpm, 3) + "|" + kind + "|" + String (bars * 240.0 / st.song.bpm, 3);
     r.renderTrack = [&pr = proc, f = firstSection, n = sectionCount] { return pr.renderSectionForVoice (f, n); };
     proc.voiceClient.create (std::move (r));
     if (onClosed) onClosed();

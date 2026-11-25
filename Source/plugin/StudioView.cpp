@@ -327,6 +327,62 @@ void StudioView::paint (Graphics& g)
         }
     }
 
+    // a track still being made (an AI layer, a melody being sung): where it goes, pulsing, in the row below the tracks
+    if (ghosts && ! st.tracks.empty())
+    {
+        const auto list = ghosts();
+        if (list.empty()) hadGhost = false;
+        else if (! hadGhost)
+        {
+            // (one is starting: the list scrolls down so it has its own row, under the tracks)
+            hadGhost = true;
+            scroll = std::max (0, (int) st.tracks.size() + 1 - visibleRows());
+        }
+        if (! list.empty() && rowShown ((int) st.tracks.size()))
+        {
+            const int row = (int) st.tracks.size();
+            const auto rb = rowBounds (row);
+            const float pulse = 0.5f + 0.5f * std::sin ((float) Time::getMillisecondCounter() * 0.004f);
+            const double secsPerBar = 240.0 / std::max (40.0, st.song.bpm);
+            for (auto& gh : list)
+            {
+                const float x0 = xOfBar (gh.start / secsPerBar), x1 = xOfBar ((gh.start + gh.len) / secsPerBar);
+                auto clip = Rectangle<float> (x0 + 1.0f, rb.getY() + 1.0f, std::max (8.0f, x1 - x0 - 2.0f), rb.getHeight() - 2.0f);
+                g.setColour (accent.withAlpha (0.18f + 0.32f * pulse));
+                g.fillRoundedRectangle (clip, 3.0f);
+                g.setColour (th.grassLight.withAlpha (0.5f + 0.5f * pulse));
+                g.drawRoundedRectangle (clip.reduced (0.5f), 3.0f, 1.0f);
+                // a light sweeping across it, left to right
+                const float sweep = clip.getX() + clip.getWidth() * (float) std::fmod (Time::getMillisecondCounter() * 0.0004, 1.0);
+                g.setGradientFill (ColourGradient (Colours::white.withAlpha (0.0f), sweep - 40.0f, 0.0f, Colours::white.withAlpha (0.0f), sweep + 40.0f, 0.0f, false));
+                {
+                    ColourGradient cg (Colours::white.withAlpha (0.0f), sweep - 40.0f, 0.0f, Colours::white.withAlpha (0.0f), sweep + 40.0f, 0.0f, false);
+                    cg.addColour (0.5, Colours::white.withAlpha (0.22f));
+                    g.setGradientFill (cg);
+                    g.fillRoundedRectangle (clip.getIntersection (Rectangle<float> (sweep - 40.0f, clip.getY(), 80.0f, clip.getHeight())), 3.0f);
+                }
+                g.setColour (Colours::white.withAlpha (0.92f));
+                g.setFont (font (10.5f, lp::ui::Medium));
+                g.drawText (gh.label, clip.reduced (8.0f, 0.0f), Justification::centredLeft, true);
+            }
+        }
+    }
+
+    // a scrollbar when there are more tracks than fit (scroll, or click it)
+    {
+        const int total = (int) st.tracks.size() + 1, shown = visibleRows();
+        if (total > shown)
+        {
+            const auto sb = scrollBar();
+            g.setColour (Colours::white.withAlpha (0.06f));
+            g.fillRoundedRectangle (sb, 2.5f);
+            const float h = sb.getHeight() * (float) shown / (float) total;
+            const float y = sb.getY() + (sb.getHeight() - h) * (float) scroll / (float) std::max (1, total - shown);
+            g.setColour (accent.withAlpha (0.8f));
+            g.fillRoundedRectangle (Rectangle<float> (sb.getX(), y, sb.getWidth(), h), 2.5f);
+        }
+    }
+
     // where the song is playing, down through the lanes
     if (proc.studio.length() > 0 && proc.songIsPlaying())
     {
@@ -442,9 +498,23 @@ void StudioView::setFeel (int i, float x)
     repaint();
 }
 
+Rectangle<float> StudioView::scrollBar() const
+{
+    return { (float) getWidth() - 7.0f, 26.0f, 5.0f, (float) visibleRows() * 24.0f - 2.0f };
+}
+
 void StudioView::mouseDown (const MouseEvent& e)
 {
     const auto st = proc.songJob.getStatus();
+    if (scrollBar().expanded (4.0f, 0.0f).contains (e.position))
+    {
+        // a click on the scrollbar: that part of the track list
+        const int total = (int) st.tracks.size() + 1;
+        const float f = (e.position.y - scrollBar().getY()) / scrollBar().getHeight();
+        scroll = jlimit (0, std::max (0, total - visibleRows()), (int) std::round (f * total - visibleRows() * 0.5f));
+        repaint();
+        return;
+    }
     dragRow = -1;
     draggingPump = false;
     draggingFeel = -1;

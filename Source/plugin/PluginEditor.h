@@ -574,10 +574,14 @@ public:
     std::function<void (int)> onOpenTrack; // clicking a track's name opens it in the editor
     std::function<int()> selectedTrack;    // the track open below (lit in the list)
     std::function<juce::String()> statusText; // what the AI is making for the song right now
+    struct Ghost { double start = 0, len = 0; juce::String label; }; // (song seconds) a track still being made
+    std::function<std::vector<Ghost>()> ghosts;
+    bool hadGhost = false;
     bool mixDirty = false;
     // where the lanes are (the sections ruler above lines up with them)
     float laneLeft() const { return 310.0f; }
-    float laneRight() const { return (float) getWidth() - 12.0f; }
+    float laneRight() const { return (float) getWidth() - 14.0f; }
+    juce::Rectangle<float> scrollBar() const;
 
 private:
     enum Col { None, Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
@@ -810,6 +814,8 @@ struct AutoAdd
 {
     void tick (LivePlanetProcessor&);
     juce::String status; // what's being made right now (or what went wrong)
+    struct Pending { double start = 0, len = 0; juce::String label; }; // (song seconds) a layer or melody still being made
+    std::vector<Pending> pending;
     // a drawn melody's vibrato and slides (by the token in its tag), put on the sung result when it arrives
     std::map<juce::String, std::vector<lp::song::stack::Bend>> bends;
 
@@ -1194,7 +1200,16 @@ public:
     void paint (juce::Graphics&) override;
     void paintOverChildren (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override; // clicking anywhere else hands the keyboard back to your DAW
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
     void resized() override;
+    // the Studio's divider between the arrangement and the open track: drag it, double-click to hide the track
+    int studioSplit = 358;
+    bool dockCollapsed = false, draggingSplit = false;
+    int splitDragFrom = 0;
+    juce::Rectangle<int> splitBounds() const;
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int, int) override;

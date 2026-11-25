@@ -1363,6 +1363,17 @@ void SongView::refresh()
 void SongView::resized()
 {
     auto head = getLocalBounds().reduced (8, 4).removeFromTop (24);
+    if (ruler)
+    {
+        // the Studio: the section tools in a row from the left, over the sections they work on
+        for (auto* b : { &layerBtn, &addBtn, &dupBtn, &removeBtn, &undoBtn, &rebuildBtn })
+        {
+            const int w = b == &rebuildBtn ? 120 : b == &addBtn ? 92 : b == &layerBtn ? 104 : 84;
+            b->setBounds (head.removeFromLeft (w).withSizeKeepingCentre (w, 24));
+            head.removeFromLeft (6);
+        }
+        return;
+    }
     for (auto* b : { &rebuildBtn, &undoBtn, &removeBtn, &dupBtn, &addBtn, &layerBtn })
     {
         if (b == &layerBtn && ! ruler) continue;
@@ -1594,8 +1605,8 @@ void SongView::paint (Graphics& g)
     g.setFont (lp::ui::mono (10.5f, false, 0.12f));
     g.setColour (dirty ? th.grassLight : th.inkDim);
     if (! ruler || busy || dirty || waiting) // (the Studio's ruler: just the sections and their buttons)
-        g.drawText (String (CharPointer_UTF8 ((busy ? st.message : title).toUpperCase().toRawUTF8())), head.withTrimmedRight (st.haveSong ? 330.0f : 0.0f),
-                    Justification::centredLeft, true);
+        g.drawText (String (CharPointer_UTF8 ((busy ? st.message : title).toUpperCase().toRawUTF8())),
+                    ruler ? head.withTrimmedLeft (500.0f) : head.withTrimmedRight (st.haveSong ? 330.0f : 0.0f), ruler ? Justification::centredRight : Justification::centredLeft, true);
 
     if (blocks.empty() || totalBars == 0)
     {
@@ -1818,6 +1829,12 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         layerPopup->toFront (true);
     };
     studioView.statusText = [this] { return autoAdd.status; };
+    studioView.ghosts = [this]
+    {
+        std::vector<StudioView::Ghost> g;
+        for (auto& p : autoAdd.pending) g.push_back ({ p.start, p.len, p.label });
+        return g;
+    };
     setUpKeyBoxes (p, studioKey, studioMode, studioKeyAtt, studioModeAtt);
     addChildComponent (studioKey);
     addChildComponent (studioMode);
@@ -1861,7 +1878,13 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (sourcesPanel);
     songPanel.onShowSources = [this] { sourcesPanel.open(); };
     // a track clicked in the arrangement opens below it (the Studio's own editor)
-    studioView.onOpenTrack = [this] (int t) { if (t != trackEditor.selected()) trackEditor.select (t); repaint(); };
+    studioView.onOpenTrack = [this] (int t)
+    {
+        if (t != trackEditor.selected()) trackEditor.select (t);
+        if (dockCollapsed) { dockCollapsed = false; setPage (Studio); resized(); } // (a track clicked: the panel opens again)
+        repaint();
+    };
+    studioSplit = jlimit (200, 560, (int) lp::setting ("studioSplit", 358));
     studioView.selectedTrack = [this] { return trackEditor.selected(); };
     dockTabs.setTooltip ("Sample: the track's sample, its drum grid or its notes. Sound: its volume and effects. Grains: re-plays it in tiny slices, in time.");
     addChildComponent (dockTabs);
@@ -2414,7 +2437,7 @@ void LivePlanetEditor::timerCallback()
         sampleView.setVisible (false);
     if (page == Studio && proc.songJob.getStatus().haveSong)
     {
-        if (! trackEditor.isVisible()) { trackEditor.setVisible (true); dockTabs.setVisible (true); }
+        if (! trackEditor.isVisible() && ! dockCollapsed) { trackEditor.setVisible (true); dockTabs.setVisible (true); }
         trackEditor.refresh();
         if (trackEditor.wantsTall() != dockTall) { dockTall = trackEditor.wantsTall(); resized(); repaint(); }
     }
@@ -2552,16 +2575,36 @@ void LivePlanetEditor::paint (Graphics& g)
         card (g, cardTimeline, th);
         heading (g, page == Write ? "Your song" : "Arrangement", cardTimeline.toFloat().reduced (20.0f, 0.0f).withHeight (page == Studio ? 40.0f : 46.0f), th);
     }
-    if (page == Studio && trackEditor.isVisible())
+    if (page == Studio && proc.songJob.getStatus().haveSong)
     {
+        // the divider's grip (drag it; double-click it to hide or show the open track)
+        {
+            const auto sb = splitBounds();
+            g.setColour (th.inkDim.withAlpha (draggingSplit ? 0.9f : 0.45f));
+            g.fillRoundedRectangle (Rectangle<float> ((float) sb.getCentreX() - 22.0f, (float) sb.getCentreY() - 1.5f, 44.0f, 3.0f), 1.5f);
+        }
+        // the section tools' row label, over the track names
+        g.setFont (lp::ui::mono (10.0f, true, 0.16f));
+        g.setColour (th.grassLight);
+        g.drawText ("SECTIONS", Rectangle<int> (cardTimeline.getX() + 20, songView.getY() + 4, 120, 24), Justification::centredLeft, false);
         card (g, cardDock, th);
+        if (dockCollapsed)
+        {
+            g.setFont (lp::ui::mono (10.0f, false, 0.14f));
+            g.setColour (th.inkDim);
+            g.drawText ("THE OPEN TRACK IS HIDDEN  \xc2\xb7  CLICK A TRACK, OR DOUBLE-CLICK THE LINE ABOVE, TO SHOW IT",
+                        cardDock.reduced (20, 0), Justification::centredLeft, true);
+        }
+        else
+        {
         // which track is open, over its editor
         const auto st = proc.songJob.getStatus();
         const int t = trackEditor.selected();
         g.setFont (lp::ui::mono (10.0f, false, 0.14f));
         g.setColour (th.inkDim);
-        g.drawText ("TRACK " + String (t + 1) + " OF " + String ((int) st.tracks.size()) + "  \xc2\xb7  CLICK ANY TRACK ABOVE TO OPEN IT HERE",
-                    Rectangle<int> (cardDock.getX() + 20, cardDock.getY() + 10, cardDock.getWidth() - 260, 20), Justification::centredLeft, true);
+        g.drawText ("TRACK " + String (t + 1) + " OF " + String ((int) st.tracks.size()) + "  \xc2\xb7  DRAG THE LINE ABOVE FOR MORE ROOM, DOUBLE-CLICK IT TO HIDE THIS",
+                    Rectangle<int> (cardDock.getX() + 20, cardDock.getY() + 10, cardDock.getWidth() - 320, 20), Justification::centredLeft, true);
+        }
     }
     if (page == Studio && ! studioView.isVisible())
     {
@@ -2642,8 +2685,50 @@ void LivePlanetEditor::paint (Graphics& g)
     label (g, "colour", themeDots.getBounds().translated (-58, 0).withWidth (52).toFloat(), th, Justification::centredRight);
 }
 
+// the Studio's divider: the gap between the arrangement and the open track
+Rectangle<int> LivePlanetEditor::splitBounds() const
+{
+    return page == Studio ? Rectangle<int> (cardTimeline.getX(), cardTimeline.getBottom(), cardTimeline.getWidth(), 10) : Rectangle<int>();
+}
+
+void LivePlanetEditor::mouseMove (const MouseEvent& e)
+{
+    if (e.eventComponent != this) return;
+    const bool over = splitBounds().expanded (0, 3).contains (e.getPosition());
+    setMouseCursor (over ? MouseCursor::UpDownResizeCursor : MouseCursor::NormalCursor);
+}
+
+void LivePlanetEditor::mouseDrag (const MouseEvent& e)
+{
+    if (! draggingSplit) return;
+    dockCollapsed = false;
+    studioSplit = jlimit (200, 560, splitDragFrom + e.getDistanceFromDragStartY());
+    resized();
+    repaint();
+}
+
+void LivePlanetEditor::mouseUp (const MouseEvent&)
+{
+    if (draggingSplit) lp::setSetting ("studioSplit", studioSplit);
+    draggingSplit = false;
+}
+
+void LivePlanetEditor::mouseDoubleClick (const MouseEvent& e)
+{
+    if (e.eventComponent != this || ! splitBounds().expanded (0, 3).contains (e.getPosition())) return;
+    dockCollapsed = ! dockCollapsed; // (the open track hidden: the tracks get the whole page)
+    resized();
+    repaint();
+}
+
 void LivePlanetEditor::mouseDown (const MouseEvent& e)
 {
+    if (e.eventComponent == this && splitBounds().expanded (0, 3).contains (e.getPosition()))
+    {
+        draggingSplit = true;
+        splitDragFrom = cardTimeline.getHeight();
+        return;
+    }
     if (e.eventComponent != &cityBox && ! cityBox.isParentOf (e.eventComponent) && cityBox.hasKeyboardFocus (true))
         cityBox.giveAwayKeyboardFocus();
     auto& pb = songPanel.promptBox;
@@ -2698,7 +2783,8 @@ void LivePlanetEditor::resized()
     // ---- write: the hero + settings (song panel), the song, the drag buttons
     songPanel.setBounds (M, 84, W - 2 * M, 342);
     // the studio: the arrangement (sections over every track's lane), and the open track docked under it
-    cardTimeline = page == Studio ? Rectangle<int> (M, 84, W - 2 * M, dockTall ? 232 : 358) : Rectangle<int> (M, 442, W - 2 * M, 286);
+    cardTimeline = page == Studio ? Rectangle<int> (M, 84, W - 2 * M, dockCollapsed ? 728 - 84 - 10 - 40 : dockTall ? jmin (232, studioSplit) : studioSplit)
+                                  : Rectangle<int> (M, 442, W - 2 * M, 286);
     cardDock = { M, cardTimeline.getBottom() + 10, W - 2 * M, 728 - cardTimeline.getBottom() - 10 };
     if (page == Studio)
     {
@@ -2706,7 +2792,9 @@ void LivePlanetEditor::resized()
         // (the ruler's sections line up with the lanes below)
         const int lx = studioView.getX() + (int) studioView.laneLeft(), rx = studioView.getX() + (int) studioView.laneRight();
         songView.setBounds (lx - 8, cardTimeline.getY() + 34, rx - lx + 16, 50);
-        trackEditor.setBounds (cardDock.getX() + 18, cardDock.getY() + 34, cardDock.getWidth() - 36, cardDock.getHeight() - 42);
+        trackEditor.setBounds (cardDock.getX() + 18, cardDock.getY() + 34, cardDock.getWidth() - 36, jmax (10, cardDock.getHeight() - 42));
+        trackEditor.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
+        dockTabs.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
         dockTabs.setBounds (cardDock.getRight() - 18 - 270, cardDock.getY() + 8, 270, 24);
     }
     else
