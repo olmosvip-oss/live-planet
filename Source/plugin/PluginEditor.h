@@ -870,6 +870,13 @@ private:
     juce::ToggleButton autoSing { "sing as I draw" };
     juce::String noteKey() const, shownKey, sentKey, lastToken;
     juce::uint32 changedAt = 0;
+    // the view: how many beats across (zoom), from which beat
+    double beatsShown = 16.0, viewStart = 0.0;
+    juce::TextButton zoomIn { "+" }, zoomOut { "-" };
+    juce::ToggleButton guide { "guide tone with the song" };
+    double snap() const { return beatsShown <= 8.0 ? 0.125 : 0.25; }
+    void zoom (double factor, float aroundX);
+    juce::String guideKey;
     enum class Drag { None, Move, Resize } drag = Drag::None;
     double dragBeatOffset = 0.0;
     bool connected = false;
@@ -878,7 +885,7 @@ private:
     juce::ComboBox section, voice;
     juce::TextEditor lyrics, wordBox;
     juce::TextButton fromLyrics { "Start from a melody" }, fillWords { "Fill in my words" }, clearAll { "Clear" },
-                     prev { "<" }, next { ">" }, hear { "hear it" }, sing { "Sing it in my voice" };
+                     prev { "<" }, next { ">" }, hear { "play section" }, sing { "Sing it in my voice" };
     juce::ToggleButton consent { "this is my voice, or I have the singer's permission" };
     juce::Rectangle<int> statusArea;
     double sectionBeats() const, sectionStartSeconds() const;

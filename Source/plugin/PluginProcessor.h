@@ -147,6 +147,16 @@ public:
     std::vector<lp::song::lyricmelody::Line> writeVoiceLines (int sectionIndex, int count, const juce::String& lyrics, bool rap, juce::uint32 seed);
     // your take from the mic (Voice > I sing it): `skipSeconds` in (the count-in), `seconds` long, at a good level
     bool saveGuideTake (const juce::File& dest, double skipSeconds, double seconds, juce::String& message);
+    // Draw & sing's guide: the drawn notes played as a soft tone along with the song (seconds from its start), and a
+    // short tone for a note being placed or moved. Set from the editor; played on the audio thread.
+    struct GuideNote { double t0 = 0, t1 = 0; int pitch = 60; };
+    void setGuide (std::vector<GuideNote> notes)
+    {
+        auto fresh = std::make_unique<std::vector<GuideNote>> (std::move (notes));
+        { const juce::SpinLock::ScopedLockType sl (guideLock); std::swap (guideNotes, fresh); }
+    }   // (the old list is freed here, off the audio thread)
+    std::atomic<bool> guideOn { false };
+    void auditionNote (int pitch) { auditionPitch = pitch; ++auditionSerial; }
     // a version playing along with the song: 48 kHz, starting at bar 1 (null = none)
     void setVoicePreview (std::shared_ptr<juce::AudioBuffer<float>> b)
     {
@@ -227,6 +237,13 @@ public:
     }
     std::vector<float> fxL, fxR, sendL, sendR, liveL, liveR;
     std::atomic<bool> previewPlaying { false };
+    juce::SpinLock guideLock;
+    std::unique_ptr<std::vector<GuideNote>> guideNotes;
+    std::atomic<int> auditionPitch { 60 }, auditionSerial { 0 };
+    int auditionSeen = 0, auditionLeft = 0, guideIdx = -1;
+    double guidePhase = 0.0, guideFreq = 0.0, guideEnv = 0.0, auditionPhase = 0.0, auditionFreq = 0.0;
+    void playGuide (float* L, float* R, int n, double songPos, double inc); // (audio thread)
+    void playAudition (float* L, float* R, int n);                          // (audio thread)
     std::atomic<double> previewPos { 0.0 };   // in 48 kHz samples
     std::atomic<double> dawBpm { 0.0 };
     juce::String songPrompt;                  // "describe your song" (message thread only)

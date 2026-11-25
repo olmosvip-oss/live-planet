@@ -214,6 +214,58 @@ lp::EngineParams LivePlanetProcessor::readParams() const
     return p;
 }
 
+// the drawn notes as a soft, round tone at the song's position (one note at a time, gliding a touch between them)
+void LivePlanetProcessor::playGuide (float* L, float* R, int n, double songPos, double inc)
+{
+    const juce::SpinLock::ScopedTryLockType sl (guideLock);
+    if (! sl.isLocked() || guideNotes == nullptr) return;
+    const auto& notes = *guideNotes;
+    const double sr = getSampleRate() > 0 ? getSampleRate() : 48000.0;
+    for (int i = 0; i < n; ++i)
+    {
+        const double t = (songPos + i * inc) / StudioPlayer::fileRate;
+        if (guideIdx < 0 || guideIdx >= (int) notes.size() || t < notes[(size_t) guideIdx].t0 || t >= notes[(size_t) guideIdx].t1)
+        {
+            guideIdx = -1;
+            for (int k = 0; k < (int) notes.size(); ++k)
+                if (t >= notes[(size_t) k].t0 && t < notes[(size_t) k].t1) { guideIdx = k; break; }
+        }
+        const bool on = guideIdx >= 0;
+        if (on)
+        {
+            const double f = 440.0 * std::pow (2.0, (notes[(size_t) guideIdx].pitch - 69) / 12.0);
+            guideFreq = guideFreq <= 0.0 ? f : guideFreq + (f - guideFreq) * 0.004;
+        }
+        guideEnv += ((on ? 1.0 : 0.0) - guideEnv) * (on ? 0.004 : 0.0015);
+        if (guideEnv < 1.0e-4 && ! on) { guideFreq = 0.0; continue; }
+        guidePhase += 2.0 * juce::MathConstants<double>::pi * guideFreq / sr;
+        if (guidePhase > 2.0 * juce::MathConstants<double>::pi) guidePhase -= 2.0 * juce::MathConstants<double>::pi;
+        const float v = (float) (0.11 * guideEnv * (std::sin (guidePhase) + 0.25 * std::sin (2.0 * guidePhase)));
+        L[i] += v; R[i] += v;
+    }
+}
+
+// a short tone for a note you place or move (heard whether the song plays or not)
+void LivePlanetProcessor::playAudition (float* L, float* R, int n)
+{
+    const double sr = getSampleRate() > 0 ? getSampleRate() : 48000.0;
+    if (const int s = auditionSerial.load(); s != auditionSeen)
+    {
+        auditionSeen = s;
+        auditionLeft = (int) (0.3 * sr);
+        auditionFreq = 440.0 * std::pow (2.0, (auditionPitch.load() - 69) / 12.0);
+        auditionPhase = 0.0;
+    }
+    const int total = (int) (0.3 * sr);
+    for (int i = 0; i < n && auditionLeft > 0; ++i, --auditionLeft)
+    {
+        const double t = (double) (total - auditionLeft) / sr;
+        auditionPhase += 2.0 * juce::MathConstants<double>::pi * auditionFreq / sr;
+        const float v = (float) (0.16 * std::min (1.0, t / 0.008) * std::exp (-t * 7.0) * (std::sin (auditionPhase) + 0.25 * std::sin (2.0 * auditionPhase)));
+        L[i] += v; R[i] += v;
+    }
+}
+
 void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -447,6 +499,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                 }
             }
         }
+        if (guideOn.load()) playGuide (L, R, n, pos, inc); // (Draw & sing: your drawn notes, along with the song)
         if (looping)
         {
             if (! liveLoop) // (no room for it in the mixer this block: played straight, at the track's volume)
@@ -506,6 +559,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         for (int i = 0; i < n; ++i) { L[i] += smpL[(size_t) i]; R[i] += smpR[(size_t) i]; }
     }
 
+    playAudition (L, R, n); // (a note being drawn in Draw & sing)
     // a drum you clicked in the editor (when the loop isn't playing it already)
     if (! auditioned) liveDrums.process (L, R, n, getSampleRate(), false, 0.0, 0.0, 1.0f);
     // the chop pads you play
