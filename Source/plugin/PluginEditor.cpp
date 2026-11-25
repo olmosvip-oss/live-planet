@@ -1487,6 +1487,7 @@ void SongView::mouseDown (const MouseEvent& e)
         }
         return;
     }
+    setWantsKeyboardFocus (true); // (the window turns it off for everything but text boxes; Delete needs it here)
     grabKeyboardFocus();
     const bool more = e.mods.isShiftDown() || e.mods.isCommandDown();
     for (int i = 0; i < (int) draft.size(); ++i)
@@ -1802,6 +1803,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (vocalsHub);
     addChildComponent (drawSing);
     drawSing.statusText = [this] { return autoAdd.status; };
+    drawSing.autoAdd = &autoAdd;
     addChildComponent (vocalTabs);
     vocalsHub.onOpenInStudio = [this] (int t) { trackEditor.select (t); setPage (Studio); };
     songView.onLayer = [this] (int first, int count)

@@ -1,6 +1,7 @@
 #pragma once
 #include "VoiceHelper.h"
 #include "../song/Tune.h"
+#include "../song/Stack.h"
 #include <set>
 #include "Meter.h"
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -809,6 +810,8 @@ struct AutoAdd
 {
     void tick (LivePlanetProcessor&);
     juce::String status; // what's being made right now (or what went wrong)
+    // a drawn melody's vibrato and slides (by the token in its tag), put on the sung result when it arrives
+    std::map<juce::String, std::vector<lp::song::stack::Bend>> bends;
 private:
     std::set<juce::String> handled, asked;
 };
@@ -849,13 +852,24 @@ public:
     bool keyPressed (const juce::KeyPress&) override;
     void refresh(); // every frame while showing
     std::function<juce::String()> statusText; // what the helper is doing with it
+    lp::ai::AutoAdd* autoAdd = nullptr;        // where a melody's vibrato and slides are left for its result
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
     using Note = lp::song::lyricmelody::Note;
+    int top = 79;                              // the highest note shown (32 notes at a time; scroll for more)
+    juce::TextButton octUp { "oct +" }, octDown { "oct -" }, holdBtn { "hold word" }, vibBtn { "vibrato" }, slideBtn { "slide in" };
+    void toggle (int what);                    // 0 hold, 1 vibrato, 2 slide, on the selected note
+    void showTools();
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
     std::vector<Note> notes; // beats from the section's start
     int page = 0, selectedNote = -1, editing = -1, songVersion = -1;
+    float wheel = 0.0f;
+    // sing as I draw: a moment after the notes stop changing they're sung (a take still singing an older version is stopped)
+    juce::ToggleButton autoSing { "sing as I draw" };
+    juce::String noteKey() const, shownKey, sentKey, lastToken;
+    juce::uint32 changedAt = 0;
     enum class Drag { None, Move, Resize } drag = Drag::None;
     double dragBeatOffset = 0.0;
     bool connected = false;

@@ -9,7 +9,8 @@
 // last word is held and falls a step. It's written here, note by note, so it fits the song and every word is there.
 namespace lp::song::lyricmelody
 {
-struct Note { double beat = 0, len = 0; int pitch = 0; juce::String word; bool slur = false; }; // beat: from the section's start
+struct Note { double beat = 0, len = 0; int pitch = 0; juce::String word; bool slur = false; // beat: from the section's start
+              float vibrato = 0.0f; bool slide = false; };                                   // (drawn notes: sung with vibrato, slid into)
 struct Line { std::vector<Note> notes; };
 
 // syllables in a word, from its vowel groups (good enough to give a long word a longer note)

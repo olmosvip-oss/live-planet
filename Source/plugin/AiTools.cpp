@@ -17,7 +17,7 @@ String helperKeyName (const lp::song::Song& song)
 }
 
 // the helper's file (it starts where the section starts), padded with silence from the song's first bar
-static bool padToSongStart (const File& in, const File& out, double startSeconds)
+static bool padToSongStart (const File& in, const File& out, double startSeconds, const std::vector<lp::song::stack::Bend>& bends = {})
 {
     AudioFormatManager fm;
     fm.registerBasicFormats();
@@ -28,6 +28,7 @@ static bool padToSongStart (const File& in, const File& out, double startSeconds
     raw.clear();
     rd->read (&raw, 0, len, 0, true, rd->numChannels > 1);
     if (rd->numChannels == 1) raw.copyFrom (1, 0, raw, 0, 0, len);
+    lp::song::stack::express (raw, rd->sampleRate, bends); // (a drawn melody's vibrato and slides)
     const double ratio = rd->sampleRate / StudioPlayer::fileRate;
     const int pad = (int) std::round (startSeconds * StudioPlayer::fileRate), outLen = (int) (len / ratio);
     AudioBuffer<float> buf (2, pad + outLen);
@@ -83,13 +84,19 @@ void AutoAdd::tick (LivePlanetProcessor& proc)
             }
             handled.insert (key);
             const auto out = folder.getChildFile ((layer ? what.replace ("_", " ") : String ("drawn")) + " v" + String (r.n) + " " + j.id.substring (0, 4) + ".wav");
-            const String name = layer ? "AI " + what.replace ("_", " ") + (j.results.size() > 1 ? " " + String (r.n) : String()) : "drawn " + String (r.n);
+            // (a drawn melody: one track per section, each new take replacing the last)
+            const String name = layer ? "AI " + what.replace ("_", " ") + (j.results.size() > 1 ? " " + String (r.n) : String()) : "drawn, " + what;
             const String about = layer ? "played by the AI (voice helper) over your song: " + j.title : "your drawn melody, sung by the voice helper";
             auto* p = &proc;
-            Thread::launch ([p, in = f->second, out, start, name, about, layer]
+            std::vector<lp::song::stack::Bend> bend;
+            if (tag.size() > 3) if (auto b = bends.find (tag[3]); b != bends.end()) bend = b->second;
+            Thread::launch ([p, in = f->second, out, start, name, about, layer, bend]
             {
-                if (! padToSongStart (in, out, start)) return;
-                MessageManager::callAsync ([p, out, name, about, layer] { p->songJob.addSungVocal (out, name, about, ! layer); });
+                if (! padToSongStart (in, out, start, bend)) return;
+                MessageManager::callAsync ([p, out, name, about, layer]
+                {
+                    p->songJob.addSungVocal (out, name, about, ! layer, layer ? "AI layer" : "drawn and sung", ! layer);
+                });
             });
         }
     }

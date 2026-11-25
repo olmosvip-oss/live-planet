@@ -92,6 +92,57 @@ inline juce::AudioBuffer<float> sing (const juce::AudioBuffer<float>& in, double
     return out;
 }
 
+// expression on a sung line: vibrato on a held note, a slide into a note from the one before
+struct Bend { double t0 = 0, t1 = 0; float vibrato = 0.0f; float slideFrom = 0.0f; }; // seconds from the start; semitones
+
+inline void express (juce::AudioBuffer<float>& buf, double sr, const std::vector<Bend>& bends)
+{
+    bool any = false;
+    for (auto& b : bends) any = any || b.vibrato > 0.0f || std::abs (b.slideFrom) > 0.01f;
+    if (! any || buf.getNumSamples() == 0) return;
+    const int n = buf.getNumSamples();
+    const int hop = std::max (64, (int) (0.005 * sr));
+    std::vector<float> curve ((size_t) (n / hop + 2), 0.0f);
+    for (auto& b : bends)
+    {
+        const double len = std::max (0.05, b.t1 - b.t0);
+        for (size_t f = 0; f < curve.size(); ++f)
+        {
+            const double t = (double) f * hop / sr;
+            if (t < b.t0 || t >= b.t1) continue;
+            const double x = t - b.t0;
+            float v = 0.0f;
+            // a slide: starts at the note before and eases onto this one
+            const double slideLen = std::min (0.18, len * 0.5);
+            if (std::abs (b.slideFrom) > 0.01f && x < slideLen) { const double k = 1.0 - x / slideLen; v += (float) (b.slideFrom * k * k); }
+            // vibrato: once the note has settled, growing in, about 5.5 times a second
+            const double onset = std::min (0.3, len * 0.25);
+            if (b.vibrato > 0.0f && x > onset)
+                v += (float) (b.vibrato * 0.45 * std::min (1.0, (x - onset) / 0.25) * std::sin (2.0 * juce::MathConstants<double>::pi * 5.5 * (x - onset)));
+            curve[f] += v;
+        }
+    }
+    signalsmith::stretch::SignalsmithStretch<float> st;
+    st.presetDefault (2, (float) sr);
+    st.setFormantFactor (1.0f, true);
+    const int lat = st.inputLatency() + st.outputLatency();
+    const int total = n + lat;
+    juce::AudioBuffer<float> src (2, total), dst (2, total);
+    src.clear();
+    for (int ch = 0; ch < 2; ++ch) src.copyFrom (ch, 0, buf, std::min (ch, buf.getNumChannels() - 1), 0, n);
+    for (int pos = 0; pos < total; pos += hop)
+    {
+        const int len = std::min (hop, total - pos);
+        const int frame = juce::jlimit (0, (int) curve.size() - 1, (pos - st.inputLatency()) / hop);
+        st.setTransposeSemitones (curve[(size_t) frame], (float) (8000.0 / sr));
+        const float* ins[2] = { src.getReadPointer (0, pos), src.getReadPointer (1, pos) };
+        float* outs[2] = { dst.getWritePointer (0, pos), dst.getWritePointer (1, pos) };
+        st.process (ins, len, outs, len);
+    }
+    buf.setSize (2, n, false, false, true);
+    for (int ch = 0; ch < 2; ++ch) buf.copyFrom (ch, 0, dst, ch, lat, n);
+}
+
 enum class Kind { Double, ThirdAbove, FifthBelow, Choir };
 
 inline std::vector<Voice> voicesFor (Kind k)

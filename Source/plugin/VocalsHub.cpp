@@ -1,5 +1,4 @@
 #include "PluginEditor.h"
-#include "../song/Stack.h"
 
 using namespace juce;
 using lp::ui::font;

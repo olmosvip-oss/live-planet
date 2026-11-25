@@ -8,7 +8,7 @@ using lp::ui::font;
 // or fill them from your lyrics, or start from a melody written for your lyrics), hear them with the song,
 // then the voice helper sings exactly those notes and words in your voice; it lands as a new vocal track.
 
-namespace { constexpr int kLo = 48, kHi = 79, kBeatsShown = 16; } // C3 .. G5, four bars at a time
+namespace { constexpr int kMin = 36, kMax = 88, kRows = 32, kBeatsShown = 16; } // C2 .. E6, 32 notes and four bars at a time
 
 DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme)
 {
@@ -32,6 +32,26 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
         addAndMakeVisible (*b);
     }
     sing.getProperties().set ("primary", true);
+    struct T { TextButton* b; const char* tip; };
+    for (auto [b, tip] : { T { &octUp, "Show higher notes (or scroll)" }, T { &octDown, "Show lower notes (or scroll)" },
+                           T { &holdBtn, "Hold word (H): this note keeps singing the word before it, on its own pitch (\"you\": \"yu\" on one note, \"oo\" on the next)" },
+                           T { &vibBtn, "Vibrato (V): the selected note wavers once it's held, like a singer's" },
+                           T { &slideBtn, "Slide in (S): the selected note slides up or down into its pitch from the note before" } })
+    {
+        b->setTooltip (tip);
+        b->setWantsKeyboardFocus (false);
+        addAndMakeVisible (*b);
+    }
+    octUp.onClick = [this] { top = jmin (kMax, top + 12); repaint(); };
+    octDown.onClick = [this] { top = jmax (kMin + kRows - 1, top - 12); repaint(); };
+    holdBtn.onClick = [this] { toggle (0); };
+    vibBtn.onClick = [this] { toggle (1); };
+    slideBtn.onClick = [this] { toggle (2); };
+    autoSing.setToggleState (true, dontSendNotification);
+    autoSing.setTooltip ("On: a couple of seconds after you stop changing the notes, they're sung by themselves, and the section's drawn track "
+                         "gets the new take. Off: only when you press the button.");
+    autoSing.setWantsKeyboardFocus (false);
+    addAndMakeVisible (autoSing);
     consent.setWantsKeyboardFocus (false);
     consent.onClick = [this] { repaint(); };
     addAndMakeVisible (consent);
@@ -52,6 +72,15 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
 }
 
 DrawSing::~DrawSing() = default;
+
+// everything about the notes that would change what's sung
+String DrawSing::noteKey() const
+{
+    String k;
+    k << section.getSelectedItemIndex() << ":" << voice.getText() << ":";
+    for (auto& n : notes) k << n.beat << "," << n.len << "," << n.pitch << "," << n.word << "," << (int) n.slur << "," << n.vibrato << "," << (int) n.slide << ";";
+    return k;
+}
 
 double DrawSing::sectionBeats() const
 {
@@ -99,7 +128,24 @@ void DrawSing::refresh()
     connected = snap.connected;
     sing.setEnabled (connected && consent.getToggleState() && ! notes.empty() && voice.getText().isNotEmpty() && ! snap.sending
                      && (snap.jobs.empty() || ! snap.jobs.front().live()));
+    sing.setButtonText (autoSing.getToggleState() ? "Sing it now" : "Sing it in my voice");
     if (hear.getButtonText() == "stop" && ! proc.previewPlaying.load()) hear.setButtonText ("hear it");
+    // sing as I draw: once the notes have stood still a moment
+    if (const auto k = noteKey(); k != shownKey) { shownKey = k; changedAt = Time::getMillisecondCounter(); }
+    if (autoSing.getToggleState() && consent.getToggleState() && connected && ! notes.empty() && shownKey != sentKey && drag == Drag::None
+        && ! wordBox.isVisible() && ! snap.sending && Time::getMillisecondCounter() - changedAt > 2500 && voice.getText().isNotEmpty())
+    {
+        // (a take of an older version still singing: stopped, the new one goes instead)
+        bool waiting = false;
+        for (auto& j : snap.jobs)
+            if (j.live())
+            {
+                const auto t = snap.tags.find (j.id);
+                if (t != snap.tags.end() && lastToken.isNotEmpty() && t->second.endsWith ("|" + lastToken)) proc.voiceClient.cancel (j.id);
+                else waiting = true; // (someone else's job: wait for it)
+            }
+        if (! waiting) singIt();
+    }
     prev.setEnabled (page > 0);
     next.setEnabled ((page + 1) * kBeatsShown < sectionBeats());
     repaint();
@@ -109,11 +155,50 @@ void DrawSing::refresh()
 Rectangle<float> DrawSing::roll() const { return rollCard().toFloat().reduced (18.0f, 16.0f).withTrimmedTop (34.0f).withTrimmedBottom (40.0f); }
 Rectangle<int> DrawSing::rollCard() const { return { 0, 0, getWidth() - 340, getHeight() }; }
 Rectangle<int> DrawSing::sideCard() const { return { getWidth() - 326, 0, 326, getHeight() }; }
-float DrawSing::rowH() const { return roll().getHeight() / (float) (kHi - kLo + 1); }
+float DrawSing::rowH() const { return roll().getHeight() / (float) kRows; }
 float DrawSing::xOf (double beat) const { const auto r = roll().withTrimmedLeft (44.0f); return r.getX() + r.getWidth() * (float) ((beat - page * kBeatsShown) / kBeatsShown); }
 double DrawSing::beatAt (float x) const { const auto r = roll().withTrimmedLeft (44.0f); return page * kBeatsShown + (x - r.getX()) / r.getWidth() * kBeatsShown; }
-float DrawSing::yOf (int pitch) const { return roll().getY() + (float) (kHi - pitch) * rowH(); }
-int DrawSing::pitchAt (float y) const { return jlimit (kLo, kHi, kHi - (int) std::floor ((y - roll().getY()) / rowH())); }
+float DrawSing::yOf (int pitch) const { return roll().getY() + (float) (top - pitch) * rowH(); }
+int DrawSing::pitchAt (float y) const { return jlimit (top - kRows + 1, top, top - (int) std::floor ((y - roll().getY()) / rowH())); }
+
+void DrawSing::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
+{
+    // up and down the octaves
+    wheel += w.deltaY * (w.isSmooth ? 20.0f : 8.0f);
+    const int rows = (int) wheel;
+    if (rows == 0) return;
+    wheel -= (float) rows;
+    top = jlimit (kMin + kRows - 1, kMax, top + rows);
+    repaint();
+}
+
+void DrawSing::toggle (int what)
+{
+    if (selectedNote < 0 || selectedNote >= (int) notes.size()) return;
+    auto& n = notes[(size_t) selectedNote];
+    if (what == 0)
+    {
+        n.slur = ! n.slur;
+        // (it sings the word before it: find it)
+        if (n.slur)
+            for (int i = selectedNote - 1; i >= 0; --i)
+                if (! notes[(size_t) i].slur) { n.word = notes[(size_t) i].word; break; }
+    }
+    else if (what == 1) n.vibrato = n.vibrato > 0.0f ? 0.0f : 1.0f;
+    else n.slide = ! n.slide;
+    showTools();
+    repaint();
+}
+
+void DrawSing::showTools()
+{
+    const bool has = selectedNote >= 0 && selectedNote < (int) notes.size();
+    for (auto* b : { &holdBtn, &vibBtn, &slideBtn }) b->setEnabled (has);
+    auto lit = [] (TextButton& b, bool on) { if ((bool) b.getProperties()["primary"] != on) { b.getProperties().set ("primary", on); b.repaint(); } };
+    lit (holdBtn, has && notes[(size_t) selectedNote].slur);
+    lit (vibBtn, has && notes[(size_t) selectedNote].vibrato > 0.0f);
+    lit (slideBtn, has && notes[(size_t) selectedNote].slide);
+}
 Rectangle<float> DrawSing::noteRect (const Note& n) const { return { xOf (n.beat), yOf (n.pitch) + 1.0f, std::max (4.0f, xOf (n.beat + n.len) - xOf (n.beat)), rowH() - 2.0f }; }
 
 int DrawSing::noteAt (Point<float> p) const
@@ -127,6 +212,7 @@ static double snapBeat (double b) { return std::round (b * 4.0) / 4.0; } // (16t
 
 void DrawSing::mouseDown (const MouseEvent& e)
 {
+    setWantsKeyboardFocus (true); // (the window turns it off for everything but text boxes; the roll needs its keys)
     grabKeyboardFocus();
     if (wordBox.isVisible()) commitWord();
     if (! roll().withTrimmedLeft (44.0f).contains (e.position)) return;
@@ -182,8 +268,15 @@ void DrawSing::mouseDrag (const MouseEvent& e)
 void DrawSing::mouseUp (const MouseEvent&)
 {
     drag = Drag::None;
+    // (sorted left to right; the note you had stays picked, for hold, vibrato and slide)
+    const bool had = selectedNote >= 0 && selectedNote < (int) notes.size();
+    const Note was = had ? notes[(size_t) selectedNote] : Note();
     std::sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b) { return a.beat < b.beat; });
     selectedNote = -1;
+    if (had)
+        for (int i = 0; i < (int) notes.size(); ++i)
+            if (notes[(size_t) i].beat == was.beat && notes[(size_t) i].pitch == was.pitch) { selectedNote = i; break; }
+    showTools();
     repaint();
 }
 
@@ -193,9 +286,13 @@ bool DrawSing::keyPressed (const KeyPress& k)
     {
         notes.erase (notes.begin() + selectedNote);
         selectedNote = -1;
+        showTools();
         repaint();
         return true;
     }
+    if (k.getTextCharacter() == 'h' || k.getTextCharacter() == 'H') { toggle (0); return true; }
+    if (k.getTextCharacter() == 'v' || k.getTextCharacter() == 'V') { toggle (1); return true; }
+    if (k.getTextCharacter() == 's' || k.getTextCharacter() == 'S') { toggle (2); return true; }
     return false;
 }
 
@@ -275,10 +372,14 @@ void DrawSing::writeFromLyrics()
                     if (n.slur && ! self->notes.empty()) { self->notes.back().len += n.len; continue; } // (a held word: one note here)
                     Note m = n;
                     m.beat = std::max (0.0, m.beat);
-                    while (m.pitch < kLo) m.pitch += 12;
-                    while (m.pitch > kHi) m.pitch -= 12;
+                    while (m.pitch < kMin) m.pitch += 12;
+                    while (m.pitch > kMax) m.pitch -= 12;
                     self->notes.push_back (m);
                 }
+            // (the melody in view)
+            int hi = kMin + kRows - 1;
+            for (auto& n : self->notes) hi = std::max (hi, n.pitch + 4);
+            self->top = jlimit (kMin + kRows - 1, kMax, hi);
             self->message = self->notes.empty() ? String ("Couldn't write a melody here") : String();
             self->page = 0;
             self->repaint();
@@ -341,13 +442,21 @@ void DrawSing::singIt()
     std::vector<lp::song::lyricmelody::Line> lines;
     double end = -100.0;
     StringArray words;
-    for (auto& n : notes)
+    std::vector<lp::song::stack::Bend> bends;
+    const double spb = 60.0 / st.song.bpm;
+    for (size_t i = 0; i < notes.size(); ++i)
     {
+        const auto& n = notes[i];
         if (lines.empty() || n.beat - end >= 1.0) lines.push_back ({});
         lines.back().notes.push_back (n);
         end = std::max (end, n.beat + n.len);
-        words.add (n.word);
+        if (! n.slur) words.add (n.word);
+        bends.push_back ({ n.beat * spb, (n.beat + n.len) * spb, n.vibrato, n.slide && i > 0 ? (float) (notes[i - 1].pitch - n.pitch) : 0.0f });
     }
+    const String token = String::toHexString (Random::getSystemRandom().nextInt64()).substring (0, 10);
+    sentKey = noteKey();
+    lastToken = token;
+    if (autoAdd != nullptr) autoAdd->bends[token] = bends;
     const auto score = lp::song::lyricmelody::toScore (lines, st.song.bpm);
     lp::voice::Client::Request r;
     r.lyrics = words.joinIntoString (" ");
@@ -358,20 +467,31 @@ void DrawSing::singIt()
     r.takes = r.results = 1;
     r.consent = consent.getToggleState();
     r.clean = false;
-    r.tag = "drawn|" + String (sectionStartSeconds(), 3) + "|" + String (st.song.sections[(size_t) c].name);
+    r.tag = "drawn|" + String (sectionStartSeconds(), 3) + "|" + String (st.song.sections[(size_t) c].name) + "|" + token;
     r.melodies = [score] { return var (Array<var> { score }); };
     r.renderTrack = [&pr = proc, c] { return pr.renderSectionForVoice (c, 1); };
     proc.voiceClient.create (std::move (r));
-    message = "Sent: it lands as a new vocal track when it's sung.";
+    message = "Singing it: the section's drawn track gets the new take when it's done.";
     repaint();
 }
 
 void DrawSing::resized()
 {
-    auto top = rollCard().reduced (18, 16).removeFromTop (28);
-    next.setBounds (top.removeFromRight (34));
-    top.removeFromRight (6);
-    prev.setBounds (top.removeFromRight (34));
+    auto row = rollCard().reduced (18, 16).removeFromTop (28);
+    next.setBounds (row.removeFromRight (34));
+    row.removeFromRight (6);
+    prev.setBounds (row.removeFromRight (34));
+    row.removeFromRight (14);
+    octUp.setBounds (row.removeFromRight (56));
+    row.removeFromRight (6);
+    octDown.setBounds (row.removeFromRight (56));
+    row.removeFromRight (14);
+    for (auto* b : { &slideBtn, &vibBtn, &holdBtn })
+    {
+        b->setBounds (row.removeFromRight (b == &holdBtn ? 92 : 80));
+        row.removeFromRight (6);
+    }
+    showTools();
     auto bottom = rollCard().reduced (18, 16).removeFromBottom (32);
     for (auto* b : { &fromLyrics, &fillWords, &clearAll })
     {
@@ -388,6 +508,7 @@ void DrawSing::resized()
     lyrics.setBounds (s.removeFromTop (150));
     s.removeFromTop (12);
     consent.setBounds (s.removeFromTop (40));
+    autoSing.setBounds (s.removeFromTop (30));
     s.removeFromTop (8);
     sing.setBounds (s.removeFromTop (40));
     statusArea = s.withTrimmedTop (10);
@@ -411,8 +532,11 @@ void DrawSing::paint (Graphics& g)
     };
     const int bar0 = page * kBeatsShown / 4 + 1;
     const String dot = String::fromUTF8 ("  \xc2\xb7  ");
-    label ("DRAW A MELODY" + dot + "DOUBLE-CLICK A NOTE FOR ITS WORD" + dot + "BARS " + String (bar0) + " TO " + String (bar0 + 3)
-           + dot + "ALT-CLICK OR DELETE REMOVES", rollCard().reduced (18, 16).removeFromTop (28).withTrimmedRight (90));
+    label ("BARS " + String (bar0) + " TO " + String (bar0 + 3), rollCard().reduced (18, 16).removeFromTop (28).withRight (holdBtn.getX() - 8));
+    g.setFont (font (11.0f));
+    g.setColour (t.inkDim);
+    g.drawText ("Click to draw a note, drag to move it, drag its end to make it longer. Double-click: its word. Alt-click or Delete: gone.",
+                rollCard().reduced (18, 16).removeFromBottom (32).withLeft (clearAll.getRight() + 12).withRight (hear.getX() - 10), Justification::centredLeft, true);
     label ("THE SECTION AND THE VOICE", sideCard().reduced (20, 18).removeFromTop (24));
 
     // ---- the roll
@@ -421,7 +545,7 @@ void DrawSing::paint (Graphics& g)
     g.fillRoundedRectangle (r, 8.0f);
     const auto st = proc.songJob.getStatus();
     const int key = st.song.key;
-    for (int p = kLo; p <= kHi; ++p)
+    for (int p = top - kRows + 1; p <= top; ++p)
     {
         const float y = yOf (p);
         const int pc = ((p % 12) + 12) % 12;
@@ -460,7 +584,24 @@ void DrawSing::paint (Graphics& g)
         g.fillRoundedRectangle (nr, 3.0f);
         g.setFont (font (10.5f, lp::ui::Medium));
         g.setColour (Colours::white);
-        g.drawText (n.word, nr.reduced (4.0f, 0.0f), Justification::centredLeft, true);
+        g.drawText (n.slur ? String::fromUTF8 ("\xe2\x80\xbf ") + n.word : n.word, nr.reduced (4.0f, 0.0f), Justification::centredLeft, true);
+        if (n.vibrato > 0.0f)
+        {
+            // a wavy line along its bottom
+            Path w;
+            const float y = nr.getBottom() - 2.5f;
+            w.startNewSubPath (nr.getX() + nr.getWidth() * 0.3f, y);
+            for (float x = nr.getX() + nr.getWidth() * 0.3f; x < nr.getRight() - 2.0f; x += 1.5f)
+                w.lineTo (x, y - 1.5f * std::sin ((x - nr.getX()) * 0.6f));
+            g.strokePath (w, PathStrokeType (1.0f));
+        }
+        if (n.slide && i > 0)
+        {
+            // a line from the note before into this one
+            const auto pr = noteRect (notes[(size_t) i - 1]);
+            g.setColour (Colours::white.withAlpha (0.6f));
+            g.drawLine (pr.getRight(), pr.getCentreY(), nr.getX() + 6.0f, nr.getCentreY(), 1.2f);
+        }
     }
     // where the song is (when it's playing over this section)
     if (proc.songIsPlaying())

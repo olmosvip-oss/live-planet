@@ -1415,12 +1415,14 @@ public:
     // a vocal sung by the voice helper (from the Voice page) as a new track: it starts at bar 1 (silent until its
     // section), keeps its recording untouched (so Auto-tune can work on it) and has the Vocal chain
     // a file made for this song (a sung vocal, or an AI layer: an instrument), as a new track playing from bar 1
+    // (replace: a track of that name already there gets the new file instead, keeping its mixer and effects)
     void addSungVocal (const juce::File& vocal, const juce::String& name, const juce::String& about, bool isVocal = true,
-                       const juce::String& source = "voice helper")
+                       const juce::String& source = "voice helper", bool replace = false)
     {
         {
             const juce::ScopedLock sl (lock);
             pendingSung = { vocal, name, about };
+            pendingSungReplace = replace;
             pendingSungIsVocal = isVocal;
             pendingSungSource = source;
             edits.push_back ({ 0, EditOp::AddSung });
@@ -2950,36 +2952,43 @@ private:
     {
         lp::song::Song song;
         std::tuple<juce::File, juce::String, juce::String> what;
-        bool isVocal = true;
+        bool isVocal = true, replace = false;
         juce::String sungSource;
         {
             const juce::ScopedLock sl (lock);
-            if (current.parts.empty() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
-            song = current; what = pendingSung; isVocal = pendingSungIsVocal; sungSource = pendingSungSource;
+            if (current.parts.empty()) return;
+            song = current; what = pendingSung; isVocal = pendingSungIsVocal; sungSource = pendingSungSource; replace = pendingSungReplace;
         }
         const auto& [file, name, about] = what;
         if (! file.existsAsFile()) return;
-        lp::song::Part part;
+        const std::string partName = ((isVocal ? "vocal (" : "layer (") + name + ")").toStdString(); // ("vocal (" and "layer (" play the file from bar 1)
+        int existing = -1;
+        if (replace)
+            for (int i = 0; i < (int) song.parts.size(); ++i) if (song.parts[(size_t) i].name == partName) existing = i;
+        if (existing < 0 && (int) song.parts.size() >= StudioPlayer::maxTracks) return;
+        lp::song::Part part = existing >= 0 ? song.parts[(size_t) existing] : lp::song::Part();
         part.kind = lp::song::PartKind::Melody;
-        part.name = ((isVocal ? "vocal (" : "layer (") + name + ")").toStdString(); // ("vocal (" and "layer (" play the file from bar 1)
+        part.name = partName;
         part.samplePath = file.getFullPathName();
         if (isVocal) part.tune.source = file.getFullPathName();     // Auto-tune starts from it, untouched
         part.tune.key = song.minor ? song.key : (song.key + 9) % 12;
         part.tune.scale = 1;
         part.source = sungSource + ": " + name;
         part.remix = about;
-        song.parts.push_back (part);
+        if (existing >= 0) song.parts[(size_t) existing] = part; else song.parts.push_back (part);
         juce::AudioBuffer<float> buf;
         if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
-        const int tr = (int) song.parts.size() - 1;
+        const int tr = existing >= 0 ? existing : (int) song.parts.size() - 1;
         const auto stem = currentFolder.getChildFile ("stems").getChildFile (
             juce::String (tr + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (added " + juce::String (++editCounter) + ").wav");
         if (! writeStem (stem, buf, currentRs.sampleRate)) return;
         const juce::ScopedLock sl (lock);
         current = song;
         status.song = song;
-        status.tracks.push_back (info (part, stem, song));
-        status.message = juce::String (part.name) + (isVocal ? " is a new track: its Vocal chain and Auto-tune are on the Vocals tab" : " is a new track");
+        if (existing >= 0 && existing < (int) status.tracks.size()) status.tracks[(size_t) existing] = info (part, stem, song);
+        else status.tracks.push_back (info (part, stem, song));
+        status.message = juce::String (part.name) + (existing >= 0 ? " has its new take"
+                                                    : isVocal ? " is a new track: its Vocal chain and Auto-tune are on the Vocals tab" : " is a new track");
         ++status.version;
         saveSession();
     }
@@ -4446,7 +4455,7 @@ private:
     std::map<int, lp::song::VocalTune> pendingTune;
     double pendingBpm = 0.0;
     std::tuple<juce::File, juce::String, juce::String> pendingSung;
-    bool pendingSungIsVocal = true;
+    bool pendingSungIsVocal = true, pendingSungReplace = false;
     juce::String pendingSungSource;
     mutable std::map<int, float> kitGain; // (drumHits) each drum track's kit loudness
     std::map<int, std::pair<int, int>> pendingDrumSwap;
