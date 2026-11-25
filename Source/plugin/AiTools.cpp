@@ -182,6 +182,23 @@ void AutoAdd::tick (LivePlanetProcessor& proc)
 }
 
 // ---- "+ AI layer": which instrument, how it should sound
+// the library loop kinds a chip flips (its own first, then close ones)
+static std::vector<lp::song::LoopKind> flipKindsFor (const String& id)
+{
+    using LK = lp::song::LoopKind;
+    if (id == "drums") return { LK::Drums, LK::Perc };
+    if (id == "bass") return { LK::Bass };
+    if (id == "guitar") return { LK::Guitar, LK::Pluck };
+    if (id == "keyboard") return { LK::Keys, LK::Mallet };
+    if (id == "strings") return { LK::Strings, LK::Pad };
+    if (id == "synth") return { LK::Synth, LK::Lead, LK::Pluck, LK::Pad };
+    if (id == "brass") return { LK::Brass };
+    if (id == "woodwinds") return { LK::Woodwind };
+    if (id == "percussion") return { LK::Perc, LK::Drums };
+    if (id == "fx") return { LK::FX };
+    if (id == "backing_vocals") return { LK::Vocal };
+    return { LK::Other };
+}
 LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int first, int count, std::function<void()> closed)
     : proc (p), th (theme), firstSection (first), sectionCount (count), onClosed (std::move (closed))
 {
@@ -258,6 +275,27 @@ void LayerPopup::showType()
     lit (amtMed, flipAmount == 2);
     lit (amtHeavy, flipAmount == 3);
     for (auto* b : { &asPart, &asLoop }) b->setVisible (! flipMode);
+    {
+        // flip: how many loops your library has for each (none: greyed out)
+        const auto st = proc.songJob.getStatus();
+        for (auto* c : chips)
+        {
+            const auto id = c->getProperties()["id"].toString();
+            const String base = c->getProperties().getWithDefault ("label", c->getButtonText()).toString();
+            c->getProperties().set ("label", base);
+            int n = 0;
+            for (auto lk : flipKindsFor (id)) n += (size_t) lk < st.kindCounts.size() ? st.kindCounts[(size_t) lk] : 0;
+            c->setButtonText (flipMode ? base + "  " + String (n) : base);
+            c->setEnabled (! flipMode || n > 0);
+        }
+        // (the one picked has nothing to flip: the first that has)
+        for (auto* c : chips)
+            if (c->getProperties()["id"].toString() == kind && ! c->isEnabled())
+            {
+                for (auto* d : chips) if (d->isEnabled()) { pickKind (d); break; }
+                break;
+            }
+    }
     for (auto* b : { &amtLight, &amtMed, &amtHeavy }) b->setVisible (flipMode);
     describe.setVisible (! flipMode);
     go.setButtonText (flipMode ? "Flip it" : "Generate");
@@ -275,15 +313,12 @@ void LayerPopup::start()
     if (! st.haveSong || firstSection < 0 || firstSection + sectionCount > (int) st.song.sections.size()) return;
     if (flipMode)
     {
-        using LK = lp::song::LoopKind;
-        static const std::map<String, LK> kinds { { "drums", LK::Drums }, { "bass", LK::Bass }, { "guitar", LK::Guitar }, { "keyboard", LK::Keys },
-            { "strings", LK::Strings }, { "synth", LK::Synth }, { "brass", LK::Brass }, { "woodwinds", LK::Woodwind }, { "percussion", LK::Perc },
-            { "fx", LK::FX }, { "backing_vocals", LK::Vocal } };
-        const auto it = kinds.find (kind);
-        const LK k = it != kinds.end() ? it->second : LK::Drums;
-        const int have = (size_t) k < st.kindCounts.size() ? st.kindCounts[(size_t) k] : 0;
-        if (have <= 0) { message = "No loops of that kind in your sample folders yet: add a folder (Write page), or try AI generate."; repaint(); return; }
-        proc.songJob.flipLayer (k, firstSection, sectionCount, flipAmount);
+        // its own kind if your library has loops of it, else the closest kind that does
+        int k = -1;
+        for (auto lk : flipKindsFor (kind))
+            if ((size_t) lk < st.kindCounts.size() && st.kindCounts[(size_t) lk] > 0) { k = (int) lk; break; }
+        if (k < 0) { message = "No loops of that kind in your sample folders yet: add a folder (Write page), or try AI generate."; repaint(); return; }
+        proc.songJob.flipLayer ((lp::song::LoopKind) k, firstSection, sectionCount, flipAmount);
         if (onClosed) onClosed();
         return;
     }
@@ -292,7 +327,7 @@ void LayerPopup::start()
     lp::voice::Client::Request r;
     const auto& a = st.song.sections[(size_t) firstSection];
     String label = String (chips[0]->getButtonText());
-    for (auto* c : chips) if (c->getProperties()["id"].toString() == kind) label = c->getButtonText();
+    for (auto* c : chips) if (c->getProperties()["id"].toString() == kind) label = c->getProperties().getWithDefault ("label", c->getButtonText()).toString();
     r.style = describe.getText().trim().isNotEmpty() ? describe.getText().trim() : label.toLowerCase();
     r.layer = kind;
     r.key = helperKeyName (st.song);
@@ -361,7 +396,7 @@ void LayerPopup::resized()
     go.setBounds (bt);
 }
 
-Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (580, flipMode ? 368 : 420); }
+Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (600, flipMode ? 340 : 400); }
 
 void LayerPopup::setBackdrop (Image img)
 {
@@ -429,6 +464,8 @@ void LayerPopup::paint (Graphics& g)
     g.drawText ("Generate a layer", in.removeFromTop (26.0f), Justification::centredLeft, false);
     const auto st = proc.songJob.getStatus();
     String where;
+    if (firstSection == 0 && sectionCount >= (int) st.song.sections.size()) where = "the whole song";
+    else
     for (int i = firstSection; i < firstSection + sectionCount && i < (int) st.song.sections.size(); ++i)
         where << (where.isEmpty() ? "" : " + ") << String (st.song.sections[(size_t) i].name);
     g.setFont (font (12.0f));
