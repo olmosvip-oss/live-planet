@@ -23,6 +23,7 @@ struct Job
     double created = 0.0;
     bool clean = true;
     bool guide = false;              // sung from your own take (no melody written)
+    bool written = false;            // Loopwright wrote the melody; the helper sang it note for note
     std::vector<Result> results;
     bool live() const { return state == "queued" || state == "running"; }
 };
@@ -85,6 +86,7 @@ public:
         std::function<juce::File()> renderTrack; // makes the song section's WAV (called on the background thread)
         juce::String tag; // remembered with the job it starts (where its section is in the song)
         juce::File guide; // "Sing it yourself": your take over the section (sent instead of a melody being written)
+        std::function<juce::var()> melodies; // "Write melody": the written melodies, one a version (made on the background thread)
     };
     void create (Request r) { push ({ Cmd::Create, std::move (r), {}, {}, 0, {} }); }
     void cancel (const juce::String& id) { if (validJobId (id)) push ({ Cmd::Cancel, {}, id, {}, 0, {} }); }
@@ -207,6 +209,7 @@ private:
                 j.created = (double) jv["created"];
                 j.clean = jv["opts"].isObject() ? (bool) jv["opts"].getProperty ("clean", true) : true;
                 j.guide = jv["opts"].isObject() && jv["opts"].getProperty ("guide", "").toString().isNotEmpty();
+                j.written = jv["opts"].isObject() && (bool) jv["opts"].getProperty ("written", false);
                 if (auto* rs = jv["results"].getArray())
                     for (auto& rv : *rs)
                     {
@@ -297,6 +300,13 @@ private:
                 guide = upload (c.req.guide, "guide", err);
                 if (guide.isEmpty()) { setSending (false); say (err.isNotEmpty() ? err : juce::String ("Couldn't send your take"), true); return; }
             }
+            juce::var melodies;
+            if (c.req.melodies)
+            {
+                say ("Writing your melody...", false);
+                melodies = c.req.melodies();
+                if (! melodies.isArray() || melodies.size() == 0) { setSending (false); say ("Couldn't write a melody for these words", true); return; }
+            }
             setSending (false);
             juce::var body (new juce::DynamicObject());
             auto* o = body.getDynamicObject();
@@ -313,6 +323,7 @@ private:
             o->setProperty ("clean", c.req.clean);
             o->setProperty ("consent", c.req.consent);
             if (guide.isNotEmpty()) o->setProperty ("guide", guide);
+            if (melodies.isArray()) o->setProperty ("melodies", melodies);
             const auto v = callJson ("/api/create", &body, code);
             say (code == 200 ? juce::String ("Started") : errorOf (v, code), code != 200);
             if (code == 200)

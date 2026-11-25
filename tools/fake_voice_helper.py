@@ -56,6 +56,30 @@ def tone_wav(path, seconds, key, bpm):
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(bytes(frames))
 
 
+def melody_wav(path, melody, seconds):
+    """a written melody, as tones: each note at its pitch and length (the real helper sings the words on them)"""
+    sr = 44100
+    buf = [0.0] * int(seconds * sr)
+    for seg in melody.get("segments", []):
+        t = seg["start"] / 1000.0
+        for n in seg["notes"]:
+            dur = float(n["dur"])
+            if n.get("word") != "<SP>" and int(n.get("pitch", 0)) > 0:
+                f, phase = 440.0 * 2 ** ((int(n["pitch"]) - 69) / 12), 0.0
+                i0 = int(t * sr)
+                for i in range(int(dur * sr)):
+                    if i0 + i >= len(buf):
+                        break
+                    x = i / (dur * sr)
+                    phase += 2 * math.pi * f / sr
+                    env = min(1.0, x / 0.05) * min(1.0, (1 - x) / 0.15)
+                    buf[i0 + i] += 0.25 * env * (math.sin(phase) + 0.4 * math.sin(2 * phase))
+            t += dur
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(b"".join(struct.pack("<h", int(max(-1, min(1, v)) * 32000)) for v in buf))
+
+
 def work(job):
     d, o = Path(job["dir"]), job["opts"]
     try:
@@ -65,16 +89,23 @@ def work(job):
                 continue
             if o.get("guide") and (key == "sing" or (key == "score" and not o.get("has_lyrics"))):
                 continue  # their own take: no melody to write
-            for n in range(1, (o["results"] if key in ("clean", "voice", "mix") else 1) + 1):
+            if o.get("written") and key in ("clean", "voice"):
+                continue  # the written melody is sung in the voice straight away
+            for n in range(1, (o["results"] if key in ("clean", "voice", "mix") or (key == "sing" and o.get("written")) else 1) + 1):
                 if job.get("cancelled"):
                     raise InterruptedError
-                note = f"version {n} of {o['results']}" if key in ("clean", "voice", "mix") else (f"{o['takes']} takes" if key == "sing" else "")
+                note = f"version {n} of {o['results']}" if key in ("clean", "voice", "mix") else (
+                    (f"melody {n} of {o['results']}" if o.get("written") else f"{o['takes']} takes") if key == "sing" else "")
                 job.update(stage=key, note=note)
                 time.sleep(A.stage_seconds)
                 if A.fail and key == "score":
                     raise RuntimeError("No takes kept enough of the words (fake helper, --fail)")
                 if key == "mix" and o.get("guide"):
                     (d / f"vocal_{n}.wav").write_bytes(Path(o["guide"]).read_bytes())  # (their take, as it came)
+                elif key == "mix" and o.get("written"):
+                    with wave.open(o["inst"], "rb") as w:
+                        secs = w.getnframes() / w.getframerate()
+                    melody_wav(d / f"vocal_{n}.wav", json.loads((d / f"melody_{n}.json").read_text()), min(secs, 60))
                 elif key == "mix":
                     with wave.open(o["inst"], "rb") as w:
                         secs = w.getnframes() / w.getframerate()
@@ -172,10 +203,17 @@ class H(BaseHTTPRequestHandler):
                 o["results"] = min(o["results"], o["takes"])
                 if guide is not None:
                     o.update(guide=str(guide), has_lyrics=bool(lines), takes=1, results=1)
+                melodies = q.get("melodies") or []
+                if not isinstance(melodies, list) or len(melodies) > 3 or not all(isinstance(m, dict) and m.get("segments") for m in melodies):
+                    raise ValueError("The written melody didn't come through: press Create again")
+                if melodies:
+                    o.update(written=True, has_lyrics=bool(lines), takes=len(melodies), results=len(melodies))
+                    for k, m in enumerate(melodies, 1):
+                        (d / f"melody_{k}.json").write_text(json.dumps(m))
                 with lock:
                     jobs[i] = dict(id=i, dir=str(d), created=time.time(), state="queued", stage=None, note="", opts=o, scores=[], results=[],
                                    title=(lines[0] if lines else "Your take")[:60])
-                print(f"CREATE {i} guide={'yes' if guide else 'no'} style={o['style']!r} key={o['key']} bpm={o['bpm']} track={inst.name} voice={voice.stem} takes={o['takes']} results={o['results']}", flush=True)
+                print(f"CREATE {i} guide={'yes' if guide else 'no'} written={len(melodies)} style={o['style']!r} key={o['key']} bpm={o['bpm']} track={inst.name} voice={voice.stem} takes={o['takes']} results={o['results']}", flush=True)
                 threading.Thread(target=work, args=(jobs[i],), daemon=True).start()
                 return self.out(200, {"id": i})
             self.out(404, {"error": "not found"})

@@ -111,8 +111,10 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
     addAndMakeVisible (addVoice);
     addAndMakeVisible (takes);
     addAndMakeVisible (versions);
-    who.setTooltip ("AI sings it: the voice helper writes a melody for your words. I sing it: you rap or sing the lines over the section "
-                    "(rough is fine), and it keeps your exact words and timing, then cleans, tunes and turns it into the voice.");
+    who.setTooltip ("Write melody: Loopwright writes a melody for your words over the song's own chords, and the voice sings it note for "
+                    "note (every word, in key, in time). I sing it: you rap or sing the lines over the section (rough is fine), and it keeps "
+                    "your exact words and timing, then cleans, tunes and turns it into the voice. AI freestyle: the AI makes up its own melody "
+                    "(looser; it can lose words).");
     addAndMakeVisible (who);
     for (auto* b : { &recordTake, &useTake, &hearTake }) { b->setWantsKeyboardFocus (false); addChildComponent (*b); }
     recordTake.setTooltip ("Plays the section with a one-bar count-in and records your mic until it ends (in the Loopwright app; in a DAW, record there and drop it here)");
@@ -224,6 +226,13 @@ void VoicePage::saveJobs()
 
 // the singing model goes by the style most of all: if it says nothing about a voice, it may well hum or sing no
 // words. So a style that doesn't is given one ("rap vocals" for hip hop, rap, trap or drill; else "lead vocals").
+bool VoicePage::rapStyle (const String& styleText)
+{
+    const auto low = styleText.toLowerCase();
+    return low.contains ("hip hop") || low.contains ("hip-hop") || low.contains ("hiphop") || low.contains ("rap")
+        || low.contains ("trap") || low.contains ("drill") || low.contains ("grime");
+}
+
 String VoicePage::withVoiceWords (const String& styleText)
 {
     auto st = styleText.trim();
@@ -232,9 +241,7 @@ String VoicePage::withVoiceWords (const String& styleText)
     for (auto* w : { "vocal", "voice", "vox", "sing", "sung", "rapper", "rapping", "choir", "falsetto", "tenor", "baritone", "soprano", "alto" })
         voiceWords = voiceWords || low.contains (w);
     if (voiceWords) return st;
-    const bool rap = low.contains ("hip hop") || low.contains ("hip-hop") || low.contains ("hiphop") || low.contains ("rap")
-                  || low.contains ("trap") || low.contains ("drill") || low.contains ("grime");
-    return (st.isNotEmpty() ? st + ", " : String()) + (rap ? "rap vocals, clear lyrics" : "lead vocals, clear lyrics");
+    return (st.isNotEmpty() ? st + ", " : String()) + (rapStyle (st) ? "rap vocals, clear lyrics" : "lead vocals, clear lyrics");
 }
 
 void VoicePage::startCreate()
@@ -256,6 +263,14 @@ void VoicePage::startCreate()
     r.consent = consent.getToggleState();
     const auto sc = sectionInfo[(size_t) choice];
     r.tag = String (sc.start, 3) + "|" + sc.name;
+    if (whoSings == 0)
+    {
+        // the melodies are written here (on the helper thread: hearing the chords takes a moment), then just sung
+        r.takes = r.results = versionsN;
+        r.clean = false;
+        r.melodies = [&pr = proc, sc, words = r.lyrics, rap = rapStyle (style.getText()), n = versionsN]
+                     { return pr.writeVoiceMelodies (sc.first, sc.count, words, rap, n); };
+    }
     r.renderTrack = [&pr = proc, sc] { return pr.renderSectionForVoice (sc.first, sc.count); };
     proc.voiceClient.create (std::move (r));
     create.setEnabled (false);
@@ -418,6 +433,8 @@ int VoicePage::minutesEstimate() const
 {
     const double secs = chosenSeconds() > 0.0 ? chosenSeconds() : 20.0;
     const bool mine = whoSings == 1;
+    if (whoSings == 0) // (the voice read once, then each version sung at about its own length, finished and mixed)
+        return jmax (1, (int) std::ceil ((40.0 + 30.0 + (lyricLines() > 0 ? 30.0 : 0.0) + versionsN * (secs * 1.2 + 35.0)) / 60.0));
     const int versionsMade = mine ? 1 : versionsN;
     double t = 40.0 + (mine ? (lyricLines() > 0 ? 30.0 : 0.0) : takesN * 45.0 + 30.0);
     t += versionsMade * ((clean.getToggleState() ? 120.0 : 0.0) + secs * 1.5 + 35.0);
@@ -433,8 +450,11 @@ void VoicePage::refreshButtons()
                     && voice.getText().isNotEmpty() && section.getNumItems() > 0
                     && (mine ? haveTake // (your own take: the words are yours, however many)
                              : lyrics.getText().trim().isNotEmpty()
-                               && (demo || chosenSeconds() >= lyricLines() * 2.0 * barSeconds() - 0.05)); // (under 2 bars a line, words come out mumbled)
-    takes.setVisible (! mine);
+                               // (freestyle: under 2 bars a line, words come out mumbled; a written melody fits a line a bar)
+                               && (demo || chosenSeconds() >= lyricLines() * (whoSings == 0 ? 1.0 : 2.0) * barSeconds() - 0.05));
+    takes.setVisible (whoSings == 2);
+    for (Component* c : { (Component*) &tuning, (Component*) &runs, (Component*) &clean })
+        c->setVisible (whoSings != 0); // (a written melody is sung on its notes already; nothing to tune or clean)
     versions.setVisible (! mine);
     recordTake.setVisible (mine);
     useTake.setVisible (mine);
@@ -443,7 +463,7 @@ void VoicePage::refreshButtons()
     recordTake.setButtonText (takeRecording ? "Stop" : proc.canRecordMic() ? "Record my take" : "Record (in the app)");
     create.setEnabled (ready);
     create.setButtonText (snap.sending ? "Sending your section..."
-                          : (mine ? String ("Create from my take") : String ("Create vocal")) + String::fromUTF8 ("  \xc2\xb7  about ") + String (minutesEstimate()) + " min");
+                          : (mine ? String ("Create from my take") : whoSings == 0 ? String ("Write & sing") : String ("Create vocal")) + String::fromUTF8 ("  \xc2\xb7  about ") + String (minutesEstimate()) + " min");
     if (stop.isVisible() != working) { stop.setVisible (working); resized(); }
     for (auto* r : rows)
     {
@@ -503,7 +523,7 @@ void VoicePage::resized()
     // ---- words
     {
         auto c = lyricsCard().reduced (18.0f, 16.0f).toNearestInt();
-        who.setBounds (c.getRight() - 220, c.getY() - 4, 220, 26);
+        who.setBounds (c.getRight() - 300, c.getY() - 4, 300, 26);
         c.removeFromTop (24);
         auto chips = c.removeFromBottom (30);
         c.removeFromBottom (30); // (how many lines, and how long a section suits them)
@@ -626,15 +646,16 @@ void VoicePage::paint (Graphics& g)
         // pace (fine, just said); 4 or more suits sung lines
         const double bar = barSeconds();
         const double perLine = n > 0 && bar > 0.0 ? have / bar / n : 99.0;
-        const bool tooMany = whoSings == 0 && n > 0 && have > 0.0 && ! demo && perLine < 2.0 - 0.01;
-        const bool quick = whoSings == 0 && ! tooMany && n > 0 && have > 0.0 && ! demo && perLine < 4.0 - 0.01;
+        const double least = whoSings == 0 ? 1.0 : 2.0; // (a written melody fits a line a bar; freestyle needs two)
+        const bool tooMany = whoSings != 1 && n > 0 && have > 0.0 && ! demo && perLine < least - 0.01;
+        const bool quick = whoSings != 1 && ! tooMany && n > 0 && have > 0.0 && ! demo && perLine < 2.0 * least - 0.01;
         g.setFont (font (12.5f, tooMany ? lp::ui::Medium : lp::ui::Light));
         g.setColour (tooMany ? Colour (0xffff8f8f) : quick ? Colour (0xfff2c14e) : t.inkDim);
-        const int fits = jmax (1, (int) (have / (2.0 * bar)));
+        const int fits = jmax (1, (int) (have / (least * bar)));
         const int bars = roundToInt (have / jmax (0.01, bar));
         const auto fit = whoSings == 1 ? String ("Your words (optional): only used to check how many of them come through")
                        : n == 0 ? String ("Type your words: one line per phrase (about 2 bars each for rap, 4 for singing).")
-                       : tooMany ? String (n) + " lines need at least " + String (n * 2) + " bars; this part is " + String (bars)
+                       : tooMany ? String (n) + " lines need at least " + String (roundToInt (n * least)) + " bars; this part is " + String (bars)
                                    + ". Keep " + String (fits) + (fits == 1 ? " line" : " lines") + " or pick a longer part"
                        : quick ? String (n) + " lines in " + String (bars) + " bars: rap pace. For slow sung lines, pick a longer part"
                        : String (n) + (n == 1 ? " line" : " lines") + " in " + String (bars) + " bars: room for every word";
@@ -668,9 +689,9 @@ void VoicePage::paint (Graphics& g)
                     facts, Justification::centredLeft, true);
         g.setFont (lp::ui::mono (9.0f, false, 0.12f));
         auto segs = in.removeFromTop (92.0f);
-        if (whoSings == 0)
+        if (whoSings != 1)
         {
-            g.drawText ("TAKES", segs.withHeight (30.0f), Justification::centredLeft, false);
+            if (whoSings == 2) g.drawText ("TAKES", segs.withHeight (30.0f), Justification::centredLeft, false);
             g.drawText ("VERSIONS", segs.withY (segs.getY() + 42.0f).withHeight (30.0f), Justification::centredLeft, false);
         }
         else
@@ -757,7 +778,13 @@ void VoicePage::paint (Graphics& g)
         if (j != nullptr) for (int k = 0; k < (int) snap.stages.size(); ++k) if (snap.stages[(size_t) k].first == j->stage) at = k;
         std::vector<int> shown;
         for (int k = 0; k < (int) snap.stages.size(); ++k)
-            if (! (snap.stages[(size_t) k].first == "clean" && j != nullptr && ! j->clean)) shown.push_back (k);
+        {
+            const auto& sk = snap.stages[(size_t) k].first;
+            const bool written = j != nullptr ? j->written : whoSings == 0; // (before a job: what this mode will do)
+            if (sk == "clean" && (written || (j != nullptr && ! j->clean))) continue;
+            if (sk == "voice" && written) continue; // (sung in the voice already)
+            shown.push_back (k);
+        }
         auto steps = in.removeFromTop (46.0f);
         const float sw = steps.getWidth() / (float) jmax (1, (int) shown.size());
         for (size_t s = 0; s < shown.size(); ++s)
@@ -765,7 +792,7 @@ void VoicePage::paint (Graphics& g)
             const int k = shown[s];
             // (our own short names for the helper's stages; its own words for any we don't know)
             const auto& key = snap.stages[(size_t) k].first;
-            const String text = key == "sing" ? (j != nullptr && j->guide ? "Your take" : "Melody") : key == "score" ? "Words & key" : key == "clean" ? "Clean up"
+            const String text = key == "sing" ? (j != nullptr && j->guide ? "Your take" : (j != nullptr ? j->written : whoSings == 0) ? "Singing" : "Melody") : key == "score" ? "Words & key" : key == "clean" ? "Clean up"
                               : key == "voice" ? "Your voice" : key == "mix" ? "Mix" : snap.stages[(size_t) k].second;
             auto cell = Rectangle<float> (steps.getX() + (float) s * sw, steps.getY(), sw, steps.getHeight());
             const bool done = j != nullptr && (j->state == "done" || (at >= 0 && k < at));

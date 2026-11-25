@@ -838,9 +838,10 @@ private:
     juce::TextButton addVoice { "add" }, create { "Create vocal" }, stop { "Stop" };
     int takesN = 4, versionsN = 1;
     int minutesEstimate() const; // roughly how long the helper takes, from what's picked
-    // "Sing it yourself": who sings the melody (0: the AI writes it; 1: you, from your own take)
+    // who makes the melody: 0, Loopwright writes it over the song's chords (sung note for note); 1, you, from your own
+    // take; 2, the AI improvises one (takes, the best kept)
     int whoSings = 0;
-    Segmented who { { "AI sings it", "I sing it" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; clean.setToggleState (i == 1, juce::dontSendNotification); resized(); refreshButtons(); repaint(); }, th };
+    Segmented who { { "Write melody", "I sing it", "AI freestyle" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; clean.setToggleState (i == 1, juce::dontSendNotification); resized(); refreshButtons(); repaint(); }, th };
     juce::TextButton recordTake { "Record my take" }, useTake { "Use a recording..." }, hearTake { "hear it" };
     juce::File takeFile;          // your take, cut to the section
     double takeSecs = 0.0;
@@ -852,6 +853,7 @@ private:
     void finishTakeRecording();
     void useTakeFile (const juce::File&);
     static juce::String withVoiceWords (const juce::String& style);
+    static bool rapStyle (const juce::String& style); // hip hop, rap, trap, drill, grime: a rap flow
     Segmented takes { { "2", "4", "6", "8" }, [this] { return takesN / 2 - 1; }, [this] (int i) { takesN = (i + 1) * 2; refreshButtons(); repaint(); }, th },
               versions { { "1", "2", "3" }, [this] { return versionsN - 1; }, [this] (int i) { versionsN = i + 1; refreshButtons(); repaint(); }, th };
     juce::Slider tuning, runs;

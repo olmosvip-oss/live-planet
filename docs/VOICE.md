@@ -28,6 +28,19 @@ The plugin only connects to 127.0.0.1, sends the token as `X-Token` on every POS
    song, and what "add as track" adds (a vocal track with its Vocal chain and Auto-tune).
 4. `<song>/voice/jobs.json` remembers where each job's section starts.
 
+## "Write melody" (the default)
+
+Loopwright writes the melody itself (`Source/song/LyricMelody.h`), over the chords the song's tracks really play:
+each line gets its share of the section's bars, each word a note (longer words longer notes), a rap flow when the
+style says hip hop, rap, trap, drill or grime, otherwise a sung line that arches and holds its last word. Lines share
+a shape, and every second line comes home to the key's note. One melody per version, each different.
+
+The melodies go to the helper as `"melodies"` in `/api/create` (up to 3, each
+`{"segments": [{"start": ms, "notes": [{"word", "pitch" (MIDI), "dur" (s), "slur"}]}]}`, `"<SP>"` a rest). The
+helper sings each note for note in the chosen voice with SoulX-Singer's score mode (`sing_score.py`), checks the
+words, then finishes and mixes, so there are no takes, no clean-up and no separate voice step. A line needs at
+least a bar.
+
 ## "I sing it" (your own take)
 The switch at the top of the Lyrics card. Instead of the AI writing a melody, you rap or sing the lines over the
 section (in the Loopwright app: Record my take, with a one-bar count-in; in a DAW: record there from the section's

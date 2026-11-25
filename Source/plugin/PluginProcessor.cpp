@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "../song/LyricMelody.h"
 #include "License.h"
 #include "AppFolder.h"
 #include "PluginEditor.h"
@@ -1471,6 +1472,27 @@ void LivePlanetProcessor::addLibraryFolder (const juce::File& f)
 }
 
 // the song's section as you hear it (every track, with its mixer), for the voice helper to sing over
+juce::var LivePlanetProcessor::writeVoiceMelodies (int sectionIndex, int count, const juce::String& lyrics, bool rap, int howMany)
+{
+    const auto st = songJob.getStatus();
+    if (! st.haveSong || sectionIndex < 0 || count < 1 || sectionIndex + count > (int) st.song.sections.size()) return {};
+    const auto& a = st.song.sections[(size_t) sectionIndex];
+    const auto& b = st.song.sections[(size_t) (sectionIndex + count - 1)];
+    const int bars = b.startBar + b.bars - a.startBar;
+    const auto lines = lp::song::lyricmelody::sungLines (lyrics);
+    if (lines.isEmpty() || bars < 1) return {};
+    const auto chordList = SongJob::songChords (st.song, st.tracks);
+    juce::Array<juce::var> out;
+    const auto base = (juce::uint32) juce::Random::getSystemRandom().nextInt();
+    for (int n = 0; n < juce::jlimit (1, 3, howMany); ++n)
+    {
+        const auto mel = lp::song::lyricmelody::write (lines, bars, st.song.key, st.song.minor, rap, chordList, a.startBar * 4.0,
+                                                       base + (juce::uint32) n * 7919u);
+        out.add (lp::song::lyricmelody::toScore (mel, st.song.bpm));
+    }
+    return out;
+}
+
 juce::File LivePlanetProcessor::renderSectionForVoice (int sectionIndex, int count)
 {
     const auto st = songJob.getStatus();
