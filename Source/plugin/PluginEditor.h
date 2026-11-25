@@ -812,6 +812,7 @@ struct AutoAdd
     juce::String status; // what's being made right now (or what went wrong)
     // a drawn melody's vibrato and slides (by the token in its tag), put on the sung result when it arrives
     std::map<juce::String, std::vector<lp::song::stack::Bend>> bends;
+
 private:
     std::set<juce::String> handled, asked;
 };
@@ -879,6 +880,20 @@ private:
     double snap() const { return beatsShown <= 8.0 ? 0.125 : 0.25; }
     void zoom (double factor, float aroundX);
     juce::String guideKey;
+    // your voice, live: the last sung take and the notes it was sung on; moved notes are re-pitched and re-timed from it
+    struct Voiced;
+    std::shared_ptr<Voiced> voiced;
+    std::map<juce::String, std::vector<Note>> sentNotes; // by token: the notes each take was sung from
+    juce::String loadedToken, voicedKey;
+    int nextId = 1;
+    juce::uint32 voicedChangedAt = 0;
+    void loadTake (const juce::String& token, const juce::File& file);
+    void renderVoice();          // (in the background) the section in your voice, from the notes as they are now
+    void previewNote (int index); // the note being moved, in your voice (or the tone)
+    bool isVoiced (const Note&) const;
+public:
+    void leave();                // the page is left: the song plays the sung track again
+private:
     enum class Drag { None, Move, Resize } drag = Drag::None;
     double dragBeatOffset = 0.0;
     bool connected = false;

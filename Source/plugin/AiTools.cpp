@@ -90,12 +90,13 @@ void AutoAdd::tick (LivePlanetProcessor& proc)
             auto* p = &proc;
             std::vector<lp::song::stack::Bend> bend;
             if (tag.size() > 3) if (auto b = bends.find (tag[3]); b != bends.end()) bend = b->second;
-            Thread::launch ([p, in = f->second, out, start, name, about, layer, bend]
+            Thread::launch ([p, in = f->second, out, start, name, about, layer, bend, tag]
             {
                 if (! padToSongStart (in, out, start, bend)) return;
-                MessageManager::callAsync ([p, out, name, about, layer]
+                MessageManager::callAsync ([p, out, name, about, layer, token = tag.size() > 3 ? tag[3] : String()]
                 {
                     p->songJob.addSungVocal (out, name, about, ! layer, layer ? "AI layer" : "drawn and sung", ! layer);
+                    if (token.isNotEmpty()) p->drawnFiles[token] = out; // (Draw & sing plays your voice live from it)
                 });
             });
         }

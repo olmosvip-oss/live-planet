@@ -158,11 +158,23 @@ public:
     std::atomic<bool> guideOn { false };
     void auditionNote (int pitch) { auditionPitch = pitch; ++auditionSerial; }
     // a version playing along with the song: 48 kHz, starting at bar 1 (null = none)
-    void setVoicePreview (std::shared_ptr<juce::AudioBuffer<float>> b)
+    // (offset: where in the song, in 48 kHz samples, the buffer starts: 0 = bar 1)
+    void setVoicePreview (std::shared_ptr<juce::AudioBuffer<float>> b, juce::int64 offset = 0)
     {
         std::shared_ptr<juce::AudioBuffer<float>> old;
-        { const juce::SpinLock::ScopedLockType sl (voicePreviewLock); old = std::move (voicePreview); voicePreview = std::move (b); }
+        { const juce::SpinLock::ScopedLockType sl (voicePreviewLock); old = std::move (voicePreview); voicePreview = std::move (b); voicePreviewOffset = offset; }
     }
+    juce::int64 voicePreviewOffset = 0;
+    std::map<juce::String, juce::File> drawnFiles; // (message thread) Draw & sing's sung takes, by token, once they're in the song
+    // a short sound played once, straight away (Draw & sing: the note you're moving, in your voice); null = the tone
+    void auditionBuffer (std::shared_ptr<juce::AudioBuffer<float>> b)
+    {
+        std::shared_ptr<juce::AudioBuffer<float>> old;
+        { const juce::SpinLock::ScopedLockType sl (voicePreviewLock); old = std::move (auditionBuf); auditionBuf = std::move (b); auditionBufPos = 0; auditionBufDone = false; }
+    }
+    std::shared_ptr<juce::AudioBuffer<float>> auditionBuf;
+    int auditionBufPos = 0;
+    bool auditionBufDone = false;
     bool hasVoicePreview() const { const juce::SpinLock::ScopedLockType sl (voicePreviewLock); return voicePreview != nullptr; }
     juce::SpinLock voicePreviewLock;
     std::shared_ptr<juce::AudioBuffer<float>> voicePreview;

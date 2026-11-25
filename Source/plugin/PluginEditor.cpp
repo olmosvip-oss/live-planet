@@ -2167,7 +2167,7 @@ void LivePlanetEditor::setPage (int p)
     vocalTabs.setVisible (p == Voice && voiceOn());
     vocalsHub.setVisible (p == Voice && vocalTab == 0);
     drawSing.setVisible (p == Voice && vocalTab == 1);
-    if (! (p == Voice && vocalTab == 1)) proc.guideOn = false; // (the drawn notes' guide tone: only while you're drawing)
+    if (! (p == Voice && vocalTab == 1)) drawSing.leave(); // (the guide tone and your live voice: only while you're drawing)
     voicePage.setVisible (p == Voice && vocalTab == 2);
     voicePage.shown (p == Voice && vocalTab == 2);
     studioKey.setVisible (studio);

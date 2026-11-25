@@ -249,6 +249,26 @@ void LivePlanetProcessor::playGuide (float* L, float* R, int n, double songPos, 
 void LivePlanetProcessor::playAudition (float* L, float* R, int n)
 {
     const double sr = getSampleRate() > 0 ? getSampleRate() : 48000.0;
+    {
+        // the note in your voice (48 kHz), when there is one
+        const juce::SpinLock::ScopedTryLockType sl (voicePreviewLock);
+        if (sl.isLocked() && auditionBuf != nullptr && ! auditionBufDone)
+        {
+            const auto& b = *auditionBuf;
+            const double step = StudioPlayer::fileRate / sr;
+            for (int i = 0; i < n; ++i)
+            {
+                const int k = (int) (auditionBufPos * step);
+                if (k + 1 >= b.getNumSamples()) break;
+                L[i] += b.getSample (0, k);
+                R[i] += b.getSample (std::min (1, b.getNumChannels() - 1), k);
+                ++auditionBufPos;
+            }
+            if ((int) (auditionBufPos * step) + 1 >= b.getNumSamples()) auditionBufDone = true; // (played; freed by the next one, off this thread)
+            auditionSeen = auditionSerial.load();
+            return;
+        }
+    }
     if (const int s = auditionSerial.load(); s != auditionSeen)
     {
         auditionSeen = s;
@@ -490,7 +510,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                 const float* vr = vb.getReadPointer (std::min (1, vb.getNumChannels() - 1));
                 for (int i = 0; i < n; ++i)
                 {
-                    const double fp = pos + i * inc;
+                    const double fp = pos + i * inc - (double) voicePreviewOffset;
                     const int i0 = (int) fp;
                     if (i0 < 0 || i0 + 1 >= vn) continue;
                     const float fr = (float) (fp - i0);
