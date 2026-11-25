@@ -354,10 +354,11 @@ void LivePlanetLookAndFeel::drawButtonBackground (Graphics& g, Button& b, const 
     }
     if ((bool) b.getProperties().getWithDefault ("glass", false))
     {
-        // on glass: a clear pill with a fine light rim
-        g.setColour (Colours::white.withAlpha (down ? 0.04f : over ? 0.11f : 0.06f));
+        // on glass: a clear pill with a fine light rim (faint when it can't be used)
+        const float en = b.isEnabled() ? 1.0f : 0.35f;
+        g.setColour (Colours::white.withAlpha (en * (down ? 0.04f : over ? 0.11f : 0.06f)));
         g.fillRoundedRectangle (r, rad);
-        g.setColour (Colours::white.withAlpha (over ? 0.22f : 0.13f));
+        g.setColour (Colours::white.withAlpha (en * (over ? 0.22f : 0.13f)));
         g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
         return;
     }
@@ -399,7 +400,7 @@ void LivePlanetLookAndFeel::drawButtonText (Graphics& g, TextButton& b, bool, bo
         return;
     }
     g.setFont (font (primary ? 15.0f : 13.0f, lp::ui::Medium));
-    g.setColour (primary ? Colours::white : th->ink);
+    g.setColour ((primary ? Colours::white : th->ink).withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.35f));
     g.drawText (b.getButtonText(), b.getLocalBounds(), Justification::centred, false);
 }
 
