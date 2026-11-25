@@ -1504,3 +1504,28 @@ juce::File LivePlanetProcessor::renderSectionForVoice (int sectionIndex, int cou
     if (w == nullptr || ! w->writeFromAudioSampleBuffer (cut, 0, len)) return {};
     return f;
 }
+
+bool LivePlanetProcessor::saveGuideTake (const juce::File& dest, double skipSeconds, double seconds, juce::String& message)
+{
+    recording = false;
+    const int len = recPos.load();
+    const int a = juce::jlimit (0, len, (int) std::round (skipSeconds * recRate));
+    const int n = juce::jmin (len - a, (int) std::round (seconds * recRate));
+    if (n < (int) (recRate * 1.0)) { message = "too short: keep going to the end of the section"; return false; }
+    const float pk = std::max (recBuf.getMagnitude (0, a, n), recBuf.getMagnitude (1, a, n));
+    if (pk < 0.003f)
+    {
+        message = "no sound came in: Options > Audio settings, pick your mic and untick Mute audio input";
+        return false;
+    }
+    juce::AudioBuffer<float> take (2, n);
+    for (int ch = 0; ch < 2; ++ch) take.copyFrom (ch, 0, recBuf, ch, a, n);
+    take.applyGain (0.89f / pk);
+    take.applyGainRamp (0, juce::jmin (n, (int) (0.005 * recRate)), 0.0f, 1.0f);
+    dest.getParentDirectory().createDirectory();
+    dest.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (dest), recRate, 2, 24, {}, 0));
+    if (w == nullptr || ! w->writeFromAudioSampleBuffer (take, 0, n)) { message = "couldn't save your take"; return false; }
+    return true;
+}

@@ -111,6 +111,45 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
     addAndMakeVisible (addVoice);
     addAndMakeVisible (takes);
     addAndMakeVisible (versions);
+    who.setTooltip ("AI sings it: the voice helper writes a melody for your words. I sing it: you rap or sing the lines over the section "
+                    "(rough is fine), and it keeps your exact words and timing, then cleans, tunes and turns it into the voice.");
+    addAndMakeVisible (who);
+    for (auto* b : { &recordTake, &useTake, &hearTake }) { b->setWantsKeyboardFocus (false); addChildComponent (*b); }
+    recordTake.setTooltip ("Plays the section with a one-bar count-in and records your mic until it ends (in the Loopwright app; in a DAW, record there and drop it here)");
+    useTake.setTooltip ("A recording of you over this section: from its first bar, or a bounce from bar 1 (it's cut to the section). You can also drop it on this page.");
+    recordTake.onClick = [this] { if (takeRecording) finishTakeRecording(); else startTakeRecording(); };
+    useTake.onClick = [this]
+    {
+        chooser = std::make_unique<FileChooser> ("Your take over the section (WAV or AIFF)", File(), "*.wav;*.aif;*.aiff;*.flac");
+        chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+        {
+            if (fc.getResult().existsAsFile()) useTakeFile (fc.getResult());
+        });
+    };
+    hearTake.onClick = [this]
+    {
+        // your take with the song, from its section
+        if (hearTake.getButtonText() == "stop") { proc.setVoicePreview (nullptr); proc.previewPlaying = false; hearTake.setButtonText ("hear it"); return; }
+        const int c = section.getSelectedItemIndex();
+        if (! takeFile.existsAsFile() || c < 0 || c >= (int) sectionInfo.size()) return;
+        AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<AudioFormatReader> rd (fm.createReaderFor (takeFile));
+        if (rd == nullptr || rd->sampleRate <= 0) return;
+        const double start = sectionInfo[(size_t) c].start, ratio = rd->sampleRate / StudioPlayer::fileRate;
+        const int len = (int) jmin<int64> (rd->lengthInSamples, (int64) (rd->sampleRate * 70.0)), pad = (int) (start * StudioPlayer::fileRate), outLen = (int) (len / ratio);
+        AudioBuffer<float> raw (2, len);
+        raw.clear();
+        rd->read (&raw, 0, len, 0, true, rd->numChannels > 1);
+        if (rd->numChannels == 1) raw.copyFrom (1, 0, raw, 0, 0, len);
+        auto buf = std::make_shared<AudioBuffer<float>> (2, pad + outLen);
+        buf->clear();
+        for (int ch = 0; ch < 2; ++ch) { LagrangeInterpolator li; li.process (ratio, raw.getReadPointer (ch), buf->getWritePointer (ch, pad), outLen); }
+        proc.setVoicePreview (buf);
+        proc.previewPos = jmax (0.0, start - 0.5) * StudioPlayer::fileRate;
+        proc.previewPlaying = true;
+        hearTake.setButtonText ("stop");
+    };
     auto knob = [this] (Slider& s, const char* name, double lo, double hi, double v, std::function<String (double)> text)
     {
         s.setName (name);
@@ -181,18 +220,34 @@ void VoicePage::saveJobs()
     voiceFolder().getChildFile ("jobs.json").replaceWithText (JSON::toString (var (o)));
 }
 
+// the singing model goes by the style most of all: if it says nothing about a voice, it may well hum or sing no
+// words. So a style that doesn't is given one ("rap vocals" for hip hop, rap, trap or drill; else "lead vocals").
+String VoicePage::withVoiceWords (const String& styleText)
+{
+    auto st = styleText.trim();
+    const auto low = st.toLowerCase();
+    bool voiceWords = false;
+    for (auto* w : { "vocal", "voice", "vox", "sing", "sung", "rapper", "rapping", "choir", "falsetto", "tenor", "baritone", "soprano", "alto" })
+        voiceWords = voiceWords || low.contains (w);
+    if (voiceWords) return st;
+    const bool rap = low.contains ("hip hop") || low.contains ("hip-hop") || low.contains ("hiphop") || low.contains ("rap")
+                  || low.contains ("trap") || low.contains ("drill") || low.contains ("grime");
+    return (st.isNotEmpty() ? st + ", " : String()) + (rap ? "rap vocals, clear lyrics" : "lead vocals, clear lyrics");
+}
+
 void VoicePage::startCreate()
 {
     const int choice = section.getSelectedItemIndex();
     if (choice < 0 || choice >= (int) sectionInfo.size()) return;
     lp::voice::Client::Request r;
     r.lyrics = lyrics.getText();
-    r.style = style.getText();
+    r.style = withVoiceWords (style.getText());
     r.voice = voice.getText();
     r.key = songKeyName;
     r.bpm = songBpmValue;
     r.takes = takesN;
     r.results = versionsN;
+    if (whoSings == 1) { r.guide = takeFile; r.takes = 1; r.results = 1; }
     r.tune = (float) tuning.getValue();
     r.runs = roundToInt (runs.getValue());
     r.clean = clean.getToggleState();
@@ -358,11 +413,22 @@ double VoicePage::chosenSeconds() const
 void VoicePage::refreshButtons()
 {
     const bool working = snap.connected && ! snap.jobs.empty() && snap.jobs.front().live(); // (no helper: nothing is running)
-    const bool ready = snap.connected && consent.getToggleState() && ! working && ! snap.sending && lyrics.getText().trim().isNotEmpty()
+    const bool mine = whoSings == 1;
+    const bool haveTake = takeFile.existsAsFile() && takeChoice == section.getSelectedItemIndex() && ! takeRecording;
+    const bool ready = snap.connected && consent.getToggleState() && ! working && ! snap.sending
                     && voice.getText().isNotEmpty() && section.getNumItems() > 0
-                    && (demo || chosenSeconds() >= lyricLines() * 2.0 * barSeconds() - 0.05); // (under 2 bars a line, words come out mumbled)
+                    && (mine ? haveTake // (your own take: the words are yours, however many)
+                             : lyrics.getText().trim().isNotEmpty()
+                               && (demo || chosenSeconds() >= lyricLines() * 2.0 * barSeconds() - 0.05)); // (under 2 bars a line, words come out mumbled)
+    takes.setVisible (! mine);
+    versions.setVisible (! mine);
+    recordTake.setVisible (mine);
+    useTake.setVisible (mine);
+    hearTake.setVisible (mine && haveTake);
+    recordTake.setEnabled (proc.canRecordMic());
+    recordTake.setButtonText (takeRecording ? "Stop" : proc.canRecordMic() ? "Record my take" : "Record (in the app)");
     create.setEnabled (ready);
-    create.setButtonText (snap.sending ? "Sending your section..." : "Create vocal");
+    create.setButtonText (snap.sending ? "Sending your section..." : mine ? "Create from my take" : "Create vocal");
     if (stop.isVisible() != working) { stop.setVisible (working); resized(); }
     for (auto* r : rows)
     {
@@ -402,6 +468,12 @@ void VoicePage::setSong (const juce::StringArray& sectionNames, int pick, const 
 void VoicePage::timerCallback()
 {
     phase += 1.0f / 30.0f;
+    if (takeRecording)
+    {
+        const double now = proc.playheadPos.load() / StudioPlayer::fileRate;
+        if (now >= takeStopAt || ! proc.previewPlaying.load()) finishTakeRecording();
+        else repaint (setupCard().toNearestInt());
+    }
     // only the moving parts are drawn again
     repaint (progressCard().toNearestInt());
 }
@@ -416,6 +488,7 @@ void VoicePage::resized()
     // ---- words
     {
         auto c = lyricsCard().reduced (18.0f, 16.0f).toNearestInt();
+        who.setBounds (c.getRight() - 220, c.getY() - 4, 220, 26);
         c.removeFromTop (24);
         auto chips = c.removeFromBottom (30);
         c.removeFromBottom (30); // (how many lines, and how long a section suits them)
@@ -449,6 +522,15 @@ void VoicePage::resized()
         c.removeFromTop (30); // key / tempo / length, written in
         auto r3 = c.removeFromTop (92);
         auto segs = r3.removeFromLeft (r3.getWidth() / 2);
+        {
+            // (I sing it: your take instead of takes and versions)
+            auto t = segs;
+            auto row = t.removeFromTop (30);
+            recordTake.setBounds (row.removeFromLeft (row.getWidth() / 2 - 3));
+            row.removeFromLeft (6);
+            useTake.setBounds (row);
+            hearTake.setBounds (t.withTrimmedTop (12).removeFromTop (30).removeFromRight (70));
+        }
         takes.setBounds (segs.removeFromTop (30).withTrimmedLeft (70));
         segs.removeFromTop (12);
         versions.setBounds (segs.removeFromTop (30).withTrimmedLeft (70));
@@ -529,13 +611,14 @@ void VoicePage::paint (Graphics& g)
         // pace (fine, just said); 4 or more suits sung lines
         const double bar = barSeconds();
         const double perLine = n > 0 && bar > 0.0 ? have / bar / n : 99.0;
-        const bool tooMany = n > 0 && have > 0.0 && ! demo && perLine < 2.0 - 0.01;
-        const bool quick = ! tooMany && n > 0 && have > 0.0 && ! demo && perLine < 4.0 - 0.01;
+        const bool tooMany = whoSings == 0 && n > 0 && have > 0.0 && ! demo && perLine < 2.0 - 0.01;
+        const bool quick = whoSings == 0 && ! tooMany && n > 0 && have > 0.0 && ! demo && perLine < 4.0 - 0.01;
         g.setFont (font (12.5f, tooMany ? lp::ui::Medium : lp::ui::Light));
         g.setColour (tooMany ? Colour (0xffff8f8f) : quick ? Colour (0xfff2c14e) : t.inkDim);
         const int fits = jmax (1, (int) (have / (2.0 * bar)));
         const int bars = roundToInt (have / jmax (0.01, bar));
-        const auto fit = n == 0 ? String ("Type your words: one line per phrase (about 2 bars each for rap, 4 for singing).")
+        const auto fit = whoSings == 1 ? String ("Your words (optional): only used to check how many of them come through")
+                       : n == 0 ? String ("Type your words: one line per phrase (about 2 bars each for rap, 4 for singing).")
                        : tooMany ? String (n) + " lines need at least " + String (n * 2) + " bars; this part is " + String (bars)
                                    + ". Keep " + String (fits) + (fits == 1 ? " line" : " lines") + " or pick a longer part"
                        : quick ? String (n) + " lines in " + String (bars) + " bars: rap pace. For slow sung lines, pick a longer part"
@@ -570,8 +653,30 @@ void VoicePage::paint (Graphics& g)
                     facts, Justification::centredLeft, true);
         g.setFont (lp::ui::mono (9.0f, false, 0.12f));
         auto segs = in.removeFromTop (92.0f);
-        g.drawText ("TAKES", segs.withHeight (30.0f), Justification::centredLeft, false);
-        g.drawText ("VERSIONS", segs.withY (segs.getY() + 42.0f).withHeight (30.0f), Justification::centredLeft, false);
+        if (whoSings == 0)
+        {
+            g.drawText ("TAKES", segs.withHeight (30.0f), Justification::centredLeft, false);
+            g.drawText ("VERSIONS", segs.withY (segs.getY() + 42.0f).withHeight (30.0f), Justification::centredLeft, false);
+        }
+        else
+        {
+            // your take: how it's going, or what you have
+            auto line = segs.withTrimmedTop (42.0f).withHeight (30.0f).withWidth (segs.getWidth() / 2.0f - 76.0f);
+            String txt;
+            Colour col = t.inkDim;
+            if (takeRecording)
+            {
+                const double now = proc.playheadPos.load() / StudioPlayer::fileRate;
+                const double start = takeFrom + barSeconds();
+                txt = now < start ? "COUNT-IN..." : String::fromUTF8 ("\xe2\x97\x8f  RECORDING ") + String (roundToInt (now - start)) + " / " + String (roundToInt (takeStopAt - start)) + " s";
+                col = Colour (0xffff5a6e);
+            }
+            else if (takeMessage.isNotEmpty()) { txt = takeMessage; col = takeMessage.startsWith ("Your take") ? t.ink : Colour (0xffff8f8f); }
+            else txt = proc.canRecordMic() ? "Rap or sing the lines over the section" : "Record in your DAW from the section's first bar, then drop it here";
+            g.setFont (font (11.5f, takeRecording ? lp::ui::Medium : lp::ui::Light));
+            g.setColour (col);
+            g.drawFittedText (txt, line.toNearestInt(), Justification::centredLeft, 2, 1.0f);
+        }
     }
     // ---- what's happening
     {
@@ -645,7 +750,7 @@ void VoicePage::paint (Graphics& g)
             const int k = shown[s];
             // (our own short names for the helper's stages; its own words for any we don't know)
             const auto& key = snap.stages[(size_t) k].first;
-            const String text = key == "sing" ? "Melody" : key == "score" ? "Words & key" : key == "clean" ? "Clean up"
+            const String text = key == "sing" ? (j != nullptr && j->guide ? "Your take" : "Melody") : key == "score" ? "Words & key" : key == "clean" ? "Clean up"
                               : key == "voice" ? "Your voice" : key == "mix" ? "Mix" : snap.stages[(size_t) k].second;
             auto cell = Rectangle<float> (steps.getX() + (float) s * sw, steps.getY(), sw, steps.getHeight());
             const bool done = j != nullptr && (j->state == "done" || (at >= 0 && k < at));
@@ -749,7 +854,109 @@ void VoicePage::ResultRow::paint (Graphics& g)
     g.setColour (t.ink);
     g.drawText ("Version " + String (res.n), in.removeFromTop (17.0f), Justification::centredLeft, false);
     auto m = in.removeFromTop (17.0f);
+    if (res.words == 0 && res.key == 0 && res.heard.isEmpty())
+    {
+        // (your own take with no lyrics typed: nothing to check it against)
+        g.setFont (lp::ui::mono (9.0f, false, 0.12f));
+        g.setColour (t.inkDim);
+        g.drawText ("YOUR TAKE, AS YOU SANG IT", m, Justification::centredLeft, false);
+        return;
+    }
     meter (g, m.removeFromLeft (m.getWidth() / 2 - 6.0f), "WORDS", res.words, t);
     m.removeFromLeft (12.0f);
     meter (g, m, "IN KEY", res.key, t);
+}
+
+// ---- "I sing it": your take over the section
+
+void VoicePage::startTakeRecording()
+{
+    const int c = section.getSelectedItemIndex();
+    if (c < 0 || c >= (int) sectionInfo.size() || ! proc.canRecordMic()) return;
+    const auto& sc = sectionInfo[(size_t) c];
+    // a bar of count-in, then the section, recorded from your mic until it ends
+    takeFrom = jmax (0.0, sc.start - barSeconds());
+    takeStopAt = sc.start + sc.secs;
+    takeChoice = c;
+    takeMessage = {};
+    proc.setVoicePreview (nullptr);
+    proc.previewPos = takeFrom * StudioPlayer::fileRate;
+    proc.startRecording();
+    proc.previewPlaying = true;
+    takeRecording = true;
+    refreshButtons();
+    repaint();
+}
+
+void VoicePage::finishTakeRecording()
+{
+    takeRecording = false;
+    proc.previewPlaying = false;
+    const int c = takeChoice;
+    if (c < 0 || c >= (int) sectionInfo.size()) { proc.recording = false; return; }
+    const auto& sc = sectionInfo[(size_t) c];
+    const auto dest = voiceFolder().getChildFile ("takes").getChildFile ("take " + Time::getCurrentTime().formatted ("%Y-%m-%d %H.%M.%S") + ".wav");
+    String msg;
+    if (proc.saveGuideTake (dest, sc.start - takeFrom, sc.secs, msg))
+    {
+        takeFile = dest;
+        takeSecs = sc.secs;
+        takeMessage = "Your take: " + String (roundToInt (sc.secs)) + " s over " + sc.name;
+    }
+    else takeMessage = msg;
+    refreshButtons();
+    repaint();
+}
+
+// a recording you made elsewhere (your DAW): cut to the section. One that starts at bar 1 (a bounce of the whole
+// song) is cut from the section's start; anything shorter is taken from its start.
+void VoicePage::useTakeFile (const File& f)
+{
+    const int c = section.getSelectedItemIndex();
+    if (c < 0 || c >= (int) sectionInfo.size()) return;
+    const auto& sc = sectionInfo[(size_t) c];
+    AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<AudioFormatReader> rd (fm.createReaderFor (f));
+    if (rd == nullptr || rd->sampleRate <= 0) { takeMessage = "That file can't be read: use a WAV or AIFF"; repaint(); return; }
+    const double dur = (double) rd->lengthInSamples / rd->sampleRate;
+    const double from = dur >= sc.start + sc.secs - 0.5 && sc.start > 0.5 ? sc.start : 0.0;
+    const int a = (int) (from * rd->sampleRate), n = (int) jmin<int64> (rd->lengthInSamples - a, (int64) (sc.secs * rd->sampleRate));
+    if (n < (int) rd->sampleRate) { takeMessage = "That recording is too short for this section"; repaint(); return; }
+    AudioBuffer<float> b (2, n);
+    b.clear();
+    rd->read (&b, 0, n, a, true, rd->numChannels > 1);
+    if (rd->numChannels == 1) b.copyFrom (1, 0, b, 0, 0, n);
+    const float pk = jmax (b.getMagnitude (0, 0, n), b.getMagnitude (1, 0, n));
+    if (pk < 0.003f) { takeMessage = "That recording is silent in this section"; repaint(); return; }
+    b.applyGain (0.89f / pk);
+    const auto dest = voiceFolder().getChildFile ("takes").getChildFile (f.getFileNameWithoutExtension().substring (0, 40) + " (" + sc.name + ").wav");
+    dest.getParentDirectory().createDirectory();
+    dest.deleteFile();
+    WavAudioFormat wav;
+    std::unique_ptr<AudioFormatWriter> w (wav.createWriterFor (new FileOutputStream (dest), rd->sampleRate, 2, 24, {}, 0));
+    if (w == nullptr || ! w->writeFromAudioSampleBuffer (b, 0, n)) { takeMessage = "Couldn't save your take"; repaint(); return; }
+    w.reset();
+    takeFile = dest;
+    takeSecs = n / rd->sampleRate;
+    takeChoice = c;
+    takeMessage = "Your take: " + String (roundToInt (takeSecs)) + " s over " + sc.name + (from > 0.0 ? " (cut from the full song)" : "");
+    whoSings = 1;
+    refreshButtons();
+    resized();
+    repaint();
+}
+
+bool VoicePage::isInterestedInFileDrag (const StringArray& files)
+{
+    for (auto& f : files)
+        for (auto* ext : { ".wav", ".aif", ".aiff", ".flac" })
+            if (f.endsWithIgnoreCase (ext)) return true;
+    return false;
+}
+
+void VoicePage::filesDropped (const StringArray& files, int, int)
+{
+    for (auto& f : files)
+        if (isInterestedInFileDrag (StringArray (f))) { useTakeFile (File (f)); return; }
 }

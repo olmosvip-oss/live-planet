@@ -775,9 +775,11 @@ private:
 
 // VOICE (experimental): lyrics and a style, sung over a part of your song by the local voice helper,
 // with every stage shown live and the versions to hear and drag out (VoicePage.cpp)
-class VoicePage : public juce::Component, private juce::Timer
+class VoicePage : public juce::Component, public juce::FileDragAndDropTarget, private juce::Timer
 {
 public:
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void filesDropped (const juce::StringArray& files, int, int) override;
     VoicePage (LivePlanetProcessor&, const lp::ui::Theme*& theme);
     ~VoicePage() override;
     void paint (juce::Graphics&) override;
@@ -834,7 +836,21 @@ private:
     juce::OwnedArray<juce::TextButton> tagChips, styleChips;
     juce::ComboBox section, voice;
     juce::TextButton addVoice { "add" }, create { "Create vocal" }, stop { "Stop" };
-    int takesN = 4, versionsN = 2;
+    int takesN = 6, versionsN = 2;
+    // "Sing it yourself": who sings the melody (0: the AI writes it; 1: you, from your own take)
+    int whoSings = 0;
+    Segmented who { { "AI sings it", "I sing it" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; resized(); refreshButtons(); repaint(); }, th };
+    juce::TextButton recordTake { "Record my take" }, useTake { "Use a recording..." }, hearTake { "hear it" };
+    juce::File takeFile;          // your take, cut to the section
+    double takeSecs = 0.0;
+    bool takeRecording = false;
+    double takeFrom = 0.0, takeStopAt = 0.0; // (song seconds: the count-in bar, and the section's end)
+    int takeChoice = -1;          // the section choice it was made for
+    juce::String takeMessage;
+    void startTakeRecording();
+    void finishTakeRecording();
+    void useTakeFile (const juce::File&);
+    static juce::String withVoiceWords (const juce::String& style);
     Segmented takes { { "2", "4", "6", "8" }, [this] { return takesN / 2 - 1; }, [this] (int i) { takesN = (i + 1) * 2; repaint(); }, th },
               versions { { "1", "2", "3" }, [this] { return versionsN - 1; }, [this] (int i) { versionsN = i + 1; repaint(); }, th };
     juce::Slider tuning, runs;

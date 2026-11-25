@@ -28,13 +28,27 @@ The plugin only connects to 127.0.0.1, sends the token as `X-Token` on every POS
    song, and what "add as track" adds (a vocal track with its Vocal chain and Auto-tune).
 4. `<song>/voice/jobs.json` remembers where each job's section starts.
 
+## "I sing it" (your own take)
+The switch at the top of the Lyrics card. Instead of the AI writing a melody, you rap or sing the lines over the
+section (in the Loopwright app: Record my take, with a one-bar count-in; in a DAW: record there from the section's
+first bar, or bounce from bar 1, and drop the file on the page). It keeps your exact words and timing; the helper
+cleans, tunes and turns it into the chosen voice. Lyrics are optional (only used to check the words).
+
+This needs the helper to accept a take: `POST /api/upload?kind=guide&name=...` (the WAV), then `POST /api/create`
+with `"guide": "<name it returned>"`. It then skips writing a melody (and scores the take only if there are lyrics),
+and does the same clean, voice and mix with one version. Jobs made this way have `opts.guide` set.
+
+## Style words
+The singing model goes by the style most of all. A style that names no voice is sent with one added:
+"rap vocals, clear lyrics" for hip hop, rap, trap, drill or grime; otherwise "lead vocals, clear lyrics".
+
 ## Testing without the real helper
 `tools/fake_voice_helper.py` answers the same API: each stage takes a moment and the "vocal" is a tone in the key.
 
     python3 tools/fake_voice_helper.py --dir /tmp/fake-voice --conn /tmp/fake-voice/voice-helper.json --stage-seconds 2
     LP_VOICE=1 LP_VOICE_HELPER_FILE=/tmp/fake-voice/voice-helper.json <Loopwright app>
 
-`--fail` makes every job end in an error. Kill it mid-job to check the page copes with the helper going away.
+It also takes a guide (your take) like the real one. `--fail` makes every job end in an error. Kill it mid-job to check the page copes with the helper going away.
 
 ## Not done (before customers)
 Everything in the helper brief's "Before customers get it" list: a signed helper installer and model downloads,

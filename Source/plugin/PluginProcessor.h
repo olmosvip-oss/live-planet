@@ -140,6 +140,8 @@ public:
     lp::voice::Client voiceClient;
     // the song's section (all tracks as you hear them) as a WAV for the helper to sing over (background thread)
     juce::File renderSectionForVoice (int sectionIndex, int count = 1);
+    // your take from the mic (Voice > I sing it): `skipSeconds` in (the count-in), `seconds` long, at a good level
+    bool saveGuideTake (const juce::File& dest, double skipSeconds, double seconds, juce::String& message);
     // a version playing along with the song: 48 kHz, starting at bar 1 (null = none)
     void setVoicePreview (std::shared_ptr<juce::AudioBuffer<float>> b)
     {

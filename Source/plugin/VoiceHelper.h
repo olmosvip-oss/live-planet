@@ -22,6 +22,7 @@ struct Job
     juce::String id, state, stage, note, title, error;
     double created = 0.0;
     bool clean = true;
+    bool guide = false;              // sung from your own take (no melody written)
     std::vector<Result> results;
     bool live() const { return state == "queued" || state == "running"; }
 };
@@ -83,6 +84,7 @@ public:
         bool clean = true, consent = false;
         std::function<juce::File()> renderTrack; // makes the song section's WAV (called on the background thread)
         juce::String tag; // remembered with the job it starts (where its section is in the song)
+        juce::File guide; // "Sing it yourself": your take over the section (sent instead of a melody being written)
     };
     void create (Request r) { push ({ Cmd::Create, std::move (r), {}, {}, 0, {} }); }
     void cancel (const juce::String& id) { if (validJobId (id)) push ({ Cmd::Cancel, {}, id, {}, 0, {} }); }
@@ -204,6 +206,7 @@ private:
                 j.error = jv["error"].toString().substring (0, 400);
                 j.created = (double) jv["created"];
                 j.clean = jv["opts"].isObject() ? (bool) jv["opts"].getProperty ("clean", true) : true;
+                j.guide = jv["opts"].isObject() && jv["opts"].getProperty ("guide", "").toString().isNotEmpty();
                 if (auto* rs = jv["results"].getArray())
                     for (auto& rv : *rs)
                     {
@@ -286,8 +289,15 @@ private:
             const auto wav = c.req.renderTrack ? c.req.renderTrack() : juce::File();
             juce::String err;
             const auto track = wav.existsAsFile() ? upload (wav, "track", err) : juce::String();
+            if (track.isEmpty()) { setSending (false); say (err.isNotEmpty() ? err : juce::String ("Couldn't record the song section"), true); return; }
+            juce::String guide;
+            if (c.req.guide != juce::File())
+            {
+                say ("Sending your take...", false);
+                guide = upload (c.req.guide, "guide", err);
+                if (guide.isEmpty()) { setSending (false); say (err.isNotEmpty() ? err : juce::String ("Couldn't send your take"), true); return; }
+            }
             setSending (false);
-            if (track.isEmpty()) { say (err.isNotEmpty() ? err : juce::String ("Couldn't record the song section"), true); return; }
             juce::var body (new juce::DynamicObject());
             auto* o = body.getDynamicObject();
             o->setProperty ("lyrics", c.req.lyrics.substring (0, 4000));
@@ -302,6 +312,7 @@ private:
             o->setProperty ("runs", juce::jlimit (0, 8, c.req.runs));
             o->setProperty ("clean", c.req.clean);
             o->setProperty ("consent", c.req.consent);
+            if (guide.isNotEmpty()) o->setProperty ("guide", guide);
             const auto v = callJson ("/api/create", &body, code);
             say (code == 200 ? juce::String ("Started") : errorOf (v, code), code != 200);
             if (code == 200)
