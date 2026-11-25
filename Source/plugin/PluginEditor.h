@@ -826,6 +826,7 @@ private:
     std::vector<SectionChoice> sectionInfo; // what each choice in the list is (one section, or two or three in a row)
     int lyricLines() const;                  // sung lines (tags like [Chorus] don't count)
     double chosenSeconds() const;
+    double barSeconds() const;               // one bar of the song, in seconds
     std::map<juce::String, std::pair<double, juce::String>> jobStarts; // job id -> (its section's start, its name)
     std::set<juce::String> asked;   // versions asked for already
     float phase = 0.0f;

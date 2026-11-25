@@ -348,6 +348,7 @@ int VoicePage::lyricLines() const
     for (auto& l : lines) if (l.trim().isNotEmpty() && ! l.trim().startsWith ("[")) ++n;
     return n;
 }
+double VoicePage::barSeconds() const { return 240.0 / jmax (40.0, songBpmValue); }
 double VoicePage::chosenSeconds() const
 {
     const int c = section.getSelectedItemIndex();
@@ -359,7 +360,7 @@ void VoicePage::refreshButtons()
     const bool working = snap.connected && ! snap.jobs.empty() && snap.jobs.front().live(); // (no helper: nothing is running)
     const bool ready = snap.connected && consent.getToggleState() && ! working && ! snap.sending && lyrics.getText().trim().isNotEmpty()
                     && voice.getText().isNotEmpty() && section.getNumItems() > 0
-                    && (demo || chosenSeconds() >= lyricLines() * 6.0); // (words crammed in come out mumbled)
+                    && (demo || chosenSeconds() >= lyricLines() * 2.0 * barSeconds() - 0.05); // (under 2 bars a line, words come out mumbled)
     create.setEnabled (ready);
     create.setButtonText (snap.sending ? "Sending your section..." : "Create vocal");
     if (stop.isVisible() != working) { stop.setVisible (working); resized(); }
@@ -524,16 +525,21 @@ void VoicePage::paint (Graphics& g)
         label (g, "LYRICS", in.removeFromTop (18.0f), t);
         const int n = lyricLines();
         const double have = chosenSeconds();
-        // too many words for the part of the song: they'd be crammed in and come out mumbled
-        const bool tooMany = n > 0 && have > 0.0 && ! demo && have < n * 6.0;
+        // how many bars each line gets: under 2 they'd be crammed in and come out mumbled (blocked); 2 to 4 is rap
+        // pace (fine, just said); 4 or more suits sung lines
+        const double bar = barSeconds();
+        const double perLine = n > 0 && bar > 0.0 ? have / bar / n : 99.0;
+        const bool tooMany = n > 0 && have > 0.0 && ! demo && perLine < 2.0 - 0.01;
+        const bool quick = ! tooMany && n > 0 && have > 0.0 && ! demo && perLine < 4.0 - 0.01;
         g.setFont (font (12.5f, tooMany ? lp::ui::Medium : lp::ui::Light));
-        g.setColour (tooMany ? Colour (0xffff8f8f) : t.inkDim);
-        const int fits = jmax (1, (int) (have / 7.0));
-        const auto fit = n == 0 ? String ("Type your words: one sung phrase per line.")
-                       : tooMany ? String (n) + " lines need about " + String (n * 7) + " s; this part is " + String (roundToInt (have))
-                                   + " s. Keep " + String (fits) + (fits == 1 ? " line" : " lines") + " or pick a longer part"
-                       : String (n) + (n == 1 ? " line" : " lines") + String::fromUTF8 (" \xc2\xb7 about ") + String (n * 7)
-                         + " seconds of song suits them, so no word is rushed or repeated";
+        g.setColour (tooMany ? Colour (0xffff8f8f) : quick ? Colour (0xfff2c14e) : t.inkDim);
+        const int fits = jmax (1, (int) (have / (2.0 * bar)));
+        const int bars = roundToInt (have / jmax (0.01, bar));
+        const auto fit = n == 0 ? String ("Type your words: one line per phrase (about 2 bars each for rap, 4 for singing).")
+                       : tooMany ? String (n) + " lines need at least " + String (n * 2) + " bars; this part is " + String (bars)
+                                   + ". Keep " + String (fits) + (fits == 1 ? " line" : " lines") + " or pick a longer part"
+                       : quick ? String (n) + " lines in " + String (bars) + " bars: rap pace. For slow sung lines, pick a longer part"
+                       : String (n) + (n == 1 ? " line" : " lines") + " in " + String (bars) + " bars: room for every word";
         g.drawText (fit, in.withTrimmedBottom (30.0f).removeFromBottom (24.0f), Justification::centredLeft, true);
     }
     // ---- style
