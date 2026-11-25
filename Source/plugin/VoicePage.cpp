@@ -170,7 +170,9 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
         b->setWantsKeyboardFocus (false);
         addAndMakeVisible (*b);
     }
-    clean.setToggleState (true, dontSendNotification);
+    // (an AI take comes out clean already: noise removal is for your own recordings, and it costs minutes)
+    clean.setToggleState (false, dontSendNotification);
+    clean.onClick = [this] { refreshButtons(); };
     consent.onClick = [this] { refreshButtons(); };
     create.getProperties().set ("primary", true);
     create.setWantsKeyboardFocus (false);
@@ -410,6 +412,18 @@ double VoicePage::chosenSeconds() const
     return c >= 0 && c < (int) sectionInfo.size() ? sectionInfo[(size_t) c].secs : 0.0;
 }
 
+// from the helper's own timings on an Apple Silicon Mac: a take ~45 s, checking words ~30 s, noise removal ~2 min
+// a version, the voice ~1.5x the length, loading the models ~40 s
+int VoicePage::minutesEstimate() const
+{
+    const double secs = chosenSeconds() > 0.0 ? chosenSeconds() : 20.0;
+    const bool mine = whoSings == 1;
+    const int versionsMade = mine ? 1 : versionsN;
+    double t = 40.0 + (mine ? (lyricLines() > 0 ? 30.0 : 0.0) : takesN * 45.0 + 30.0);
+    t += versionsMade * ((clean.getToggleState() ? 120.0 : 0.0) + secs * 1.5 + 35.0);
+    return jmax (1, (int) std::ceil (t / 60.0));
+}
+
 void VoicePage::refreshButtons()
 {
     const bool working = snap.connected && ! snap.jobs.empty() && snap.jobs.front().live(); // (no helper: nothing is running)
@@ -428,7 +442,8 @@ void VoicePage::refreshButtons()
     recordTake.setEnabled (proc.canRecordMic());
     recordTake.setButtonText (takeRecording ? "Stop" : proc.canRecordMic() ? "Record my take" : "Record (in the app)");
     create.setEnabled (ready);
-    create.setButtonText (snap.sending ? "Sending your section..." : mine ? "Create from my take" : "Create vocal");
+    create.setButtonText (snap.sending ? "Sending your section..."
+                          : (mine ? String ("Create from my take") : String ("Create vocal")) + String::fromUTF8 ("  \xc2\xb7  about ") + String (minutesEstimate()) + " min");
     if (stop.isVisible() != working) { stop.setVisible (working); resized(); }
     for (auto* r : rows)
     {
