@@ -1471,11 +1471,18 @@ void LivePlanetProcessor::addLibraryFolder (const juce::File& f)
 }
 
 // the song's section as you hear it (every track, with its mixer), for the voice helper to sing over
-juce::File LivePlanetProcessor::renderSectionForVoice (int sectionIndex)
+juce::File LivePlanetProcessor::renderSectionForVoice (int sectionIndex, int count)
 {
     const auto st = songJob.getStatus();
-    if (! st.haveSong || sectionIndex < 0 || sectionIndex >= (int) st.song.sections.size()) return {};
-    const auto& sec = st.song.sections[(size_t) sectionIndex];
+    if (! st.haveSong || sectionIndex < 0 || count < 1 || sectionIndex + count > (int) st.song.sections.size()) return {};
+    // (several sections in a row: one stretch, from the first's start to the last's end)
+    auto sec = st.song.sections[(size_t) sectionIndex];
+    for (int k = 1; k < count; ++k)
+    {
+        const auto& more = st.song.sections[(size_t) (sectionIndex + k)];
+        sec.bars = more.startBar + more.bars - sec.startBar;
+        sec.name += " + " + more.name;
+    }
     juce::Array<juce::File> stems;
     for (auto& t : st.tracks) stems.add (t.stem);
     const double barSamples = 4.0 * 60.0 / st.song.bpm * StudioPlayer::fileRate;

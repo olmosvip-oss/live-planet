@@ -788,7 +788,7 @@ public:
     void shown (bool isShown);      // keep up with the helper only while it shows (or while it sings)
 
 private:
-    struct ResultRow : public juce::Component
+    struct ResultRow : public juce::Component, public juce::SettableTooltipClient
     {
         ResultRow (LivePlanetProcessor&, const lp::ui::Theme*&);
         void set (const lp::voice::Result&, const juce::String& jobId);
@@ -822,7 +822,10 @@ private:
     juce::String songKey, songBpm, songKeyName;  // songKeyName: the minor key sent to the helper ("A")
     double songBpmValue = 120.0;
     juce::File songFolder;
-    std::vector<std::pair<int, double>> sectionInfo; // (section index, start seconds) for each choice
+    struct SectionChoice { int first = 0, count = 1; double start = 0.0, secs = 0.0; juce::String name; };
+    std::vector<SectionChoice> sectionInfo; // what each choice in the list is (one section, or two or three in a row)
+    int lyricLines() const;                  // sung lines (tags like [Chorus] don't count)
+    double chosenSeconds() const;
     std::map<juce::String, std::pair<double, juce::String>> jobStarts; // job id -> (its section's start, its name)
     std::set<juce::String> asked;   // versions asked for already
     float phase = 0.0f;

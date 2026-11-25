@@ -101,6 +101,7 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
         addAndMakeVisible (b);
     }
 
+    section.onChange = [this] { refreshButtons(); repaint(); };
     for (auto* c : { &section, &voice })
     {
         c->setWantsKeyboardFocus (false);
@@ -196,9 +197,9 @@ void VoicePage::startCreate()
     r.runs = roundToInt (runs.getValue());
     r.clean = clean.getToggleState();
     r.consent = consent.getToggleState();
-    const int secIndex = sectionInfo[(size_t) choice].first;
-    r.tag = String (sectionInfo[(size_t) choice].second, 3) + "|" + section.getText().upToFirstOccurrenceOf ("(", false, false).trim();
-    r.renderTrack = [&pr = proc, secIndex] { return pr.renderSectionForVoice (secIndex); };
+    const auto sc = sectionInfo[(size_t) choice];
+    r.tag = String (sc.start, 3) + "|" + sc.name;
+    r.renderTrack = [&pr = proc, sc] { return pr.renderSectionForVoice (sc.first, sc.count); };
     proc.voiceClient.create (std::move (r));
     create.setEnabled (false);
 }
@@ -222,18 +223,26 @@ void VoicePage::refresh()
         StringArray names;
         sectionInfo.clear();
         int pick = 0;
+        // each section, and two or three in a row (a verse and its chorus...), up to a minute: what the helper sings well
         if (st.haveSong)
-            for (int i = 0; i < (int) st.song.sections.size(); ++i)
-            {
-                const auto& sec = st.song.sections[(size_t) i];
-                const double secs = sec.bars * 240.0 / st.song.bpm, start = sec.startBar * 240.0 / st.song.bpm;
-                if (secs < 4.0 || secs > 60.0) continue; // (what the helper sings well)
-                String n (sec.name);
-                n = n.substring (0, 1).toUpperCase() + n.substring (1);
-                if (pick == 0 && n.startsWithIgnoreCase ("chorus")) pick = names.size();
-                names.add (n + "   (bars " + String (sec.startBar + 1) + " to " + String (sec.startBar + sec.bars) + ", " + String (roundToInt (secs)) + " s)");
-                sectionInfo.push_back ({ i, start });
-            }
+        {
+            auto cap = [] (String n) { return n.substring (0, 1).toUpperCase() + n.substring (1); };
+            const auto& secs = st.song.sections;
+            for (int count = 1; count <= 3; ++count)
+                for (int i = 0; i + count <= (int) secs.size(); ++i)
+                {
+                    const auto& a = secs[(size_t) i];
+                    const auto& b = secs[(size_t) (i + count - 1)];
+                    const int bars = b.startBar + b.bars - a.startBar;
+                    const double len = bars * 240.0 / st.song.bpm;
+                    if (len < 4.0 || len > 60.0) continue;
+                    String n = cap (String (a.name));
+                    for (int k = 1; k < count; ++k) n << " + " << cap (String (secs[(size_t) (i + k)].name));
+                    if (pick == 0 && count == 1 && n.startsWithIgnoreCase ("chorus")) pick = names.size();
+                    names.add (n + "   (bars " + String (a.startBar + 1) + " to " + String (a.startBar + bars) + ", " + String (roundToInt (len)) + " s)");
+                    sectionInfo.push_back ({ i, count, a.startBar * 240.0 / st.song.bpm, len, n });
+                }
+        }
         static const char* noteNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
         const int minorKey = st.song.minor ? st.song.key : (st.song.key + 9) % 12; // (a major song: its relative minor, the same notes)
         songKeyName = noteNames[((minorKey % 12) + 12) % 12];
@@ -331,11 +340,26 @@ void VoicePage::markStyles()
     }
 }
 
+int VoicePage::lyricLines() const
+{
+    StringArray lines;
+    lines.addLines (lyrics.getText());
+    int n = 0;
+    for (auto& l : lines) if (l.trim().isNotEmpty() && ! l.trim().startsWith ("[")) ++n;
+    return n;
+}
+double VoicePage::chosenSeconds() const
+{
+    const int c = section.getSelectedItemIndex();
+    return c >= 0 && c < (int) sectionInfo.size() ? sectionInfo[(size_t) c].secs : 0.0;
+}
+
 void VoicePage::refreshButtons()
 {
     const bool working = snap.connected && ! snap.jobs.empty() && snap.jobs.front().live(); // (no helper: nothing is running)
     const bool ready = snap.connected && consent.getToggleState() && ! working && ! snap.sending && lyrics.getText().trim().isNotEmpty()
-                    && voice.getText().isNotEmpty() && section.getNumItems() > 0;
+                    && voice.getText().isNotEmpty() && section.getNumItems() > 0
+                    && (demo || chosenSeconds() >= lyricLines() * 6.0); // (words crammed in come out mumbled)
     create.setEnabled (ready);
     create.setButtonText (snap.sending ? "Sending your section..." : "Create vocal");
     if (stop.isVisible() != working) { stop.setVisible (working); resized(); }
@@ -498,15 +522,18 @@ void VoicePage::paint (Graphics& g)
         card (g, r, t, true);
         auto in = r.reduced (18.0f, 16.0f);
         label (g, "LYRICS", in.removeFromTop (18.0f), t);
-        StringArray lines;
-        lines.addLines (lyrics.getText());
-        int n = 0;
-        for (auto& l : lines) if (l.trim().isNotEmpty() && ! l.trim().startsWith ("[")) ++n;
-        g.setFont (font (12.5f, lp::ui::Light));
-        g.setColour (t.inkDim);
+        const int n = lyricLines();
+        const double have = chosenSeconds();
+        // too many words for the part of the song: they'd be crammed in and come out mumbled
+        const bool tooMany = n > 0 && have > 0.0 && ! demo && have < n * 6.0;
+        g.setFont (font (12.5f, tooMany ? lp::ui::Medium : lp::ui::Light));
+        g.setColour (tooMany ? Colour (0xffff8f8f) : t.inkDim);
+        const int fits = jmax (1, (int) (have / 7.0));
         const auto fit = n == 0 ? String ("Type your words: one sung phrase per line.")
-                                : String (n) + (n == 1 ? " line" : " lines") + String::fromUTF8 (" \xc2\xb7 about ") + String (n * 8)
-                                  + " seconds of song suits them, so no word is rushed or repeated";
+                       : tooMany ? String (n) + " lines need about " + String (n * 7) + " s; this part is " + String (roundToInt (have))
+                                   + " s. Keep " + String (fits) + (fits == 1 ? " line" : " lines") + " or pick a longer part"
+                       : String (n) + (n == 1 ? " line" : " lines") + String::fromUTF8 (" \xc2\xb7 about ") + String (n * 7)
+                         + " seconds of song suits them, so no word is rushed or repeated";
         g.drawText (fit, in.withTrimmedBottom (30.0f).removeFromBottom (24.0f), Justification::centredLeft, true);
     }
     // ---- style
@@ -688,6 +715,7 @@ void VoicePage::ResultRow::set (const lp::voice::Result& r, const String& id)
     }
     res = r;
     jobId = id;
+    setTooltip (r.heard.isNotEmpty() ? "The words the guide was heard singing: \"" + r.heard + "\"" : String());
     play.setEnabled (preview != nullptr);
     toTrack.setEnabled (vocalFile.existsAsFile() && toTrack.getButtonText() != "added");
     repaint();
