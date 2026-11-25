@@ -17,6 +17,19 @@
 namespace lp::voice
 {
 struct Result { int n = 0; juce::String vocal, mix, heard; int words = 0, key = 0; };
+// the voices to offer (the helper's own working files left out), and the one to pick: the one you used last
+inline juce::StringArray usableVoices (const juce::StringArray& all)
+{
+    juce::StringArray out;
+    for (auto& v : all) if (! v.endsWithIgnoreCase (".prompt")) out.add (v);
+    return out;
+}
+inline juce::String defaultVoice (const juce::StringArray& voices, const juce::String& current, const juce::String& remembered)
+{
+    if (voices.contains (current)) return current;
+    if (voices.contains (remembered)) return remembered;
+    return voices.isEmpty() ? juce::String() : voices[0];
+}
 struct Job
 {
     juce::String id, state, stage, note, title, error;

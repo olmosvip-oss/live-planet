@@ -13,6 +13,23 @@ namespace { constexpr int kMin = 36, kMax = 88, kRows = 32; } // C2 .. E6, 32 no
 DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme)
 {
     section.onChange = [this] { notes.clear(); viewStart = 0.0; selectedNote = -1; repaint(); };
+    voice.onChange = [this] { if (voice.getText().isNotEmpty()) lp::setSetting ("voice", voice.getText()); }; // (remembered for every page)
+    addVoiceBtn.setTooltip ("Add your voice: 10 to 30 seconds of you singing or rapping, clean, with no music (a WAV). It stays on this computer "
+                            "and is picked for you from then on.");
+    addVoiceBtn.setWantsKeyboardFocus (false);
+    addVoiceBtn.onClick = [this]
+    {
+        voiceChooser = std::make_unique<FileChooser> ("Your voice: 10 to 30 seconds of clean singing or rapping, no music", File(), "*.wav;*.aif;*.aiff");
+        voiceChooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+        {
+            if (! fc.getResult().existsAsFile()) return;
+            proc.voiceClient.addVoice (fc.getResult());
+            lp::setSetting ("voice", fc.getResult().getFileNameWithoutExtension()); // (picked as soon as the helper has it)
+            message = "Adding your voice...";
+            repaint();
+        });
+    };
+    addAndMakeVisible (addVoiceBtn);
     for (auto* c : { &section, &voice }) { c->setWantsKeyboardFocus (false); addAndMakeVisible (*c); }
     lyrics.setMultiLine (true, true);
     lyrics.setReturnKeyStartsNewLine (true);
@@ -126,14 +143,13 @@ void DrawSing::refresh()
         if (section.getNumItems() > 0) section.setSelectedItemIndex (keep >= 0 && keep < section.getNumItems() ? keep : pick, dontSendNotification);
     }
     const auto snap = proc.voiceClient.snapshot();
-    if (snap.voices != shownVoices)
+    if (const auto voices = lp::voice::usableVoices (snap.voices); voices != shownVoices)
     {
-        shownVoices = snap.voices;
+        shownVoices = voices;
         const auto was = voice.getText();
         voice.clear (dontSendNotification);
-        for (int i = 0; i < snap.voices.size(); ++i) voice.addItem (snap.voices[i], i + 1);
-        const int at = snap.voices.indexOf (was);
-        if (voice.getNumItems() > 0) voice.setSelectedItemIndex (at >= 0 ? at : 0, dontSendNotification);
+        for (int i = 0; i < voices.size(); ++i) voice.addItem (voices[i], i + 1);
+        voice.setText (lp::voice::defaultVoice (voices, was, lp::setting ("voice", "").toString()), dontSendNotification);
     }
     connected = snap.connected;
     sing.setEnabled (connected && consent.getToggleState() && ! notes.empty() && voice.getText().isNotEmpty() && ! snap.sending
@@ -526,7 +542,12 @@ void DrawSing::resized()
     s.removeFromTop (34);
     section.setBounds (s.removeFromTop (34));
     s.removeFromTop (10);
-    voice.setBounds (s.removeFromTop (34));
+    {
+        auto vr = s.removeFromTop (34);
+        addVoiceBtn.setBounds (vr.removeFromRight (60));
+        vr.removeFromRight (8);
+        voice.setBounds (vr);
+    }
     s.removeFromTop (16);
     lyrics.setBounds (s.removeFromTop (150));
     s.removeFromTop (12);

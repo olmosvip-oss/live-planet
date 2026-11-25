@@ -107,6 +107,7 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
         c->setWantsKeyboardFocus (false);
         addAndMakeVisible (*c);
     }
+    voice.onChange = [this] { if (voice.getText().isNotEmpty()) lp::setSetting ("voice", voice.getText()); refreshButtons(); }; // (your voice: the one picked everywhere next time)
     addVoice.setWantsKeyboardFocus (false);
     addAndMakeVisible (addVoice);
     addAndMakeVisible (takes);
@@ -478,12 +479,12 @@ void VoicePage::setSnapshot (const lp::voice::Snapshot& s)
     if (! snap.message.isEmpty() && snap.messageBad) create.setEnabled (true);
     StringArray had;
     for (int i = 0; i < voice.getNumItems(); ++i) had.add (voice.getItemText (i));
-    if (had != snap.voices)
+    if (const auto voices = lp::voice::usableVoices (snap.voices); had != voices)
     {
         const auto keep = voice.getText();
         voice.clear (dontSendNotification);
-        for (int i = 0; i < snap.voices.size(); ++i) voice.addItem (snap.voices[i], i + 1);
-        voice.setText (snap.voices.contains (keep) ? keep : snap.voices[0], dontSendNotification);
+        for (int i = 0; i < voices.size(); ++i) voice.addItem (voices[i], i + 1);
+        voice.setText (lp::voice::defaultVoice (voices, keep, lp::setting ("voice", "").toString()), dontSendNotification);
     }
     refreshButtons();
     resized();

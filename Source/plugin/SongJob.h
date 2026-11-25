@@ -2987,6 +2987,8 @@ private:
         status.song = song;
         if (existing >= 0 && existing < (int) status.tracks.size()) status.tracks[(size_t) existing] = info (part, stem, song);
         else status.tracks.push_back (info (part, stem, song));
+        // a new vocal: its chain set up for it straight away (EQ, compression, de-ess, air), as Analyze does
+        if (existing < 0 && isVocal) { edits.push_back ({ tr, EditOp::VocalAnalyze }); status.editing = true; }
         status.message = juce::String (part.name) + (existing >= 0 ? " has its new take"
                                                     : isVocal ? " is a new track: its Vocal chain and Auto-tune are on the Vocals tab" : " is a new track");
         ++status.version;

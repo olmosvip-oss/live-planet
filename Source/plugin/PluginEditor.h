@@ -874,6 +874,8 @@ private:
     double beatsShown = 16.0, viewStart = 0.0;
     juce::TextButton zoomIn { "+" }, zoomOut { "-" };
     juce::ToggleButton guide { "guide tone with the song" };
+    juce::TextButton addVoiceBtn { "add" };
+    std::unique_ptr<juce::FileChooser> voiceChooser;
     double snap() const { return beatsShown <= 8.0 ? 0.125 : 0.25; }
     void zoom (double factor, float aroundX);
     juce::String guideKey;
