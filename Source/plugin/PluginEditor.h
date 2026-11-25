@@ -835,6 +835,51 @@ private:
 };
 }
 
+// VOCALS, "Draw & sing": a piano roll over a section; notes with words, sung in your voice by the voice helper
+class DrawSing : public juce::Component
+{
+public:
+    DrawSing (LivePlanetProcessor&, const lp::ui::Theme*& theme);
+    ~DrawSing() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    void refresh(); // every frame while showing
+    std::function<juce::String()> statusText; // what the helper is doing with it
+
+private:
+    using Note = lp::song::lyricmelody::Note;
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    std::vector<Note> notes; // beats from the section's start
+    int page = 0, selectedNote = -1, editing = -1, songVersion = -1;
+    enum class Drag { None, Move, Resize } drag = Drag::None;
+    double dragBeatOffset = 0.0;
+    bool connected = false;
+    juce::String message;
+    juce::StringArray shownVoices;
+    juce::ComboBox section, voice;
+    juce::TextEditor lyrics, wordBox;
+    juce::TextButton fromLyrics { "Start from a melody" }, fillWords { "Fill in my words" }, clearAll { "Clear" },
+                     prev { "<" }, next { ">" }, hear { "hear it" }, sing { "Sing it in my voice" };
+    juce::ToggleButton consent { "this is my voice, or I have the singer's permission" };
+    juce::Rectangle<int> statusArea;
+    double sectionBeats() const, sectionStartSeconds() const;
+    juce::Rectangle<float> roll() const;
+    juce::Rectangle<int> rollCard() const, sideCard() const;
+    float rowH() const, xOf (double beat) const, yOf (int pitch) const;
+    double beatAt (float x) const;
+    int pitchAt (float y) const;
+    juce::Rectangle<float> noteRect (const Note&) const;
+    int noteAt (juce::Point<float>) const;
+    void editWord (int), commitWord(), fillFromLyrics(), writeFromLyrics(), preview (int pitch), hearIt(), singIt();
+    juce::StringArray lyricWords() const;
+    juce::String nextWord() const;
+};
+
 // VOCALS, "Your vocals": every vocal in the song (its chain, chop pads, auto-tune) and ways to add one
 class VocalsHub : public juce::Component
 {
@@ -1144,8 +1189,9 @@ private:
     VocalsHub vocalsHub;
     lp::ai::AutoAdd autoAdd;
     std::unique_ptr<lp::ai::LayerPopup> layerPopup;
-    int vocalTab = 0; // the Vocals tab: 0 your vocals, 1 create with AI (the voice helper)
-    Segmented vocalTabs { { "Your vocals", "Create with AI" }, [this] { return vocalTab; }, [this] (int i) { vocalTab = i; setPage (Voice); }, lnf.th };
+    DrawSing drawSing;
+    int vocalTab = 0; // the Vocals tab: 0 your vocals, 1 draw & sing, 2 create with AI (both through the voice helper)
+    Segmented vocalTabs { { "Your vocals", "Draw & sing", "Create with AI" }, [this] { return vocalTab; }, [this] (int i) { vocalTab = i; setPage (Voice); }, lnf.th };
     bool voiceOn() const; // the experimental Voice page is switched on
     juce::ComboBox studioKey, studioMode;   // the song's key, at the top of the studio
     juce::ComboBox masterBox;               // mastering: off, or a platform's loudness

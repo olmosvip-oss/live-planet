@@ -250,6 +250,6 @@ void VocalsHub::paint (Graphics& g)
     }
     g.setFont (font (12.0f));
     g.setColour (t.inkDim);
-    g.drawFittedText ("Coming next on this tab: draw a melody and type the words for your voice to sing, and choirs, doubles and harmonies "
-                      "from any vocal.", nextNote, Justification::topLeft, 4);
+    g.drawFittedText ("Stack it: a double, a harmony or a choir from any vocal, made here in seconds. Draw & sing (above): draw notes, "
+                      "type a word on each, and the voice helper sings them in your voice.", nextNote, Justification::topLeft, 5);
 }

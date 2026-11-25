@@ -28,6 +28,18 @@ The plugin only connects to 127.0.0.1, sends the token as `X-Token` on every POS
    song, and what "add as track" adds (a vocal track with its Vocal chain and Auto-tune).
 4. `<song>/voice/jobs.json` remembers where each job's section starts.
 
+## The Vocals tab and the Studio
+
+- **Your vocals**: every vocal in the song with its Vocal chain, Chop pads or Auto-tune, and **Stack it...**: a double,
+  a harmony a third above or a fifth below (it follows the vocal note by note, in the song's scale), or a six-voice choir.
+  Stacks are made inside Loopwright (`Source/song/Stack.h`), no helper needed.
+- **Draw & sing** (`Source/plugin/DrawSing.cpp`): a piano roll over one section. Draw notes, double-click one for its
+  word (or "Fill in my words", or "Start from a melody" for one written for your lyrics), "hear it" plays them as tones
+  with the song. "Sing it in my voice" sends them to the helper as a written melody; the result lands as a new vocal track.
+- **+ AI layer** (Studio, with sections picked): an instrument (`"layer"` in `/api/create`: drums, bass, guitar, keyboard,
+  percussion, strings, synth, brass, woodwinds, fx, backing_vocals) played by ACE-Step over those sections
+  (`sing_over.py --track`). It lands as a new track by itself (`lp::ai::AutoAdd`).
+
 ## "Write melody" (the default)
 
 Loopwright writes the melody itself (`Source/song/LyricMelody.h`), over the chords the song's tracks really play:

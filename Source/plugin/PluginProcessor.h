@@ -13,6 +13,7 @@
 #include "../engine/Master.h"
 #include "../engine/Sampler.h"
 #include "../engine/Limiter.h"
+#include "../song/LyricMelody.h"
 
 class LivePlanetProcessor : public juce::AudioProcessor, private juce::Timer
 {
@@ -143,6 +144,7 @@ public:
     // melodies for these lyrics over those sections' chords (one per version, each its own), as the voice helper reads
     // them. Slow (it listens to the tracks for the chords): call it off the message thread
     juce::var writeVoiceMelodies (int sectionIndex, int count, const juce::String& lyrics, bool rap, int howMany);
+    std::vector<lp::song::lyricmelody::Line> writeVoiceLines (int sectionIndex, int count, const juce::String& lyrics, bool rap, juce::uint32 seed);
     // your take from the mic (Voice > I sing it): `skipSeconds` in (the count-in), `seconds` long, at a good level
     bool saveGuideTake (const juce::File& dest, double skipSeconds, double seconds, juce::String& message);
     // a version playing along with the song: 48 kHz, starting at bar 1 (null = none)

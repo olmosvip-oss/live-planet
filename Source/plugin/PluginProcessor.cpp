@@ -1472,6 +1472,18 @@ void LivePlanetProcessor::addLibraryFolder (const juce::File& f)
 }
 
 // the song's section as you hear it (every track, with its mixer), for the voice helper to sing over
+std::vector<lp::song::lyricmelody::Line> LivePlanetProcessor::writeVoiceLines (int sectionIndex, int count, const juce::String& lyrics, bool rap, juce::uint32 seed)
+{
+    const auto st = songJob.getStatus();
+    if (! st.haveSong || sectionIndex < 0 || count < 1 || sectionIndex + count > (int) st.song.sections.size()) return {};
+    const auto& a = st.song.sections[(size_t) sectionIndex];
+    const auto& b = st.song.sections[(size_t) (sectionIndex + count - 1)];
+    const int bars = b.startBar + b.bars - a.startBar;
+    const auto lines = lp::song::lyricmelody::sungLines (lyrics);
+    if (lines.isEmpty() || bars < 1) return {};
+    return lp::song::lyricmelody::write (lines, bars, st.song.key, st.song.minor, rap, SongJob::songChords (st.song, st.tracks), a.startBar * 4.0, seed);
+}
+
 juce::var LivePlanetProcessor::writeVoiceMelodies (int sectionIndex, int count, const juce::String& lyrics, bool rap, int howMany)
 {
     const auto st = songJob.getStatus();

@@ -1737,6 +1737,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       trackEditor (p, lnf.th),
       voicePage (p, lnf.th),
       vocalsHub (p, lnf.th),
+      drawSing (p, lnf.th),
       grainView (p),
       sourcesPanel (p, lnf.th),
       pillMidi ("drag midi", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.midiFile.getFullPathName()) : StringArray(); }),
@@ -1799,6 +1800,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (trackEditor);
     addChildComponent (voicePage);
     addChildComponent (vocalsHub);
+    addChildComponent (drawSing);
+    drawSing.statusText = [this] { return autoAdd.status; };
     addChildComponent (vocalTabs);
     vocalsHub.onOpenInStudio = [this] (int t) { trackEditor.select (t); setPage (Studio); };
     songView.onLayer = [this] (int first, int count)
@@ -2011,7 +2014,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         d.jobs.push_back (j);
         voicePage.setSnapshot (d);
         voicePage.setSong ({ "Chorus 1   (bars 33 to 40, 16 s)", "Verse 1   (bars 9 to 24, 32 s)", "Chorus 2   (bars 57 to 64, 16 s)" }, 0, "A MINOR", "120 BPM");
-        sp->vocalTab = 1;
+        sp->vocalTab = 2;
         sp->setPage (Voice);
     });
 
@@ -2160,8 +2163,9 @@ void LivePlanetEditor::setPage (int p)
     if (! voiceOn()) vocalTab = 0;
     vocalTabs.setVisible (p == Voice && voiceOn());
     vocalsHub.setVisible (p == Voice && vocalTab == 0);
-    voicePage.setVisible (p == Voice && vocalTab == 1);
-    voicePage.shown (p == Voice && vocalTab == 1);
+    drawSing.setVisible (p == Voice && vocalTab == 1);
+    voicePage.setVisible (p == Voice && vocalTab == 2);
+    voicePage.shown (p == Voice && vocalTab == 2);
     studioKey.setVisible (studio);
     studioMode.setVisible (studio);
     masterBox.setVisible (studio);
@@ -2410,7 +2414,8 @@ void LivePlanetEditor::timerCallback()
         trackEditor.refresh();
         if (trackEditor.wantsTall() != dockTall) { dockTall = trackEditor.wantsTall(); resized(); repaint(); }
     }
-    if (page == Voice && vocalTab == 1) voicePage.refresh();
+    if (page == Voice && vocalTab == 2) voicePage.refresh();
+    if (page == Voice && vocalTab == 1) { proc.voiceClient.setWanted (true); drawSing.refresh(); }
     if (page == Voice && vocalTab == 0) vocalsHub.refresh();
     if (voiceOn()) autoAdd.tick (proc);
     // the Studio talks to the voice helper too (its AI layers), in the background
@@ -2728,11 +2733,12 @@ void LivePlanetEditor::resized()
     masterBox.setBounds (masterAB.getX() - 8 - 236, cardTimeline.getY() + 12, 236, 26);
     masterInfo.setBounds (masterBox.getX() - 8 - 240, cardTimeline.getY() + 12, 240, 26);
     masterMeter.setBounds (masterBox.getX() - 26, cardTimeline.getY() + 8, 13, 34);
-    vocalTabs.setBounds (M, 84, 300, 28);
+    vocalTabs.setBounds (M, 84, 420, 28);
     {
         const int top = voiceOn() ? 124 : 84;
         voicePage.setBounds (M, top, W - 2 * M, 728 - top);
         vocalsHub.setBounds (M, top, W - 2 * M, 728 - top);
+        drawSing.setBounds (M, top, W - 2 * M, 728 - top);
     }
     if (page == Studio) playButton.setBounds (cardTimeline.getX() + 150, cardTimeline.getY() + 6, 30, 30);
 
