@@ -528,6 +528,9 @@ public:
     void refresh(); // every frame
     // the Studio: a slim ruler over the track lanes (each section full height, lined up with them)
     void setRuler (bool r) { if (ruler != r) { ruler = r; resized(); repaint(); } }
+    // "+ AI layer" on the sections picked (the voice helper switched on): first section, how many
+    std::function<void (int, int)> onLayer;
+    bool layerAvailable = false;
 
 private:
     bool ruler = false;
@@ -545,7 +548,8 @@ private:
     int version = -1, selected = -1, dragIndex = -1, dragOrigBars = 0;
     enum class Drag { None, Move, Resize } drag = Drag::None;
     float dragStartX = 0.0f, pxPerBarAtStart = 1.0f;
-    juce::TextButton addBtn { "+ section" }, dupBtn { "duplicate" }, removeBtn { "remove" }, undoBtn { "undo" }, rebuildBtn { "rebuild song" };
+    juce::TextButton addBtn { "+ section" }, dupBtn { "duplicate" }, removeBtn { "remove" }, undoBtn { "undo" }, rebuildBtn { "rebuild song" },
+                     layerBtn { "+ AI layer" };
 };
 
 // The studio: every track of the song, where its sound came from, and its mixer and remix tools
@@ -568,6 +572,7 @@ public:
     std::function<void()> onMixChanged;
     std::function<void (int)> onOpenTrack; // clicking a track's name opens it in the editor
     std::function<int()> selectedTrack;    // the track open below (lit in the list)
+    std::function<juce::String()> statusText; // what the AI is making for the song right now
     bool mixDirty = false;
     // where the lanes are (the sections ruler above lines up with them)
     float laneLeft() const { return 310.0f; }
@@ -796,6 +801,40 @@ private:
 
 // VOICE (experimental): lyrics and a style, sung over a part of your song by the local voice helper,
 // with every stage shown live and the versions to hear and drag out (VoicePage.cpp)
+namespace lp::ai
+{
+juce::String helperKeyName (const lp::song::Song&); // the key the voice helper is told (the minor key with the song's notes)
+// the voice helper's layers and drawn melodies, added to the song by themselves once they're made
+struct AutoAdd
+{
+    void tick (LivePlanetProcessor&);
+    juce::String status; // what's being made right now (or what went wrong)
+private:
+    std::set<juce::String> handled, asked;
+};
+// "+ AI layer": an instrument the AI plays over the sections you picked
+class LayerPopup : public juce::Component
+{
+public:
+    LayerPopup (LivePlanetProcessor&, const lp::ui::Theme*& theme, int firstSection, int sectionCount, std::function<void()> closed);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent& e) override { if (! cardBounds().contains (e.getPosition()) && onClosed) onClosed(); }
+private:
+    juce::Rectangle<int> cardBounds() const;
+    void pickKind (juce::TextButton*);
+    void start();
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    int firstSection, sectionCount;
+    std::function<void()> onClosed;
+    juce::OwnedArray<juce::TextButton> chips;
+    juce::String kind, message;
+    juce::TextEditor describe;
+    juce::TextButton go { "Generate" }, cancel { "Cancel" };
+};
+}
+
 // VOCALS, "Your vocals": every vocal in the song (its chain, chop pads, auto-tune) and ways to add one
 class VocalsHub : public juce::Component
 {
@@ -1100,6 +1139,8 @@ private:
     TrackEditor trackEditor;
     VoicePage voicePage;
     VocalsHub vocalsHub;
+    lp::ai::AutoAdd autoAdd;
+    std::unique_ptr<lp::ai::LayerPopup> layerPopup;
     int vocalTab = 0; // the Vocals tab: 0 your vocals, 1 create with AI (the voice helper)
     Segmented vocalTabs { { "Your vocals", "Create with AI" }, [this] { return vocalTab; }, [this] (int i) { vocalTab = i; setPage (Voice); }, lnf.th };
     bool voiceOn() const; // the experimental Voice page is switched on

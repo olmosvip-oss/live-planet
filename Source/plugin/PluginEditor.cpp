@@ -1281,12 +1281,22 @@ void SongPanel::mouseUp (const MouseEvent& e)
 
 SongView::SongView (LivePlanetProcessor& p) : proc (p)
 {
-    for (auto* b : { &addBtn, &dupBtn, &removeBtn, &undoBtn, &rebuildBtn })
+    for (auto* b : { &addBtn, &dupBtn, &removeBtn, &undoBtn, &rebuildBtn, &layerBtn })
     {
         b->setWantsKeyboardFocus (false);
         b->setMouseClickGrabsKeyboardFocus (false);
         addChildComponent (b);
     }
+    layerBtn.getProperties().set ("primary", true);
+    layerBtn.setTooltip ("An instrument played by the AI over the sections you picked (shift-click for more): drums, bass, guitar, keys, strings...");
+    layerBtn.onClick = [this]
+    {
+        std::vector<int> pk (picked.begin(), picked.end());
+        if (pk.empty() && selected >= 0) pk.push_back (selected);
+        if (pk.empty() || dirty || ! onLayer) return;
+        const int a = *std::min_element (pk.begin(), pk.end()), b = *std::max_element (pk.begin(), pk.end());
+        onLayer (a, b - a + 1); // (from the first picked to the last, in one stretch)
+    };
     rebuildBtn.getProperties().set ("primary", true);
     addBtn.setTooltip ("add a section (a verse, a chorus, a drop...) after the one you picked");
     dupBtn.setTooltip ("play the section you picked twice");
@@ -1340,6 +1350,8 @@ void SongView::refresh()
         rebuildBtn.onClick();
     const bool edit = st.haveSong;
     for (auto* b : { &addBtn, &dupBtn, &removeBtn }) if (b->isVisible() != edit) b->setVisible (edit);
+    if (layerBtn.isVisible() != (edit && ruler && layerAvailable)) layerBtn.setVisible (edit && ruler && layerAvailable);
+    layerBtn.setEnabled ((selected >= 0 || ! picked.empty()) && ! dirty && ! waiting);
     dupBtn.setEnabled (selected >= 0);
     removeBtn.setEnabled ((selected >= 0 || ! picked.empty()) && draft.size() > 1);
     removeBtn.setButtonText (picked.size() > 1 ? "remove " + String ((int) picked.size()) : String ("remove"));
@@ -1351,9 +1363,10 @@ void SongView::refresh()
 void SongView::resized()
 {
     auto head = getLocalBounds().reduced (8, 4).removeFromTop (24);
-    for (auto* b : { &rebuildBtn, &undoBtn, &removeBtn, &dupBtn, &addBtn })
+    for (auto* b : { &rebuildBtn, &undoBtn, &removeBtn, &dupBtn, &addBtn, &layerBtn })
     {
-        const int w = b == &rebuildBtn ? 120 : b == &addBtn ? 92 : 80;
+        if (b == &layerBtn && ! ruler) continue;
+        const int w = b == &rebuildBtn ? 120 : b == &addBtn ? 92 : b == &layerBtn ? 104 : 80;
         b->setBounds (head.removeFromRight (w).withSizeKeepingCentre (w, 24));
         head.removeFromRight (6);
     }
@@ -1788,6 +1801,17 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (vocalsHub);
     addChildComponent (vocalTabs);
     vocalsHub.onOpenInStudio = [this] (int t) { trackEditor.select (t); setPage (Studio); };
+    songView.onLayer = [this] (int first, int count)
+    {
+        layerPopup = std::make_unique<lp::ai::LayerPopup> (proc, lnf.th, first, count, [this]
+        {
+            MessageManager::callAsync ([sp = Component::SafePointer<LivePlanetEditor> (this)] { if (sp != nullptr) sp->layerPopup.reset(); });
+        });
+        addAndMakeVisible (*layerPopup);
+        layerPopup->setBounds (getLocalBounds());
+        layerPopup->toFront (true);
+    };
+    studioView.statusText = [this] { return autoAdd.status; };
     setUpKeyBoxes (p, studioKey, studioMode, studioKeyAtt, studioModeAtt);
     addChildComponent (studioKey);
     addChildComponent (studioMode);
@@ -2388,6 +2412,10 @@ void LivePlanetEditor::timerCallback()
     }
     if (page == Voice && vocalTab == 1) voicePage.refresh();
     if (page == Voice && vocalTab == 0) vocalsHub.refresh();
+    if (voiceOn()) autoAdd.tick (proc);
+    // the Studio talks to the voice helper too (its AI layers), in the background
+    if (voiceOn() && page == Studio) proc.voiceClient.setWanted (true);
+    songView.layerAvailable = voiceOn();
     repaint (0, 0, getWidth(), 70); // the top bar (library and tempo)
 }
 

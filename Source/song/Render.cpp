@@ -399,13 +399,13 @@ namespace
     }
 
     // ---------- audio files from your library
-    juce::AudioBuffer<float> loadAudio (const juce::String& path, double targetRate, double stretch = 1.0)
+    juce::AudioBuffer<float> loadAudio (const juce::String& path, double targetRate, double stretch = 1.0, double maxSeconds = 60.0)
     {
         juce::AudioFormatManager fm;
         fm.registerBasicFormats();
         std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (path)));
         if (rd == nullptr || rd->lengthInSamples <= 0) return {};
-        const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 60.0));
+        const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * maxSeconds));
         juce::AudioBuffer<float> raw (2, len);
         rd->read (&raw, 0, len, 0, true, rd->numChannels > 1);
         if (rd->numChannels == 1) raw.copyFrom (1, 0, raw, 0, 0, len);
@@ -1154,10 +1154,11 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
             }
         }
     }
-    else if (part.kind == PartKind::Melody && part.samplePath.isNotEmpty() && juce::String (part.name).startsWith ("vocal ("))
+    else if (part.kind == PartKind::Melody && part.samplePath.isNotEmpty()
+             && (juce::String (part.name).startsWith ("vocal (") || juce::String (part.name).startsWith ("layer (")))
     {
-        // your (tuned) vocal, from the start of the song, as you recorded it
-        auto v = loadAudio (part.samplePath, sr);
+        // your (tuned) vocal, from the start of the song, as you recorded it (the whole song long)
+        auto v = loadAudio (part.samplePath, sr, 1.0, 900.0);
         const int n = std::min (v.getNumSamples(), total);
         for (int i = 0; i < n; ++i) { L[i] += v.getSample (0, i); R[i] += v.getSample (1, i); }
     }

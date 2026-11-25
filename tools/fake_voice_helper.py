@@ -91,6 +91,8 @@ def work(job):
                 continue  # their own take: no melody to write
             if o.get("written") and key in ("clean", "voice"):
                 continue  # the written melody is sung in the voice straight away
+            if o.get("layer") and key in ("score", "clean", "voice"):
+                continue  # an instrument: played, then mixed
             for n in range(1, (o["results"] if key in ("clean", "voice", "mix") or (key == "sing" and o.get("written")) else 1) + 1):
                 if job.get("cancelled"):
                     raise InterruptedError
@@ -102,6 +104,10 @@ def work(job):
                     raise RuntimeError("No takes kept enough of the words (fake helper, --fail)")
                 if key == "mix" and o.get("guide"):
                     (d / f"vocal_{n}.wav").write_bytes(Path(o["guide"]).read_bytes())  # (their take, as it came)
+                elif key == "mix" and o.get("layer"):
+                    with wave.open(o["inst"], "rb") as w:
+                        secs = w.getnframes() / w.getframerate()
+                    tone_wav(d / f"vocal_{n}.wav", min(secs, 60), o["key"], o["bpm"])
                 elif key == "mix" and o.get("written"):
                     with wave.open(o["inst"], "rb") as w:
                         secs = w.getnframes() / w.getframerate()
@@ -185,10 +191,13 @@ class H(BaseHTTPRequestHandler):
                 guide = GUIDES / Path(q["guide"]).name if q.get("guide") else None
                 if guide is not None and not guide.is_file():
                     raise ValueError("Your take didn't arrive: record or add it again")
-                if (guide is None and not lines) or len(q["lyrics"]) > 4000:
+                layer = q.get("layer") or None
+                if layer is None and ((guide is None and not lines) or len(q["lyrics"]) > 4000):
                     raise ValueError("Type some lyrics first")
-                if not q.get("consent"):
+                if layer is None and not q.get("consent"):
                     raise ValueError("Confirm you have permission to use this voice")
+                if layer is not None and not q.get("voice"):
+                    q["voice"] = next(iter(sorted(p.stem for p in VOICES.glob("*.wav"))), "")
                 inst, voice = INST / Path(q["track"]).name, VOICES / (Path(q["voice"]).name + ".wav")
                 if not inst.is_file() or not voice.is_file():
                     raise ValueError("Choose a track and a voice")
@@ -206,14 +215,16 @@ class H(BaseHTTPRequestHandler):
                 melodies = q.get("melodies") or []
                 if not isinstance(melodies, list) or len(melodies) > 3 or not all(isinstance(m, dict) and m.get("segments") for m in melodies):
                     raise ValueError("The written melody didn't come through: press Create again")
+                if layer is not None:
+                    o.update(layer=layer, takes=o["results"])
                 if melodies:
                     o.update(written=True, has_lyrics=bool(lines), takes=len(melodies), results=len(melodies))
                     for k, m in enumerate(melodies, 1):
                         (d / f"melody_{k}.json").write_text(json.dumps(m))
                 with lock:
                     jobs[i] = dict(id=i, dir=str(d), created=time.time(), state="queued", stage=None, note="", opts=o, scores=[], results=[],
-                                   title=(lines[0] if lines else "Your take")[:60])
-                print(f"CREATE {i} guide={'yes' if guide else 'no'} written={len(melodies)} style={o['style']!r} key={o['key']} bpm={o['bpm']} track={inst.name} voice={voice.stem} takes={o['takes']} results={o['results']}", flush=True)
+                                   title=(("Layer: " + layer) if layer else lines[0] if lines else "Your take")[:60])
+                print(f"CREATE {i} guide={'yes' if guide else 'no'} written={len(melodies)} layer={layer} style={o['style']!r} key={o['key']} bpm={o['bpm']} track={inst.name} voice={voice.stem} takes={o['takes']} results={o['results']}", flush=True)
                 threading.Thread(target=work, args=(jobs[i],), daemon=True).start()
                 return self.out(200, {"id": i})
             self.out(404, {"error": "not found"})

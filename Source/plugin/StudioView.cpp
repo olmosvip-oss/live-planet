@@ -175,6 +175,14 @@ void StudioView::paint (Graphics& g)
         g.setColour (accent);
         g.drawText ("updating...", head.withTrimmedRight (20.0f), Justification::centredRight, false);
     }
+    if (statusText)
+        if (const auto s = statusText(); s.isNotEmpty())
+        {
+            // what the AI is making for the song, over the lanes
+            g.setFont (font (11.0f, lp::ui::Medium));
+            g.setColour (s.contains ("didn't work") ? Colour (0xffff8f8f) : th.grassLight);
+            g.drawText (s, Rectangle<float> (laneLeft(), 4.0f, laneRight() - laneLeft(), 16.0f), Justification::centredRight, true);
+        }
     {
         const int total = (int) st.tracks.size() + 1;
         scroll = jlimit (0, std::max (0, total - visibleRows()), scroll);

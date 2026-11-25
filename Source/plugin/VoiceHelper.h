@@ -87,6 +87,7 @@ public:
         juce::String tag; // remembered with the job it starts (where its section is in the song)
         juce::File guide; // "Sing it yourself": your take over the section (sent instead of a melody being written)
         std::function<juce::var()> melodies; // "Write melody": the written melodies, one a version (made on the background thread)
+        juce::String layer; // "Generate a layer": the instrument the helper plays over the section instead of singing (bass, drums...)
     };
     void create (Request r) { push ({ Cmd::Create, std::move (r), {}, {}, 0, {} }); }
     void cancel (const juce::String& id) { if (validJobId (id)) push ({ Cmd::Cancel, {}, id, {}, 0, {} }); }
@@ -324,6 +325,7 @@ private:
             o->setProperty ("consent", c.req.consent);
             if (guide.isNotEmpty()) o->setProperty ("guide", guide);
             if (melodies.isArray()) o->setProperty ("melodies", melodies);
+            if (c.req.layer.isNotEmpty()) o->setProperty ("layer", c.req.layer);
             const auto v = callJson ("/api/create", &body, code);
             say (code == 200 ? juce::String ("Started") : errorOf (v, code), code != 200);
             if (code == 200)
