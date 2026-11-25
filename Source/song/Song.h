@@ -348,6 +348,7 @@ struct Part
     std::set<int> stutterBars;       // the last beat stutters
     std::set<int> gapBars;           // the last beat drops out (right before a chorus hits)
     std::set<int> swellBars;         // a reversed swell of the loop rising into the next bar
+    juce::uint32 colour = 0;         // its colour in the arrangement, if you picked one
     juce::uint32 flipSeed = 0;       // a flipped sample: its slices re-ordered, reversed, stuttered (0 = played as it is)
     int flipAmount = 2;              // 1 light, 2 medium, 3 heavy
     std::set<int> silentBars;        // bars you deleted from this track in the arrangement (it's silent there)

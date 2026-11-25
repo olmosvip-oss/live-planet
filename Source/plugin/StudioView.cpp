@@ -55,7 +55,7 @@ void StudioView::deletePicked()
     const auto st = proc.songJob.getStatus();
     std::map<int, std::set<int>> byTrack;
     for (auto [tr, sc] : pickedClips)
-        if (tr >= 0 && tr < (int) st.song.parts.size() && sc >= 0 && sc < (int) st.song.sections.size())
+        if (tr >= 0 && tr < (int) st.tracks.size() && sc >= 0 && sc < (int) st.song.sections.size())
             for (int b = 0; b < st.song.sections[(size_t) sc].bars; ++b) byTrack[tr].insert (st.song.sections[(size_t) sc].startBar + b);
     pickedClips.clear();
     for (auto& [tr, bars] : byTrack) proc.songJob.silenceBars (tr, bars);
@@ -298,7 +298,7 @@ void StudioView::paint (Graphics& g)
                 g.setColour (Colours::white.withAlpha (four ? 0.07f : 0.03f));
                 g.drawVerticalLine ((int) x, rowsTop - 2.0f, lanesBottom);
             }
-            if (bar % every == 0 && bar < totalBars)
+            if (bar % every == 0 && bar < totalBars && x < zoomBtn (0).getX() - 22.0f)
             {
                 g.setColour (Colours::white.withAlpha (0.18f));
                 g.drawVerticalLine ((int) x, 17.0f, 26.0f);
@@ -345,7 +345,7 @@ void StudioView::paint (Graphics& g)
         const auto& t = st.tracks[(size_t) i];
         auto& m = proc.studio.mix[(size_t) i];
         auto row = rowBounds (i);
-        const Colour tc = trackColour (i);
+        const Colour tc = t.colour != 0 ? Colour (t.colour) : trackColour (i);
         const bool picked = selectedTrack && selectedTrack() == i;
         {
             // its head: lit when it's open below (outlined when Delete would remove it)
@@ -422,7 +422,7 @@ void StudioView::paint (Graphics& g)
         float top = 0.0f;
         for (float v : env->peaks) top = std::max (top, v);
         if (top <= 0.0f) continue;
-        const std::set<int> silent = i < (int) st.song.parts.size() ? st.song.parts[(size_t) i].silentBars : std::set<int>();
+        const std::set<int>& silent = t.silentBars;
         // how loud it is on average in each section: a section where it's (nearly) silent gets no clip
         std::vector<float> avg;
         float loudest = 0.0f;
@@ -786,13 +786,28 @@ void StudioView::mouseDown (const MouseEvent& e)
             {
                 if (hit != nullptr && pickedClips.count ({ i, sc }) == 0) { pickedClips.clear(); pickedClips.insert ({ i, sc }); }
                 bool anyGone = false;
-                if (sc >= 0 && i < (int) st.song.parts.size())
+                if (sc >= 0)
                     for (int b = 0; b < st.song.sections[(size_t) sc].bars; ++b)
-                        anyGone = anyGone || st.song.parts[(size_t) i].silentBars.count (st.song.sections[(size_t) sc].startBar + b) > 0;
+                        anyGone = anyGone || st.tracks[(size_t) i].silentBars.count (st.song.sections[(size_t) sc].startBar + b) > 0;
                 PopupMenu m;
                 m.addSectionHeader (String (st.tracks[(size_t) i].name).toUpperCase() + (sc >= 0 ? "  \xc2\xb7  " + String (st.song.sections[(size_t) sc].name).toUpperCase() : String()));
                 m.addItem (1, pickedClips.size() > 1 ? "Delete " + String ((int) pickedClips.size()) + " clips" : String ("Delete this clip"), ! pickedClips.empty());
                 m.addItem (2, "Bring it back (the bars deleted here)", anyGone);
+                {
+                    PopupMenu colours;
+                    const char* names[] = { "Orange", "Yellow", "Green", "Teal", "Blue", "Violet", "Pink", "Red", "Tan", "Sky" };
+                    for (int c = 0; c < 10; ++c)
+                    {
+                        PopupMenu::Item it (names[c]);
+                        it.itemID = 100 + c;
+                        it.colour = trackColour (c);
+                        it.isTicked = st.tracks[(size_t) i].colour == trackColour (c).getARGB();
+                        colours.addItem (it);
+                    }
+                    colours.addSeparator();
+                    colours.addItem (99, "Automatic", st.tracks[(size_t) i].colour != 0);
+                    m.addSubMenu ("Track colour", colours);
+                }
                 m.addSeparator();
                 m.addItem (3, "Remove the whole track \"" + st.tracks[(size_t) i].name + "\"", st.tracks.size() > 1);
                 SafePointer<StudioView> sp (this);
@@ -808,6 +823,8 @@ void StudioView::mouseDown (const MouseEvent& e)
                         sp->proc.songJob.silenceBars (i, bars, false);
                     }
                     else if (r == 3) sp->askRemove (i);
+                    else if (r == 99) sp->proc.songJob.setColour (i, 0);
+                    else if (r >= 100 && r < 110) sp->proc.songJob.setColour (i, trackColour (r - 100).getARGB());
                 });
                 if (onOpenTrack) onOpenTrack (i);
                 repaint();
@@ -822,7 +839,7 @@ void StudioView::mouseDown (const MouseEvent& e)
                 }
                 else { pickedClips.clear(); pickedClips.insert (key); }
             }
-            else pickedClips.clear();
+            else if (! (e.mods.isShiftDown() || e.mods.isCommandDown())) pickedClips.clear();
             if (onOpenTrack) onOpenTrack (i);
             repaint();
             return;
@@ -837,10 +854,28 @@ void StudioView::mouseDown (const MouseEvent& e)
             m.addItem (3, tr.reversed ? "Play it forwards again" : "Reverse it", tr.canReverse);
             m.addItem (4, "Pitch up a semitone");
             m.addItem (5, "Pitch down a semitone");
+            {
+                // its colour: pick one (or back to its own)
+                PopupMenu colours;
+                const char* names[] = { "Orange", "Yellow", "Green", "Teal", "Blue", "Violet", "Pink", "Red", "Tan", "Sky" };
+                for (int c = 0; c < 10; ++c)
+                {
+                    PopupMenu::Item it (names[c]);
+                    it.itemID = 100 + c;
+                    it.colour = trackColour (c);
+                    it.isTicked = tr.colour == trackColour (c).getARGB();
+                    colours.addItem (it);
+                }
+                colours.addSeparator();
+                colours.addItem (99, "Automatic", tr.colour != 0);
+                m.addSubMenu ("Colour", colours);
+            }
             m.addSeparator();
             m.addItem (1, "Remove \"" + tr.name + "\" from the song", st.tracks.size() > 1);
             m.showMenuAsync (PopupMenu::Options(), [this, i] (int r)
             {
+                if (r == 99) proc.songJob.setColour (i, 0);
+                else if (r >= 100 && r < 110) proc.songJob.setColour (i, trackColour (r - 100).getARGB());
                 if (r == 1) askRemove (i);
                 else if (r == 2) proc.songJob.editTrack (i, SongJob::EditOp::Swap);
                 else if (r == 3) proc.songJob.editTrack (i, SongJob::EditOp::Reverse);

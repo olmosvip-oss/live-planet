@@ -47,6 +47,8 @@ public:
         bool locked = false;  // kept when the rest is written again
         bool vocal = false;   // a vocal track (it has the Vocal chain)
         bool tunable = false; // a vocal with its untouched recording kept (it has Auto-tune)
+        std::set<int> silentBars; // the bars you deleted in the arrangement
+        juce::uint32 colour = 0;  // the colour you picked for it (0: its place in the palette)
     };
 
     struct Status
@@ -2332,6 +2334,8 @@ private:
         TrackInfo t;
         t.name = p.name;
         t.locked = p.locked;
+        t.silentBars = p.silentBars;
+        t.colour = p.colour;
         t.source = p.source;
         t.remix = p.remix;
         t.stem = stem;
@@ -3171,6 +3175,16 @@ public:
         if (track < 0 || track >= (int) current.parts.size() || track >= (int) status.tracks.size()) return;
         current.parts[(size_t) track].locked = on;
         status.tracks[(size_t) track].locked = on;
+        status.song = current;
+        saveSession();
+    }
+    // the colour a track shows in the arrangement (0: back to its palette colour); nothing is re-recorded
+    void setColour (int track, juce::uint32 argb)
+    {
+        const juce::ScopedLock sl (lock);
+        if (track < 0 || track >= (int) current.parts.size() || track >= (int) status.tracks.size()) return;
+        current.parts[(size_t) track].colour = argb;
+        status.tracks[(size_t) track].colour = argb;
         status.song = current;
         saveSession();
     }

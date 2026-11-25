@@ -1720,8 +1720,10 @@ void SongView::paint (Graphics& g)
             {
                 g.setFont (lp::ui::mono (9.5f, false, 0.1f));
                 g.setColour (Colours::white.withAlpha (0.9f));
+                // (zoomed in: the name stays in view while its section is)
+                auto tr = ruler ? rect.withLeft (jmax (rect.getX(), ln.getX())).withRight (jmin (rect.getRight(), ln.getRight())) : rect;
                 g.drawFittedText (n.toUpperCase() + (st.haveSong ? (ruler ? "  " : "\n") + String (bl.bars) + (ruler ? "" : " BARS") : String()),
-                                  rect.reduced (ruler ? 6.0f : 8.0f, ruler ? 3.0f : 7.0f).toNearestInt(), ruler ? Justification::centredLeft : Justification::topLeft, ruler ? 1 : 2, 0.8f);
+                                  tr.reduced (ruler ? 6.0f : 8.0f, ruler ? 3.0f : 7.0f).toNearestInt(), ruler ? Justification::centredLeft : Justification::topLeft, ruler ? 1 : 2, 0.8f);
             }
         }
         if (st.haveSong && ! dirty && proc.studio.length() > 0 && proc.songIsPlaying())
