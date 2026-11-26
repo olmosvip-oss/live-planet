@@ -1,5 +1,7 @@
 #include "PluginEditor.h"
 #include "AppFolder.h"
+#include "License.h"
+#include "BinaryData.h"
 #include "../song/VoiceVariants.h"
 
 using namespace juce;
@@ -8,8 +10,33 @@ using lp::ui::font;
 namespace lp::ai
 {
 // ---- what a voice is, from its name ("Me - Deep": made from your voice; anything else: a recording you added)
+// Loopwright's own voices: built in (their picture too), always there, never removed
+static bool isOfficial (const String& name)
+{
+    const auto base = name.upToFirstOccurrenceOf (" - ", false, false).trim();
+    return base.equalsIgnoreCase ("Jordan_Sing") || base.equalsIgnoreCase ("Jordan_Rap");
+}
+static Image officialPicture()
+{
+    static Image img = ImageFileFormat::loadFrom (BinaryData::jordan_jpg, (size_t) BinaryData::jordan_jpgSize);
+    return img;
+}
+// your own voices: one per recording (with the voices made from it), 2 free
+static int ownVoiceCount (const ComboBox& voices)
+{
+    StringArray bases;
+    for (int i = 0; i < voices.getNumItems(); ++i)
+    {
+        const auto n = voices.getItemText (i);
+        if (! isOfficial (n)) bases.addIfNotAlreadyThere (n.upToFirstOccurrenceOf (" - ", false, false).trim());
+    }
+    return bases.size();
+}
+
 VoicePicker::About VoicePicker::about (const String& name)
 {
+    if (name.equalsIgnoreCase ("Jordan_Sing")) return { name, "Loopwright voice: singing", false };
+    if (name.equalsIgnoreCase ("Jordan_Rap")) return { name, "Loopwright voice: rap", false };
     for (auto& v : lp::song::variants::all())
         if (name.endsWithIgnoreCase (String (" - ") + v.name))
             return { name.dropLastCharacters ((int) strlen (v.name) + 3) + String::fromUTF8 (" \xc2\xb7 ") + v.name, v.tags, true };
@@ -29,6 +56,7 @@ static File pictureFileFor (const String& name)
 }
 static Image pictureFor (const String& name)
 {
+    if (isOfficial (name)) return officialPicture();
     const auto f = pictureFileFor (name);
     if (! f.existsAsFile()) return {};
     const auto key = (int64) f.getFullPathName().hashCode64() ^ f.getLastModificationTime().toMilliseconds();
@@ -154,6 +182,12 @@ VoicePicker::VoicePicker (LivePlanetProcessor& p, const lp::ui::Theme*& theme, C
     closeBtn.onClick = [this] { if (onClosed) onClosed(); };
     auto pick = [this] (bool variants)
     {
+        // your own voices: 2 free (each recording, with the voices made from it); more once unlocked
+        if (ownVoiceCount (voices) >= lp::license::freeVoices() && ! lp::license::moreVoicesUnlocked())
+        {
+            askToUnlockVoices();
+            return;
+        }
         chooser = std::make_unique<FileChooser> (variants ? "A clean recording of you singing (10 to 30 seconds, no music)" : "A clean recording of the voice (no music)",
                                                  File(), "*.wav;*.m4a;*.mp3;*.aif;*.aiff;*.flac;*.caf;*.aac");
         SafePointer<VoicePicker> self (this);
@@ -204,7 +238,7 @@ std::vector<String> VoicePicker::shownVoices() const
     for (int i = 0; i < voices.getNumItems(); ++i)
     {
         const auto n = voices.getItemText (i);
-        if (hidden.getArray() != nullptr && hidden.getArray()->contains (n)) continue; // (you removed it)
+        if (! isOfficial (n) && hidden.getArray() != nullptr && hidden.getArray()->contains (n)) continue; // (you removed it)
         const auto ab = about (n);
         if (tab == 1 && ! ab.madeFromYours) continue;
         if (tab == 2 && ab.madeFromYours) continue;
@@ -321,6 +355,20 @@ void VoicePicker::mouseDown (const MouseEvent& e)
             const int nHidden = hidden.getArray() != nullptr ? hidden.getArray()->size() : 0;
             PopupMenu m;
             m.addSectionHeader (name);
+            if (isOfficial (name))
+            {
+                m.addItem (-1, "A Loopwright voice: always here", false);
+                m.addSeparator();
+                m.addItem (2, "Bring back removed voices (" + String (nHidden) + ")", nHidden > 0);
+                SafePointer<VoicePicker> self (this);
+                m.showMenuAsync (PopupMenu::Options(), [self] (int r)
+                {
+                    if (self == nullptr || r != 2) return;
+                    lp::setSetting ("hiddenVoices", Array<var>());
+                    self->repaint();
+                });
+                return;
+            }
             m.addItem (3, "Set a picture...");
             m.addItem (4, "Remove its picture", pictureFileFor (name).existsAsFile() && ! name.contains (" - "));
             m.addSeparator();
@@ -446,3 +494,27 @@ void VoicePicker::makeVariants (const File& recording)
     });
 }
 } // namespace lp::ai
+
+// the 2 free voices are used: unlock more (buy, or a code you have)
+void lp::ai::VoicePicker::askToUnlockVoices()
+{
+    auto* w = new AlertWindow ("More voices of your own",
+                               "You've used your " + String (lp::license::freeVoices()) + " free voices. Unlock as many as you like: "
+                               "buy it on loop-wright.com and paste the code you get here. "
+                               "(To make room instead, right-click one of yours and Remove this voice.)",
+                               MessageBoxIconType::NoIcon);
+    w->addTextEditor ("code", {}, "Your code");
+    w->addButton ("Unlock", 1, KeyPress (KeyPress::returnKey));
+    if (lp::license::buyUrl().isNotEmpty()) w->addButton ("Buy more voices", 2);
+    w->addButton ("Not now", 0, KeyPress (KeyPress::escapeKey));
+    Component::SafePointer<lp::ai::VoicePicker> self (this);
+    w->enterModalState (true, ModalCallbackFunction::create ([self, w] (int r)
+    {
+        if (self == nullptr) return;
+        if (r == 2) { URL (lp::license::buyUrl() + (lp::license::buyUrl().contains ("?") ? "&" : "?") + "item=voices").launchInDefaultBrowser(); return; }
+        if (r != 1) return;
+        const bool ok = lp::license::unlockMoreVoices (w->getTextEditorContents ("code"));
+        self->message = ok ? String ("Unlocked: add as many voices of your own as you like") : String ("That code isn't a voices code: check it and try again");
+        self->repaint();
+    }), true);
+}

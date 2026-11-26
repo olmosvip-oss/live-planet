@@ -43,9 +43,9 @@ inline juce::BigInteger digestOf (const juce::String& owner, const juce::String&
 }
 
 // a code is "LW1-" + base64 of "owner\nsignature-in-hex"
-inline juce::String makeCode (const juce::String& owner, const juce::String& privateKeyText)
+inline juce::String makeCode (const juce::String& owner, const juce::String& privateKeyText, const juce::String& prefix = "Loopwright license v1|")
 {
-    juce::BigInteger v = digestOf (owner);
+    juce::BigInteger v = digestOf (owner, prefix);
     juce::RSAKey (privateKeyText).applyToValue (v);
     juce::MemoryOutputStream mo;
     mo << owner.trim() << "\n" << v.toString (16);
@@ -53,7 +53,7 @@ inline juce::String makeCode (const juce::String& owner, const juce::String& pri
 }
 
 // who a code was made for, or empty if it isn't a real code
-inline juce::String ownerOf (const juce::String& code, const juce::String& publicKeyText = publicKey())
+inline juce::String ownerOf (const juce::String& code, const juce::String& publicKeyText = publicKey(), const juce::String& prefix = "Loopwright license v1|")
 {
     const auto t = code.trim().removeCharacters (" \n\r\t");
     if (! t.startsWith ("LW1-") || publicKeyText.isEmpty()) return {};
@@ -65,7 +65,7 @@ inline juce::String ownerOf (const juce::String& code, const juce::String& publi
     sig.parseString (text.fromFirstOccurrenceOf ("\n", false, false), 16);
     if (owner.isEmpty() || sig.isZero()) return {};
     juce::RSAKey (publicKeyText).applyToValue (sig);
-    return sig == digestOf (owner) ? owner : juce::String();
+    return sig == digestOf (owner, prefix) ? owner : juce::String();
 }
 
 inline juce::File codeFile()  { return lp::appFolder().getChildFile ("license.txt"); }
@@ -236,4 +236,20 @@ inline int trialDaysLeft()
 // may it write songs? (always, when licensing is off)
 inline bool canWrite() { return ! required() || activatedTo().isNotEmpty() || trialDaysLeft() > 0; }
 
+
+// ---- more voices of your own: 2 are free, more with a "more voices" code (a code signed for voices, not the app)
+inline juce::String voicesPrefix() { return "Loopwright voices v1|"; }
+inline int freeVoices() { return 2; }
+inline bool moreVoicesUnlocked()
+{
+    if (! required()) return true; // (a test build: everything open)
+    const auto code = lp::appFolder().getChildFile ("voices-license.txt").loadFileAsString();
+    return ownerOf (code, publicKey(), voicesPrefix()).isNotEmpty();
+}
+inline bool unlockMoreVoices (const juce::String& code)
+{
+    if (ownerOf (code, publicKey(), voicesPrefix()).isEmpty()) return false;
+    lp::appFolder().getChildFile ("voices-license.txt").replaceWithText (code.trim());
+    return true;
+}
 } // namespace lp::license

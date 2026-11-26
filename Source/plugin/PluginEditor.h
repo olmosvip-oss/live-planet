@@ -1020,6 +1020,7 @@ private:
     juce::Rectangle<float> gridArea() const;
     std::vector<juce::String> shownVoices() const;
     void makeVariants (const juce::File& recording);
+    void askToUnlockVoices();
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
     juce::ComboBox& voices;
