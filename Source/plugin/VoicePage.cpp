@@ -654,8 +654,10 @@ void VoicePage::paint (Graphics& g)
         const double least = whoSings == 0 ? 1.0 : 2.0; // (a written melody fits a line a bar; freestyle needs two)
         const bool tooMany = whoSings != 1 && n > 0 && have > 0.0 && ! demo && perLine < least - 0.01;
         const bool quick = whoSings != 1 && ! tooMany && n > 0 && have > 0.0 && ! demo && perLine < 2.0 * least - 0.01;
+        // (too few: a line has to fill many bars, so the singer stretches, repeats or makes up words, and takes fail the words check)
+        const bool tooFew = whoSings != 1 && n > 0 && have > 0.0 && ! demo && perLine > 6.0;
         g.setFont (font (12.5f, tooMany ? lp::ui::Medium : lp::ui::Light));
-        g.setColour (tooMany ? Colour (0xffff8f8f) : quick ? Colour (0xfff2c14e) : t.inkDim);
+        g.setColour (tooMany ? Colour (0xffff8f8f) : quick || tooFew ? Colour (0xfff2c14e) : t.inkDim);
         const int fits = jmax (1, (int) (have / (least * bar)));
         const int bars = roundToInt (have / jmax (0.01, bar));
         const auto fit = whoSings == 1 ? String ("Your words (optional): only used to check how many of them come through")
@@ -663,6 +665,8 @@ void VoicePage::paint (Graphics& g)
                        : tooMany ? String (n) + " lines need at least " + String (roundToInt (n * least)) + " bars; this part is " + String (bars)
                                    + ". Keep " + String (fits) + (fits == 1 ? " line" : " lines") + " or pick a longer part"
                        : quick ? String (n) + " lines in " + String (bars) + " bars: rap pace. For slow sung lines, pick a longer part"
+                       : tooFew ? String (n) + (n == 1 ? " line" : " lines") + " for " + String (bars) + " bars: too few words, the singer will stretch or "
+                                  "repeat them. Write about " + String (jmax (n + 1, bars / 2)) + " lines, or pick a shorter part"
                        : String (n) + (n == 1 ? " line" : " lines") + " in " + String (bars) + " bars: room for every word";
         g.drawText (fit, in.withTrimmedBottom (30.0f).removeFromBottom (24.0f), Justification::centredLeft, true);
     }
@@ -843,9 +847,15 @@ void VoicePage::paint (Graphics& g)
         {
             g.setFont (font (13.0f, lp::ui::Light));
             g.setColour (t.inkDim);
+            // (a round with none kept: the helper keeps a take only when most of your words come through, and tries again)
+            const bool retrying = j != nullptr && j->note.containsIgnoreCase ("round") && ! j->note.containsIgnoreCase ("round 1:")
+                               && j->note.trimStart().fromFirstOccurrenceOf (": ", false, false).startsWith ("0 of");
             g.drawFittedText (j == nullptr ? String ("Type your words, pick a part of your song and a voice, and press Create.")
-                                           : String ("Your versions appear here as each one is finished."),
-                              resultsArea().withHeight (40.0f).toNearestInt(), Justification::topLeft, 2, 1.0f);
+                              : retrying ? String ("No take so far sang your words clearly enough (a take is kept when most of your words come through), "
+                                                   "so it's trying again. Few words for a long part makes this likely: Stop, add more lines (about one "
+                                                   "for every 2 bars) or pick a shorter part, and create again.")
+                                         : String ("Your versions appear here as each one is finished."),
+                              resultsArea().withHeight (retrying ? 64.0f : 40.0f).toNearestInt(), Justification::topLeft, 4, 1.0f);
         }
     }
 }
