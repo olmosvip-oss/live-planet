@@ -684,7 +684,8 @@ private:
     juce::Rectangle<float> pumpBounds() const;
     bool draggingPump = false;
     // each track's stem as a loudness line, read in the background
-    struct Env { std::vector<float> peaks; double rate = 0.0; juce::int64 length = 0; };
+    // peaks: the loudest in each bucket (for which sections it plays in); hi / lo: the wave's top and bottom there
+    struct Env { std::vector<float> peaks, hi, lo; double rate = 0.0; juce::int64 length = 0; };
     struct Envs { std::mutex lock; std::map<juce::String, Env> done; std::set<juce::String> pending; };
     std::shared_ptr<Envs> envs = std::make_shared<Envs>();
     const Env* envelopeOf (const juce::File&);

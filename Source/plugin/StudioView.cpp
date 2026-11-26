@@ -255,22 +255,32 @@ const StudioView::Env* StudioView::envelopeOf (const File& f)
         fm.registerBasicFormats();
         if (std::unique_ptr<AudioFormatReader> rd { fm.createReaderFor (f) })
         {
+            // 400 buckets a second (fine enough to zoom in on a single hit), the wave's top and bottom in each
             e.rate = rd->sampleRate;
             e.length = rd->lengthInSamples;
-            const int n = 4000;
+            const int64 per = std::max<int64> (1, (int64) (rd->sampleRate / 400.0));
+            const int n = (int) std::max<int64> (1, (e.length + per - 1) / per);
             e.peaks.assign ((size_t) n, 0.0f);
-            const int64 per = std::max<int64> (1, e.length / n);
-            AudioBuffer<float> buf ((int) rd->numChannels, (int) std::min<int64> (per, 1 << 16));
-            for (int i = 0; i < n; ++i)
+            e.hi.assign ((size_t) n, 0.0f);
+            e.lo.assign ((size_t) n, 0.0f);
+            const int chunk = (int) (per * 256);
+            AudioBuffer<float> buf ((int) rd->numChannels, chunk);
+            for (int64 at = 0; at < e.length; at += chunk)
             {
-                const int64 at = (int64) i * per;
-                if (at >= e.length) break;
-                const int len = (int) std::min<int64> ({ per, e.length - at, (int64) buf.getNumSamples() });
+                const int len = (int) std::min<int64> (chunk, e.length - at);
                 rd->read (&buf, 0, len, at, true, rd->numChannels > 1);
-                float m = 0.0f;
-                for (int ch = 0; ch < buf.getNumChannels(); ++ch) m = std::max (m, buf.getMagnitude (ch, 0, len));
-                e.peaks[(size_t) i] = m;
+                for (int i = 0; i < len; ++i)
+                {
+                    float v = 0.0f;
+                    for (int ch = 0; ch < buf.getNumChannels(); ++ch) v += buf.getSample (ch, i);
+                    v /= (float) std::max (1, buf.getNumChannels());
+                    const size_t k = (size_t) ((at + i) / per);
+                    if (k >= (size_t) n) break;
+                    e.hi[k] = std::max (e.hi[k], v);
+                    e.lo[k] = std::min (e.lo[k], v);
+                }
             }
+            for (int k = 0; k < n; ++k) e.peaks[(size_t) k] = std::max (e.hi[(size_t) k], -e.lo[(size_t) k]);
         }
         {
             const std::lock_guard<std::mutex> l (shared->lock);
@@ -489,7 +499,8 @@ void StudioView::paint (Graphics& g)
                 const bool isPicked = pickedClips.count ({ i, c0, end }) > 0;
                 auto clip = Rectangle<float> (x0, row.getY(), x1 - x0, row.getHeight());
                 clipHits.push_back ({ i, (int) si, c0, end, clip });
-                g.setColour (tc.withAlpha (muted ? 0.10f : isPicked ? 0.55f : 0.26f));
+                // the clip in its track's colour (light, like a DAW), the wave dark over it
+                g.setColour (tc.withAlpha (muted ? 0.12f : isPicked ? 0.8f : 0.55f));
                 g.fillRoundedRectangle (clip, 3.0f);
                 g.setColour (tc.withAlpha (muted ? 0.2f : 0.6f));
                 g.drawRoundedRectangle (clip.reduced (0.5f), 3.0f, 1.0f);
@@ -505,19 +516,42 @@ void StudioView::paint (Graphics& g)
                     g.setFont (font (9.5f, lp::ui::Medium));
                     g.drawText (t.name, strip.reduced (5.0f, 0.0f), Justification::centredLeft, true);
                 }
-                // one thin line per pixel: the loudest moment under it
-                g.setColour ((isPicked ? Colours::white : tc.brighter (0.45f)).withAlpha (muted ? 0.25f : 0.85f));
-                const float mid = body.getCentreY(), half = body.getHeight() * 0.5f - 2.0f;
-                const float xa = std::max (body.getX() + 1.0f, lx), xb = std::min (body.getRight() - 1.0f, lx + lw);
-                for (float x = xa; x < xb; x += 1.0f)
+                // the wave as one filled shape: its top and bottom traced along the clip (half-pixel steps, smooth when zoomed in)
                 {
-                    const double barA = view != nullptr ? view->barAt (x, lx, lw, totalBars) : (x - lx) / lw * totalBars;
-                    const double barB = view != nullptr ? view->barAt (x + 1.0f, lx, lw, totalBars) : (x + 1.0f - lx) / lw * totalBars;
-                    const int ka = bucketOf (barA), kb = std::max (ka + 1, bucketOf (barB));
-                    float v = 0.0f;
-                    for (int k = ka; k < kb && k < n; ++k) v = std::max (v, env->peaks[(size_t) k]);
-                    const float h = std::max (0.5f, v / top * half);
-                    g.drawVerticalLine ((int) x, mid - h, mid + h);
+                    const float mid = body.getCentreY(), half = body.getHeight() * 0.5f - 1.5f;
+                    const float xa = std::max (body.getX() + 1.0f, lx), xb = std::min (body.getRight() - 1.0f, lx + lw);
+                    auto at = [&] (float x) { return view != nullptr ? view->barAt (x, lx, lw, totalBars) : (x - lx) / lw * totalBars; };
+                    const auto& hi = env->hi;
+                    const auto& lo = env->lo;
+                    std::vector<Point<float>> upper, lower;
+                    for (float x = xa; x <= xb; x += 0.5f)
+                    {
+                        const int ka = bucketOf (at (x)), kb = bucketOf (at (x + 0.5f));
+                        float h = 0.0f, l = 0.0f;
+                        if (kb > ka)
+                            for (int k = ka; k < kb && k < n; ++k) { h = std::max (h, hi[(size_t) k]); l = std::min (l, lo[(size_t) k]); }
+                        else if (ka < n)
+                        {
+                            // zoomed in past one bucket a step: in between two buckets, smoothly
+                            const double exact = at (x) * barSamples / (double) std::max<int64> (1, env->length) * n;
+                            const int k0 = jlimit (0, n - 1, (int) exact), k1 = std::min (n - 1, k0 + 1);
+                            const float f = (float) (exact - k0);
+                            h = hi[(size_t) k0] + (hi[(size_t) k1] - hi[(size_t) k0]) * f;
+                            l = lo[(size_t) k0] + (lo[(size_t) k1] - lo[(size_t) k0]) * f;
+                        }
+                        upper.push_back ({ x, mid - std::max (0.4f, h / top * half) });
+                        lower.push_back ({ x, mid - std::min (-0.4f, l / top * half) });
+                    }
+                    if (upper.size() > 1)
+                    {
+                        Path wave;
+                        wave.startNewSubPath (upper.front());
+                        for (size_t k = 1; k < upper.size(); ++k) wave.lineTo (upper[k]);
+                        for (size_t k = lower.size(); k-- > 0;) wave.lineTo (lower[k]);
+                        wave.closeSubPath();
+                        g.setColour (Colour (0xff121216).withAlpha (muted ? 0.35f : 0.82f));
+                        g.fillPath (wave);
+                    }
                 }
                 if (isPicked)
                 {
