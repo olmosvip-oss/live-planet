@@ -5,6 +5,7 @@
 #include <complex>
 #include <numeric>
 #include "Song.h"
+#include "Tune.h"
 
 namespace lp::song::transcribe
 {
@@ -158,6 +159,103 @@ inline std::vector<Note> notesOf (const float* mono, int numSamples, double samp
         }
     }
     std::sort (out.begin(), out.end(), [] (const Note& a, const Note& b) { return a.beat < b.beat || (a.beat == b.beat && a.pitch < b.pitch); });
+    return out;
+}
+
+// One voice (a sung vocal, a hummed line, a lead): its melody, followed moment by moment with a pitch tracker,
+// each sung note snapped to the nearest note of the song's key, put on the 16th-note grid. A new syllable on
+// the same note is a new note; breaths, consonants and silence are rests. (The polyphonic reading above hears a
+// voice's overtones and its room as extra notes, so a voice always comes here instead.)
+inline std::vector<Note> melodyOf (const float* mono, int numSamples, double sampleRate, const Options& o)
+{
+    std::vector<Note> out;
+    if (numSamples < 4096 || sampleRate <= 0.0 || o.bpm <= 0.0) return out;
+    const int hop = std::max (64, (int) std::round (sampleRate * 0.008)); // (8 ms steps)
+    std::vector<float> x (mono, mono + numSamples);
+    const auto pitch = tune::track (x, sampleRate, hop);
+    const double frameSec = (double) hop / sampleRate;
+    tune::Settings ks;
+    ks.key = o.key; ks.scale = o.minor ? 1 : 0;
+    const auto tgt = tune::targets (pitch, ks); // (a note held until the voice clearly moves: no flicker)
+    // each frame's level (for the velocities, and to hear a new syllable on the same note)
+    std::vector<float> level (pitch.size(), 0.0f);
+    float loudest = 0.0f;
+    for (size_t f = 0; f < pitch.size(); ++f)
+    {
+        const size_t a = f * (size_t) hop, b = std::min ((size_t) numSamples, a + (size_t) hop);
+        double e = 0.0;
+        for (size_t i = a; i < b; ++i) e += (double) x[i] * x[i];
+        level[f] = b > a ? (float) std::sqrt (e / (double) (b - a)) : 0.0f;
+        loudest = std::max (loudest, level[f]);
+    }
+    if (loudest <= 0.0f) return out;
+    // runs of one note (a gap of a couple of frames inside a note is bridged)
+    struct Run { size_t a, b; int pitch; };
+    std::vector<Run> runs;
+    const size_t bridge = (size_t) std::max (1.0, 0.03 / frameSec);
+    for (size_t f = 0; f < tgt.size();)
+    {
+        if (tgt[f] <= 0.0) { ++f; continue; }
+        const int p = (int) tgt[f];
+        size_t e = f + 1, lastOn = f;
+        while (e < tgt.size())
+        {
+            if ((int) tgt[e] == p) { lastOn = e; ++e; continue; }
+            if (tgt[e] <= 0.0 && e - lastOn <= bridge) { ++e; continue; }
+            break;
+        }
+        runs.push_back ({ f, lastOn + 1, p });
+        f = lastOn + 1;
+    }
+    // too short to be a note (a scoop into one, a slide between two): given to its neighbour, or dropped
+    const size_t shortest = (size_t) std::max (2.0, 0.07 / frameSec);
+    std::vector<Run> kept;
+    for (auto& r : runs)
+    {
+        if (r.b - r.a >= shortest) { kept.push_back (r); continue; }
+        if (! kept.empty() && r.a - kept.back().b <= bridge) kept.back().b = r.b; // (a slide out of the last note)
+    }
+    // a new syllable on the same note: the level dips, then jumps back up
+    std::vector<Run> notes;
+    for (auto& r : kept)
+    {
+        size_t start = r.a;
+        float lowSince = level[r.a];
+        for (size_t f = r.a + 1; f < r.b; ++f)
+        {
+            lowSince = std::min (lowSince, level[f]);
+            if (f - start >= shortest && f + 2 < r.b && level[f] > lowSince * 2.2f && level[f] > loudest * 0.08f
+                && level[f - 1] < level[f] * 0.75f)
+            {
+                notes.push_back ({ start, f, r.pitch });
+                start = f; lowSince = level[f];
+            }
+        }
+        notes.push_back ({ start, r.b, r.pitch });
+    }
+    // onto the 16th-note grid, in beats; voices sit around the singer's own octave
+    const double beatsPerSec = o.bpm / 60.0;
+    auto q = [] (double beat) { return std::round (beat * 4.0) / 4.0; };
+    for (auto& r : notes)
+    {
+        const double b0 = q (r.a * frameSec * beatsPerSec), b1 = std::max (b0 + 0.25, q ((r.b * frameSec + 0.05) * beatsPerSec)); // (held through the breath after it)
+        float pk = 0.0f;
+        for (size_t f = r.a; f < r.b; ++f) pk = std::max (pk, level[f]);
+        if (! out.empty() && out.back().beat >= b0 - 1e-6)
+        {
+            // two notes landed on the same 16th: the longer one stays
+            if (out.back().length >= b1 - b0) continue;
+            out.pop_back();
+        }
+        if (! out.empty()) out.back().length = std::min (out.back().length, b0 - out.back().beat);
+        Note n;
+        n.beat = b0;
+        n.length = b1 - b0;
+        n.pitch = juce::jlimit (o.lowest, o.highest, r.pitch);
+        n.velocity = juce::jlimit (0.35f, 1.0f, 0.4f + 0.6f * std::sqrt (pk / loudest));
+        out.push_back (n);
+    }
+    out.erase (std::remove_if (out.begin(), out.end(), [] (const Note& n) { return n.length < 0.2; }), out.end());
     return out;
 }
 } // namespace lp::song::transcribe

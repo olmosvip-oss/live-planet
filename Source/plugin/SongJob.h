@@ -2496,7 +2496,14 @@ private:
             o.bpm = song.bpm; o.key = song.key; o.minor = song.minor;
             const juce::String nm (was.name);
             if (was.kind == PK::Bass || nm.containsIgnoreCase ("bass") || nm == "808") { o.lowest = 24; o.highest = 64; o.maxVoices = 1; }
-            notes = lp::song::transcribe::notesOf (mono.data(), len, rd->sampleRate, o);
+            // one voice (a vocal, a hum, a lead line): its melody, followed note by note. Else every note it plays.
+            const bool bassLine = was.kind == PK::Bass || nm.containsIgnoreCase ("bass") || nm == "808";
+            const bool oneVoice = ! bassLine && (nm.startsWith ("vocal (") || was.tune.source.isNotEmpty()
+                               || [&nm] { for (auto* w : { "vocal", "voice", "vox", "hum", "sing", "lead", "flute", "sax", "trumpet", "whistle" })
+                                              if (nm.containsIgnoreCase (w)) return true; return false; }());
+            if (oneVoice) { o.lowest = 36; o.highest = 96; }
+            notes = oneVoice ? lp::song::transcribe::melodyOf (mono.data(), len, rd->sampleRate, o)
+                             : lp::song::transcribe::notesOf (mono.data(), len, rd->sampleRate, o);
             for (auto& n : notes) n.beat += fromBeat; // (back to the song's time)
         }
         if (range.first >= 0 && range.second > 0 && range.second < (int) song.sections.size() && range.first < (int) song.sections.size())
