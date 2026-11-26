@@ -995,6 +995,28 @@ void StudioView::paint (Graphics& g)
             g.drawText (msg, pr.reduced (11.0f, 0.0f), Justification::centred, true);
         }
     }
+    // a track being dragged by its name: where it would go
+    if (trackDragging && trackDropValid)
+    {
+        Rectangle<float> area;
+        for (size_t d = 0; d < drows.size(); ++d)
+        {
+            if ((int) d < scroll || (int) d >= scroll + visibleRows()) continue;
+            if (trackDropGroup.isNotEmpty() ? drows[d].group == trackDropGroup : displayBounds ((int) d).contains (lastMouse))
+                area = area.isEmpty() ? displayBounds ((int) d) : area.getUnion (displayBounds ((int) d));
+        }
+        if (! area.isEmpty())
+        {
+            area = area.withRight (laneLeft() - 4.0f);
+            g.setColour (th.grass.withAlpha (0.16f));
+            g.fillRoundedRectangle (area, 6.0f);
+            g.setColour (th.grassLight);
+            g.drawRoundedRectangle (area.reduced (1.0f), 6.0f, 1.5f);
+            g.setFont (lp::ui::mono (9.5f, true, 0.1f));
+            g.drawText (trackDropGroup.isNotEmpty() ? "INTO " + trackDropGroup.toUpperCase() : String ("OUT OF ITS GROUP"),
+                        area.reduced (10.0f, 2.0f).removeFromBottom (14.0f), Justification::bottomRight, false);
+        }
+    }
 }
 
 void StudioView::setFromX (int row, Col c, float x)
@@ -1306,6 +1328,7 @@ void StudioView::mouseDown (const MouseEvent& e)
         const auto c = colAt (i, e.position);
         if (c == None)
         {
+            trackDrag = i; trackDragging = false; trackDropGroup = {}; trackDropValid = false; // (dragged by its name: into a group, or out)
             trackPicked = true; // (Delete now removes the track)
             // shift / cmd-click: more tracks picked (to group them); a plain click: just this one
             if (e.mods.isShiftDown() || e.mods.isCommandDown()) { if (selTracks.count (i)) selTracks.erase (i); else selTracks.insert (i); }
@@ -1343,6 +1366,26 @@ void StudioView::mouseDown (const MouseEvent& e)
 
 void StudioView::mouseDrag (const MouseEvent& e)
 {
+    if (trackDrag >= 0)
+    {
+        if (! trackDragging && e.getDistanceFromDragStart() < 6) return;
+        trackDragging = true;
+        lastMouse = e.position;
+        // where it would go: the group under the mouse (its row or a track in it), or out of its group (an ungrouped track)
+        const auto st = proc.songJob.getStatus();
+        trackDropValid = false;
+        for (size_t d = 0; d < drows.size(); ++d)
+        {
+            if ((int) d < scroll || (int) d >= scroll + visibleRows() || ! displayBounds ((int) d).contains (e.position)) continue;
+            trackDropGroup = drows[d].group;
+            const auto now = trackDrag < (int) st.tracks.size() ? st.tracks[(size_t) trackDrag].folder : String();
+            trackDropValid = trackDropGroup != now;
+            break;
+        }
+        setMouseCursor (trackDropValid ? MouseCursor::DraggingHandCursor : MouseCursor::NormalCursor);
+        repaint();
+        return;
+    }
     if (dragGroup.isNotEmpty())
     {
         // the whole group up or down together (each keeps its place against the others)
@@ -1389,6 +1432,22 @@ void StudioView::mouseDrag (const MouseEvent& e)
 
 void StudioView::mouseUp (const MouseEvent& e)
 {
+    if (trackDrag >= 0)
+    {
+        if (trackDragging && trackDropValid)
+        {
+            // the dragged track (with the others picked, if it's one of them) joins the group, or leaves its group
+            std::vector<int> tracks;
+            if (selTracks.count (trackDrag)) tracks.assign (selTracks.begin(), selTracks.end()); else tracks = { trackDrag };
+            proc.songJob.setGroup (tracks, trackDropGroup);
+            if (trackDropGroup.isNotEmpty()) collapsed.erase (trackDropGroup); // (open, so you see it land)
+            buildRows();
+        }
+        trackDrag = -1; trackDragging = false; trackDropValid = false;
+        setMouseCursor (MouseCursor::NormalCursor);
+        repaint();
+        return;
+    }
     if (dragClipTrack >= 0 && clipDragging && dropStart >= 0 && dropEnd > dropStart)
     {
         const int tr = dragClipTrack, T = lp::song::kTicksPerBar;

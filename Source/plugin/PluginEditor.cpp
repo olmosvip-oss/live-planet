@@ -359,6 +359,13 @@ void LivePlanetLookAndFeel::drawButtonBackground (Graphics& g, Button& b, const 
         g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
         return;
     }
+    if (primary)
+    {
+        // the main action: a solid pill in the theme colour (paler when it can't be used yet)
+        g.setColour ((b.isEnabled() ? th->grass : th->grass.withSaturation (0.2f)).brighter (over ? 0.12f : 0.0f).darker (down ? 0.15f : 0.0f));
+        g.fillRoundedRectangle (r, rad);
+        return;
+    }
     g.setColour (th->bodyLight.brighter (over ? 0.08f : 0.0f).darker (down ? 0.1f : 0.0f));
     g.fillRoundedRectangle (r, rad);
     if (b.getToggleState()) // switched on (mute, solo, print fx, your rating): tinted
