@@ -104,7 +104,7 @@ inline Song rebuild (const Song& old, const std::vector<Item>& plan)
             }
         }
         part.barFilter.clear();
-        part.chopBars.clear(); part.stutterBars.clear(); part.silentBars.clear(); part.barFrom.clear(); part.splitBars.clear(); part.slotShift.clear();
+        part.chopBars.clear(); part.stutterBars.clear(); part.silent = {}; part.barFrom.clear(); part.splitTicks.clear(); part.slotShift.clear();
         std::map<int, int> firstNew; // old bar -> the first new bar that plays it
         for (int nb = 0; nb < newBars; ++nb) firstNew.emplace (fromBar[(size_t) nb], nb); part.gapBars.clear(); part.swellBars.clear();
         std::vector<int> starts;
@@ -114,8 +114,13 @@ inline Song rebuild (const Song& old, const std::vector<Item>& plan)
             if (auto f = was.barFilter.find (ob); f != was.barFilter.end()) part.barFilter[nb] = f->second;
             if (was.chopBars.count (ob)) part.chopBars.insert (nb);
             if (was.stutterBars.count (ob)) part.stutterBars.insert (nb);
-            if (was.silentBars.count (ob)) part.silentBars.insert (nb);
-            if (was.splitBars.count (ob)) part.splitBars.insert (nb);
+            {
+                // the old bar's silences and cuts, where that bar plays now
+                const int T = lp::song::kTicksPerBar, d = (nb - ob) * T;
+                for (auto [a, b] : was.silent.m)
+                    if (a < (ob + 1) * T && b > ob * T) part.silent.add (std::max (a, ob * T) + d, std::min (b, (ob + 1) * T) + d);
+                for (int t : was.splitTicks) if (t >= ob * T && t < (ob + 1) * T) part.splitTicks.insert (t + d);
+            }
             for (int h = 0; h < 2; ++h)
                 if (auto sh = was.slotShift.find (ob * 2 + h); sh != was.slotShift.end()) part.slotShift[nb * 2 + h] = sh->second;
             if (auto bf = was.barFrom.find (ob); bf != was.barFrom.end())

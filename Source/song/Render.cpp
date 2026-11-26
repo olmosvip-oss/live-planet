@@ -1642,18 +1642,15 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
         }
     }
     // the bars you deleted: silent (a short fade either side, so nothing clicks; a tail rings on a little)
-    if (! part.silentBars.empty())
+    if (! part.silent.empty())
     {
-        const double barLen = spb * 4.0;
-        const int fade = (int) (0.008 * sr), tail = (int) (0.06 * sr);
+        // the stretches you deleted or trimmed: silent (a short fade either side, so nothing clicks)
+        const double tickLen = spb * 4.0 / lp::song::kTicksPerBar;
+        const int fade = (int) (0.006 * sr);
         const int n = buf.getNumSamples();
-        for (int bar : part.silentBars)
+        for (auto [ta, tb] : part.silent.m)
         {
-            if (part.silentBars.count (bar - 1)) continue; // (a run of bars: done from its first)
-            int last = bar;
-            while (part.silentBars.count (last + 1)) ++last;
-            const int a = juce::jlimit (0, n, (int) std::round (bar * barLen) + (bar > 0 ? tail : 0));
-            const int b = juce::jlimit (0, n, (int) std::round ((last + 1) * barLen));
+            const int a = juce::jlimit (0, n, (int) std::round (ta * tickLen)), b = juce::jlimit (0, n, (int) std::round (tb * tickLen));
             if (b <= a) continue;
             for (int ch = 0; ch < buf.getNumChannels(); ++ch)
             {

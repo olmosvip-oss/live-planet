@@ -319,6 +319,46 @@ struct VocalTune
 // one chop of a vocal (a pad): where it is in the recording, in seconds, and the note it's sung on (0: none)
 struct ChopSlice { double start = 0.0, len = 0.0, midi = 0.0; };
 
+// Where a track is silent (the parts of clips you deleted or trimmed away), as stretches of ticks:
+// 64 ticks a bar (a 1/64 note), so a clip can be trimmed or cut anywhere, not just on bars.
+constexpr int kTicksPerBar = 64;
+struct Spans
+{
+    std::map<int, int> m; // start -> end (end not included), never overlapping or touching
+    void add (int a, int b)
+    {
+        if (b <= a) return;
+        auto it = m.upper_bound (a);
+        if (it != m.begin()) { auto p = std::prev (it); if (p->second >= a) { a = p->first; b = std::max (b, p->second); it = m.erase (p); } }
+        while (it != m.end() && it->first <= b) { b = std::max (b, it->second); it = m.erase (it); }
+        m[a] = b;
+    }
+    void remove (int a, int b)
+    {
+        if (b <= a) return;
+        std::vector<std::pair<int, int>> keep;
+        for (auto it = m.begin(); it != m.end();)
+        {
+            if (it->second <= a || it->first >= b) { ++it; continue; }
+            if (it->first < a) keep.push_back ({ it->first, a });
+            if (it->second > b) keep.push_back ({ b, it->second });
+            it = m.erase (it);
+        }
+        for (auto& [x, y] : keep) m[x] = y;
+    }
+    bool covers (int t) const { auto it = m.upper_bound (t); if (it == m.begin()) return false; --it; return t < it->second; }
+    bool any (int a, int b) const { for (auto& [x, y] : m) if (x < b && y > a) return true; return false; }
+    bool covers (int a, int b) const { auto it = m.upper_bound (a); if (it == m.begin()) return false; --it; return it->first <= a && it->second >= b; }
+    // the first tick at or after t where silence starts or ends (or `limit`)
+    int nextEdge (int t, int limit) const
+    {
+        int best = limit;
+        for (auto& [x, y] : m) { if (x > t) best = std::min (best, x); if (y > t) best = std::min (best, y); }
+        return best;
+    }
+    bool empty() const { return m.empty(); }
+};
+
 struct Part
 {
     std::string name;
@@ -354,9 +394,9 @@ struct Part
     bool resound = false;            // "change its sound": its notes played on a one-shot from your library (samplePath), chords and all
     juce::uint32 flipSeed = 0;       // a flipped sample: its slices re-ordered, reversed, stuttered (0 = played as it is)
     int flipAmount = 2;              // 1 light, 2 medium, 3 heavy
-    std::set<int> silentBars;
+    Spans silent;                    // the stretches you deleted or trimmed away (ticks: kTicksPerBar a bar)
     std::map<int, int> barFrom;
-    std::set<int> splitBars;
+    std::set<int> splitTicks;        // where you cut its clips (ticks)
     std::map<int, int> slotShift;    // a sample that follows the song's chords: semitones it moves, each half bar         // where you cut its clips (a clip starts at each of these bars)      // clips you copied (option-drag) or moved: this bar plays that bar's sound        // bars you deleted from this track in the arrangement (it's silent there)
     std::vector<FxHit> fxHits;       // Fx parts: the transition sounds and where they land
     float mixDb = 0.0f;              // where it sits in the mix vs. its kind's usual level (lead up, background down)

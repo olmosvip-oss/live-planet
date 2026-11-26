@@ -22,6 +22,8 @@ const std::vector<Kind>& kinds()
         { "tape",   "Tape",        "Wobble, a worn band and a narrower picture: nostalgia", 1 },
         { "chorus", "Chorus",      "Two moving copies, one each side: width and shimmer", 1 },
         { "filter", "Filter",      "Darker (left) or thinner (right)", 1 },
+        { "room",   "Room",        "A send to the song's shared room (reverb)", 1 },
+        { "echo",   "Echo",        "A send to the song's tempo delay", 1 },
     };
     return k;
 }
@@ -44,6 +46,8 @@ static std::atomic<float>* mixValue (StudioPlayer::Mix& m, const String& id)
     if (id == "tape") return &m.nostalgia;
     if (id == "chorus") return &m.chorus;
     if (id == "filter") return &m.tone;
+    if (id == "room") return &m.space;
+    if (id == "echo") return &m.echo;
     return nullptr;
 }
 
@@ -185,6 +189,14 @@ String Browser::getTooltip()
 }
 
 // ---- the rack
+// the track's own strip (always there): volume and pan knobs, and its buttons in a column
+Rectangle<float> Rack::stripBox() const { return { 0.0f, 0.0f, 290.0f, std::min ((float) getHeight(), 150.0f) }; }
+Rectangle<float> Rack::volRect() const { return { 18.0f, 44.0f, 60.0f, 60.0f }; }
+Rectangle<float> Rack::panRect() const { return { 92.0f, 44.0f, 60.0f, 60.0f }; }
+Rectangle<float> Rack::bypassRect() const { return { 172.0f, 44.0f, 104.0f, 26.0f }; }
+Rectangle<float> Rack::dryRect() const { return { 172.0f, 76.0f, 104.0f, 26.0f }; }
+Rectangle<float> Rack::dragRect() const { return { 172.0f, 108.0f, 104.0f, 26.0f }; }
+
 StringArray Rack::knobNames (const String& id)
 {
     if (id == "eq") return { "LOW CUT", "MUD", "PRESENCE", "AIR" };
@@ -253,13 +265,13 @@ std::vector<Rack::Dev> Rack::layout() const
 {
     std::vector<Dev> out;
     if (track < 0) return out;
-    float x = 0.0f;
+    float x = stripBox().getRight() + 10.0f;
     const float h = std::min ((float) getHeight(), 150.0f); // (a compact strip, like a DAW's device view)
     for (auto& k : kinds())
     {
         if (! isOn (proc, track, k.id)) continue;
         const auto names = knobNames (k.id);
-        const float w = 30.0f + (float) names.size() * 74.0f;
+        const float w = std::max (150.0f, 30.0f + (float) names.size() * 74.0f); // (room for its name and buttons)
         Dev d;
         d.id = k.id;
         d.box = { x, 0.0f, w, h };
@@ -267,7 +279,7 @@ std::vector<Rack::Dev> Rack::layout() const
         d.close = { x + w - 24.0f, 10.0f, 14.0f, 14.0f };
         d.more = { x + w - 70.0f, 10.0f, 40.0f, 14.0f };
         for (int i = 0; i < names.size(); ++i)
-            d.knobs.push_back ({ k.id, i, Rectangle<float> (x + 18.0f + (float) i * 74.0f, 44.0f, 60.0f, 60.0f) });
+            d.knobs.push_back ({ k.id, i, Rectangle<float> (x + (w - (float) names.size() * 74.0f) * 0.5f + 7.0f + (float) i * 74.0f, 44.0f, 60.0f, 60.0f) });
         out.push_back (d);
         x += w + 10.0f;
     }
@@ -278,6 +290,59 @@ void Rack::paint (Graphics& g)
 {
     const auto devs = layout();
     if (track < 0) return;
+    {
+        // the track's strip
+        auto& m = proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, track)];
+        const auto sb = stripBox();
+        g.setColour (Colours::white.withAlpha (0.045f));
+        g.fillRoundedRectangle (sb, 10.0f);
+        g.setColour (Colours::white.withAlpha (0.1f));
+        g.drawRoundedRectangle (sb.reduced (0.5f), 10.0f, 1.0f);
+        g.setColour (Colours::white.withAlpha (0.06f));
+        g.fillRoundedRectangle (sb.withHeight (36.0f), 10.0f);
+        g.fillRect (sb.withHeight (36.0f).withTrimmedTop (18.0f));
+        g.setColour (th->ink);
+        g.setFont (font (13.5f, lp::ui::Medium));
+        g.drawText ("Track", Rectangle<float> (14.0f, 6.0f, 120.0f, 24.0f), Justification::centredLeft, false);
+        auto knob = [&] (Rectangle<float> r, float v, const String& name, const String& txt, bool bipolar)
+        {
+            const auto c = r.getCentre();
+            const float rad = r.getWidth() * 0.4f, a0 = MathConstants<float>::pi * 1.25f, a1 = MathConstants<float>::pi * 2.75f;
+            const float am = bipolar ? (a0 + a1) * 0.5f : a0, av = a0 + (a1 - a0) * v;
+            Path t0, arc;
+            t0.addCentredArc (c.x, c.y, rad, rad, 0.0f, a0, a1, true);
+            arc.addCentredArc (c.x, c.y, rad, rad, 0.0f, std::min (am, av), std::max (am, av), true);
+            g.setColour (Colours::white.withAlpha (0.1f));
+            g.strokePath (t0, PathStrokeType (4.0f, PathStrokeType::curved, PathStrokeType::rounded));
+            g.setColour (th->grassLight);
+            g.strokePath (arc, PathStrokeType (4.0f, PathStrokeType::curved, PathStrokeType::rounded));
+            const float ang = av - MathConstants<float>::halfPi;
+            g.setColour (Colours::white);
+            g.fillEllipse (c.x + std::cos (ang) * rad - 3.0f, c.y + std::sin (ang) * rad - 3.0f, 6.0f, 6.0f);
+            g.setFont (lp::ui::mono (8.5f, true, 0.1f));
+            g.setColour (th->inkDim);
+            g.drawText (name, Rectangle<float> (r.getX() - 10.0f, r.getBottom() + 2.0f, r.getWidth() + 20.0f, 12.0f), Justification::centred, false);
+            g.setFont (font (11.0f, lp::ui::Medium));
+            g.setColour (th->ink);
+            g.drawText (txt, Rectangle<float> (r.getX() - 14.0f, r.getBottom() + 15.0f, r.getWidth() + 28.0f, 14.0f), Justification::centred, false);
+        };
+        const float db = m.gainDb.load(), pan = m.pan.load();
+        knob (volRect(), jmap (db, -30.0f, 6.0f, 0.0f, 1.0f), "VOLUME", String (db, 1) + " dB", false);
+        knob (panRect(), pan * 0.5f + 0.5f, "PAN", std::abs (pan) < 0.01f ? String ("centre") : (pan < 0 ? "L " : "R ") + String (roundToInt (std::abs (pan) * 100.0f)), true);
+        auto btn = [&] (Rectangle<float> r, const String& label, bool on)
+        {
+            g.setColour (on ? th->grass.withAlpha (0.7f) : Colours::white.withAlpha (0.06f));
+            g.fillRoundedRectangle (r, 13.0f);
+            g.setColour (Colours::white.withAlpha (on ? 0.3f : 0.13f));
+            g.drawRoundedRectangle (r.reduced (0.5f), 13.0f, 1.0f);
+            g.setColour (th->ink);
+            g.setFont (font (12.0f, lp::ui::Medium));
+            g.drawText (label, r, Justification::centred, false);
+        };
+        btn (bypassRect(), m.fxBypass.load() ? "Bypassed" : "Bypass", m.fxBypass.load());
+        btn (dryRect(), m.printsFx() ? "Drag: with FX" : "Drag: dry", false);
+        btn (dragRect(), String::fromUTF8 ("\xe2\xa0\xbf  Drag track"), false);
+    }
     for (auto& d : devs)
     {
         const auto* kd = [&]() -> const Kind* { for (auto& k : kinds()) if (d.id == k.id) return &k; return nullptr; }();
@@ -332,7 +397,7 @@ void Rack::paint (Graphics& g)
     }
     if (devs.empty() || dropping)
     {
-        auto area = devs.empty() ? getLocalBounds().toFloat() : Rectangle<float> (devs.back().box.getRight() + 10.0f, 0.0f, 200.0f, (float) getHeight());
+        auto area = devs.empty() ? getLocalBounds().toFloat().withTrimmedLeft (stripBox().getRight() + 10.0f).withHeight (stripBox().getHeight()) : Rectangle<float> (devs.back().box.getRight() + 10.0f, 0.0f, 200.0f, (float) getHeight());
         Path outline;
         outline.addRoundedRectangle (area.reduced (2.0f), 10.0f);
         Path dashed;
@@ -350,6 +415,29 @@ void Rack::paint (Graphics& g)
 void Rack::mouseDown (const MouseEvent& e)
 {
     dragKnob = -1;
+    draggingFile = false;
+    if (track >= 0)
+    {
+        auto& m = proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, track)];
+        if (bypassRect().contains (e.position)) { m.fxBypass = ! m.fxBypass.load(); if (onChanged) onChanged(); repaint(); return; }
+        if (dryRect().contains (e.position))
+        {
+            const bool on = m.printsFx();
+            m.dragDry = on; m.printFx = ! on; // (with effects -> dry; dry -> recorded with them)
+            repaint();
+            return;
+        }
+        if (volRect().expanded (8.0f).contains (e.position))
+        {
+            if (e.getNumberOfClicks() > 1) { m.gainDb = 0.0f; if (onChanged) onChanged(); repaint(); return; }
+            dragId = "~vol"; dragKnob = 0; dragStart = jmap (m.gainDb.load(), -30.0f, 6.0f, 0.0f, 1.0f); return;
+        }
+        if (panRect().expanded (8.0f).contains (e.position))
+        {
+            if (e.getNumberOfClicks() > 1) { m.pan = 0.0f; if (onChanged) onChanged(); repaint(); return; }
+            dragId = "~pan"; dragKnob = 0; dragStart = m.pan.load() * 0.5f + 0.5f; return;
+        }
+    }
     for (auto& d : layout())
     {
         if (d.close.expanded (4.0f).contains (e.position)) { remove (proc, track, d.id); if (onChanged) onChanged(); repaint(); return; }
@@ -362,6 +450,24 @@ void Rack::mouseDown (const MouseEvent& e)
 
 void Rack::mouseDrag (const MouseEvent& e)
 {
+    if (track >= 0 && ! draggingFile && dragRect().contains (e.mouseDownPosition) && e.getDistanceFromDragStart() > 5)
+    {
+        // the track (as you hear it) dragged out, into your DAW or a folder
+        draggingFile = true;
+        const auto f = proc.fileToDrag (track);
+        if (f.existsAsFile()) DragAndDropContainer::performExternalDragDropOfFiles ({ f.getFullPathName() }, false, this);
+        return;
+    }
+    if (dragKnob >= 0 && dragId.startsWith ("~"))
+    {
+        auto& m = proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, track)];
+        const float v = jlimit (0.0f, 1.0f, dragStart - (float) e.getDistanceFromDragStartY() / 160.0f);
+        if (dragId == "~vol") m.gainDb = jmap (v, -30.0f, 6.0f);
+        else m.pan = std::abs (v - 0.5f) < 0.02f ? 0.0f : v * 2.0f - 1.0f;
+        if (onChanged) onChanged();
+        repaint();
+        return;
+    }
     if (dragKnob < 0) return;
     setValue (dragId, dragKnob, dragStart - (float) e.getDistanceFromDragStartY() / 160.0f);
     repaint();

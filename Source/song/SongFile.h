@@ -54,8 +54,12 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("barFilter", bf);
     o->setProperty ("chop", ints (p.chopBars)); o->setProperty ("stutter", ints (p.stutterBars));
     o->setProperty ("gap", ints (p.gapBars)); o->setProperty ("swell", ints (p.swellBars));
-    o->setProperty ("silent", ints (p.silentBars));
-    o->setProperty ("splits", ints (p.splitBars));
+    {
+        juce::Array<juce::var> sp;
+        for (auto [a, b] : p.silent.m) { sp.add (a); sp.add (b); }
+        o->setProperty ("silentTicks", sp);
+    }
+    o->setProperty ("splitTicks", ints (p.splitTicks));
     {
         juce::Array<juce::var> bf;
         for (auto [to, from] : p.barFrom) { bf.add (to); bf.add (from); }
@@ -140,8 +144,14 @@ inline Part partFromVar (const juce::var& v)
     for (int x : readInts (v["stutter"])) p.stutterBars.insert (x);
     for (int x : readInts (v["gap"])) p.gapBars.insert (x);
     for (int x : readInts (v["swell"])) p.swellBars.insert (x);
-    for (int x : readInts (v["silent"])) p.silentBars.insert (x);
-    for (int x : readInts (v["splits"])) p.splitBars.insert (x);
+    // (older songs kept whole bars)
+    for (int x : readInts (v["silent"])) p.silent.add (x * lp::song::kTicksPerBar, (x + 1) * lp::song::kTicksPerBar);
+    for (int x : readInts (v["splits"])) p.splitTicks.insert (x * lp::song::kTicksPerBar);
+    {
+        const auto sp = readInts (v["silentTicks"]);
+        for (size_t i = 0; i + 1 < sp.size(); i += 2) p.silent.add (sp[i], sp[i + 1]);
+    }
+    for (int x : readInts (v["splitTicks"])) p.splitTicks.insert (x);
     {
         const auto bf = readInts (v["barFrom"]);
         for (size_t i = 0; i + 1 < bf.size(); i += 2) p.barFrom[bf[i]] = bf[i + 1];

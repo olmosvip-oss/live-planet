@@ -48,8 +48,8 @@ public:
         bool locked = false;  // kept when the rest is written again
         bool vocal = false;   // a vocal track (it has the Vocal chain)
         bool tunable = false; // a vocal with its untouched recording kept (it has Auto-tune)
-        std::set<int> silentBars; // the bars you deleted in the arrangement
-        std::set<int> splitBars;  // where you cut its clips
+        lp::song::Spans silent;   // the stretches you deleted or trimmed in the arrangement (ticks)
+        std::set<int> splitTicks; // where you cut its clips (ticks)
         juce::uint32 colour = 0;  // the colour you picked for it (0: its place in the palette)
         juce::String folder;      // the group (folder) it's in (empty: none)
         bool midi = false;        // a MIDI track (its clips show its notes)
@@ -249,12 +249,13 @@ public:
     }
 
     // the arrangement: delete bars of a track (it goes silent there), or bring them back (on = false)
-    void silenceBars (int track, std::set<int> bars, bool on = true)
+    // stretches (in ticks, kTicksPerBar a bar) of a track made silent (deleted, trimmed away) or brought back
+    void silenceTicks (int track, std::vector<std::pair<int, int>> spans, bool on = true)
     {
-        if (bars.empty()) return;
+        if (spans.empty()) return;
         {
             const juce::ScopedLock sl (lock);
-            pendingSilence.push_back ({ track, { std::move (bars), on } });
+            pendingSilence.push_back ({ track, { std::move (spans), on } });
             edits.push_back ({ track, EditOp::Silence });
             status.editing = true;
         }
@@ -2388,8 +2389,8 @@ private:
         TrackInfo t;
         t.name = p.name;
         t.locked = p.locked;
-        t.silentBars = p.silentBars;
-        t.splitBars = p.splitBars;
+        t.silent = p.silent;
+        t.splitTicks = p.splitTicks;
         t.colour = p.colour;
         t.folder = p.group;
         t.midi = p.midi;
@@ -2509,30 +2510,17 @@ private:
         }
         if (notes.empty() && fromChords) { say ("couldn't read the song's chords there"); return; }
         if (notes.empty()) { say ("couldn't hear any notes in " + juce::String (was.name) + (range.first >= 0 ? " there" : "") + " (drums and noise have none)"); return; }
-        // the sound: the one-shot in your library whose name matches your words best
-        refreshUsable();
-        const auto look = searchWords (req.first);
-        const auto kinds = kindsInWords (req.first);
-        juce::Random rng;
-        std::vector<std::pair<float, juce::String>> pool;
-        for (auto& e : usableLib.all())
-        {
-            if (e.kind != lp::song::SampleKind::OneShot) continue;
-            const auto name = (e.path + " " + e.pack).toLowerCase();
-            float score = rng.nextFloat();
-            for (auto& w : look) if (w.length() > 2 && name.contains (w)) score += 4.0f;
-            for (auto k : kinds) if (e.loop == k) score += 3.0f;
-            pool.push_back ({ score, e.path });
-        }
-        std::sort (pool.begin(), pool.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+        // the sound: the one-shots in your library whose names match your words best, and that play one steady note
+        say ("finding a sound for \"" + req.first + "\"...");
+        const auto shots = oneShotsFor (req.first, 6);
         lp::song::Part part;
         part.kind = PK::Melody;
         part.notes = notes;
-        const bool fromLibrary = ! pool.empty() && pool.front().first >= 1.0f;
+        const bool fromLibrary = ! shots.isEmpty();
         if (fromLibrary)
         {
             part.resound = true;
-            for (size_t i = 0; i < pool.size() && i < 6; ++i) part.candidates.add (pool[i].second);
+            part.candidates = shots;
             part.samplePath = part.candidates[0];
         }
         else
@@ -2558,7 +2546,7 @@ private:
         part.remix = fromChords ? juce::String ("a new part on the song's chords, played on this sound")
                                 : "the notes of " + juce::String (was.name) + (written ? "" : " (read from its audio)") + ", played on this sound";
         part.mixDb = was.mixDb;
-        part.silentBars = was.silentBars; part.barFrom = was.barFrom; part.splitBars = was.splitBars;
+        part.silent = was.silent; part.barFrom = was.barFrom; part.splitTicks = was.splitTicks;
         juce::AudioBuffer<float> buf;
         if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
         const int at = req.second ? tr : (int) song.parts.size();
@@ -3611,22 +3599,50 @@ public:
     // the one-shot in your library whose name fits the words best (empty: none fits)
     juce::String oneShotFor (const juce::String& words)
     {
+        const auto list = oneShotsFor (words, 1);
+        return list.isEmpty() ? juce::String() : list[0];
+    }
+    // the one-shots that fit the words best, best first, and that really play ONE steady note (no arps, chords,
+    // riffs or slides: those sound off key when moved to each note). Each is listened to before it's offered.
+    juce::StringArray oneShotsFor (const juce::String& words, int howMany)
+    {
         refreshUsable();
         const auto look = searchWords (words);
         const auto kinds = kindsInWords (words);
         juce::Random rng;
-        float best = 0.99f;
-        juce::String pick;
+        std::vector<std::pair<float, juce::String>> pool;
+        static const juce::StringArray manyNotes { "arp", "chord", "loop", "riff", "phrase", "melody", "seq", "progression", "strum", "run", "fill", "bpm" };
         for (auto& e : usableLib.all())
         {
             if (e.kind != lp::song::SampleKind::OneShot) continue;
+            const auto file = juce::File (e.path).getFileNameWithoutExtension().toLowerCase();
+            bool skip = false;
+            for (auto& m : manyNotes) skip = skip || file.contains (m);
+            if (skip) continue;
             const auto name = (e.path + " " + e.pack).toLowerCase();
             float score = rng.nextFloat();
             for (auto& w : look) if (w.length() > 2 && name.contains (w)) score += 4.0f;
             for (auto k : kinds) if (e.loop == k) score += 3.0f;
-            if (score > best) { best = score; pick = e.path; }
+            if (score >= 1.0f) pool.push_back ({ score, e.path });
         }
-        return pick;
+        std::sort (pool.begin(), pool.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+        juce::StringArray out;
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        int listened = 0;
+        for (auto& [score, path] : pool)
+        {
+            if (out.size() >= howMany || listened >= 40) break;
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (path)));
+            if (rd == nullptr || rd->sampleRate < 8000.0) continue;
+            ++listened;
+            const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 2.0));
+            juce::AudioBuffer<float> b ((int) rd->numChannels, len);
+            rd->read (&b, 0, len, 0, true, true);
+            const auto heard = lp::song::onenote::read (b, rd->sampleRate);
+            if (heard.voiced > 0.3f && heard.steady > 0.75f && heard.body > 0.2f) out.add (path); // (one note, held)
+        }
+        return out;
     }
     // a copy of a track, under the last one (the same sound, its own file: change either on its own after)
     void duplicateTrack (int track)
@@ -3644,9 +3660,9 @@ public:
     {
         const juce::ScopedLock sl (lock);
         if (track < 0 || track >= (int) current.parts.size() || track >= (int) status.tracks.size()) return;
-        auto& s = current.parts[(size_t) track].splitBars;
+        auto& s = current.parts[(size_t) track].splitTicks;
         if (on) s.insert (bar); else s.erase (bar);
-        status.tracks[(size_t) track].splitBars = s;
+        status.tracks[(size_t) track].splitTicks = s;
         status.song = current;
         saveSession();
     }
@@ -4330,22 +4346,26 @@ private:
                     const auto [s0, sn, d0, dn, mv] = it->second;
                     pendingCopies.erase (it);
                     auto orig = [&part] (int b) { auto f = part.barFrom.find (b); return f != part.barFrom.end() ? f->second : b; };
+                    const int T = lp::song::kTicksPerBar;
                     std::map<int, int> add;
-                    std::set<int> nowSilent;
+                    const auto was = part.silent;
                     for (int k = 0; k < dn; ++k)
                     {
                         const int sb = s0 + k % sn, db = d0 + k;
-                        if (part.silentBars.count (sb)) nowSilent.insert (db);
                         add[db] = orig (sb); // (a copy of a copy plays the first one's sound)
                     }
                     for (auto [db, from] : add)
                     {
                         if (db == from) part.barFrom.erase (db); else part.barFrom[db] = from;
-                        if (nowSilent.count (db)) part.silentBars.insert (db); else part.silentBars.erase (db);
+                        // the source bar's silences (trims inside it) go with it
+                        const int sb = s0 + ((db - d0) % sn);
+                        part.silent.remove (db * T, (db + 1) * T);
+                        for (auto [a, b] : was.m)
+                            if (a < (sb + 1) * T && b > sb * T) part.silent.add (std::max (a, sb * T) + (db - sb) * T, std::min (b, (sb + 1) * T) + (db - sb) * T);
                     }
                     if (mv != 0)
                         for (int k = 0; k < sn; ++k)
-                            if (add.count (s0 + k) == 0) part.silentBars.insert (s0 + k);
+                            if (add.count (s0 + k) == 0) part.silent.add ((s0 + k) * T, (s0 + k + 1) * T);
                     break;
                 }
         }
@@ -4355,8 +4375,8 @@ private:
             for (auto it = pendingSilence.begin(); it != pendingSilence.end(); ++it)
                 if (it->first == tr)
                 {
-                    for (int b : it->second.first)
-                        if (it->second.second) part.silentBars.insert (b); else part.silentBars.erase (b);
+                    for (auto [a, b] : it->second.first)
+                        if (it->second.second) part.silent.add (a, b); else part.silent.remove (a, b);
                     pendingSilence.erase (it);
                     break;
                 }
@@ -5098,7 +5118,7 @@ private:
     juce::uint32 currentSeed = 1;
     std::vector<std::pair<int, EditOp>> edits;
     std::map<int, std::pair<int, int>> pendingRegion;
-    std::vector<std::pair<int, std::pair<std::set<int>, bool>>> pendingSilence;
+    std::vector<std::pair<int, std::pair<std::vector<std::pair<int, int>>, bool>>> pendingSilence;
     std::vector<std::pair<int, std::array<int, 5>>> pendingCopies; // track -> src start, src bars, dst start, dst bars, move // track -> bars, deleted (or back)
     std::map<int, GrainSettings> pendingGrains;
     std::map<int, std::vector<lp::song::Note>> pendingNotes;

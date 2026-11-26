@@ -2324,7 +2324,7 @@ void LivePlanetEditor::setPage (int p)
     if (p != Studio) trackEditor.stopLive(); // the drum editor's loop stops when you leave it
     const bool write = p == Write, studio = p == Studio, edit = false, sound = p == Sound, sky = false; // (the weather page is gone)
     const bool haveSong0 = proc.songJob.getStatus().haveSong;
-    trackEditor.setVisible (studio && haveSong0 && dockPageShown != 2);
+    trackEditor.setVisible (studio && haveSong0 && dockPageShown != 1);
     dockTabs.setVisible (studio && haveSong0);
     fxBtn.setVisible (studio && haveSong0);
     fxBrowser.setVisible (studio && haveSong0 && browserOpen);
@@ -2848,7 +2848,7 @@ void LivePlanetEditor::addFx (int track, const String& id)
     lp::fx::add (proc, track, id);
     if (trackEditor.selected() != track) trackEditor.select (track);
     dockCollapsed = false;
-    dockPageShown = 2;
+    dockPageShown = 1;
     showDock();
     resized();
     repaint();
@@ -2857,7 +2857,7 @@ void LivePlanetEditor::addFx (int track, const String& id)
 void LivePlanetEditor::showDock()
 {
     const bool studio = page == Studio && proc.songJob.getStatus().haveSong && ! dockCollapsed;
-    const bool fx = studio && dockPageShown == 2;
+    const bool fx = studio && dockPageShown == 1;
     trackEditor.setVisible (studio && ! fx);
     fxRack.setVisible (fx);
     if (fx) { fxRack.setTrack (trackEditor.selected()); fxRack.setBounds (trackEditor.getBounds()); }

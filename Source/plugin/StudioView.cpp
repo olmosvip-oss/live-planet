@@ -114,15 +114,34 @@ const StudioView::ClipHit* StudioView::clipAt (int track, Point<float> p) const
     return nullptr;
 }
 
-// a cut: the clip becomes two at the start of this bar (cmd+E, or right-click "cut here")
-void StudioView::splitClipAt (int track, int bar)
+// the grid clips snap to: finer as you zoom in (a bar, a beat, a 1/8, a 1/16... down to a 1/64)
+int StudioView::gridTicks() const
+{
+    const int total = std::max (1, proc.songJob.getStatus().song.totalBars());
+    const double shown = view != nullptr ? view->shown (total) : (double) total;
+    const double pxPerTick = (laneRight() - laneLeft()) / (shown * lp::song::kTicksPerBar);
+    int g = 1;
+    while (g < lp::song::kTicksPerBar && g * pxPerTick < 9.0) g *= 2;
+    return g;
+}
+
+int StudioView::tickAtX (float x, bool snap) const
+{
+    const double t = barAtX (x) * lp::song::kTicksPerBar;
+    if (! snap) return std::max (0, (int) std::round (t));
+    const int g = gridTicks();
+    return std::max (0, (int) std::round (t / g) * g);
+}
+
+// a cut: the clip becomes two, here (cmd+E, or right-click "cut here")
+void StudioView::splitClipAt (int track, int tick)
 {
     for (auto& h : clipHits)
-        if (h.track == track && bar > h.b0 && bar < h.b1)
+        if (h.track == track && tick > h.b0 && tick < h.b1)
         {
-            proc.songJob.setSplit (track, bar, true);
+            proc.songJob.setSplit (track, tick, true);
             pickedClips.clear();
-            pickedClips.insert ({ track, h.b0, bar });
+            pickedClips.insert ({ track, h.b0, tick });
             repaint();
             return;
         }
@@ -130,14 +149,13 @@ void StudioView::splitClipAt (int track, int bar)
 
 void StudioView::deletePicked()
 {
-    // each picked clip's bars go silent on its track (undo brings them back)
+    // each picked clip goes silent on its track (undo brings it back)
     const auto st = proc.songJob.getStatus();
-    std::map<int, std::set<int>> byTrack;
+    std::map<int, std::vector<std::pair<int, int>>> byTrack;
     for (auto [tr, b0, b1] : pickedClips)
-        if (tr >= 0 && tr < (int) st.tracks.size())
-            for (int b = b0; b < b1; ++b) byTrack[tr].insert (b);
+        if (tr >= 0 && tr < (int) st.tracks.size()) byTrack[tr].push_back ({ b0, b1 });
     pickedClips.clear();
-    for (auto& [tr, bars] : byTrack) proc.songJob.silenceBars (tr, bars);
+    for (auto& [tr, spans] : byTrack) proc.songJob.silenceTicks (tr, spans);
     repaint();
 }
 
@@ -152,7 +170,7 @@ bool StudioView::keyPressed (const KeyPress& k)
     {
         // cmd+E: cut the picked clip where the mouse is (like Ableton)
         const auto [tr, b0, b1] = *pickedClips.begin();
-        splitClipAt (tr, (int) std::round (barAtX (lastMouse.x)));
+        splitClipAt (tr, tickAtX (lastMouse.x, ! k.getModifiers().isAltDown()));
         return true;
     }
     if (k.getModifiers().isCommandDown() && (k.getKeyCode() == 'G' || k.getKeyCode() == 'g'))
@@ -666,7 +684,7 @@ void StudioView::paint (Graphics& g)
         float top = 0.0f;
         for (float v : env->peaks) top = std::max (top, v);
         if (top <= 0.0f) continue;
-        const std::set<int>& silent = t.silentBars;
+        const auto& silent = t.silent;
         // how loud it is on average in each section: a section where it's (nearly) silent gets no clip
         std::vector<float> avg;
         float loudest = 0.0f;
@@ -685,14 +703,15 @@ void StudioView::paint (Graphics& g)
             const auto& sc = st.song.sections[si];
             if (avg[si] < loudest * 0.12f) continue; // (only a tail or silence here)
             // the section's bars, less any you deleted, cut where you cut them: one clip per stretch that plays
-            for (int bar = sc.startBar; bar < sc.startBar + sc.bars;)
+            const int T = lp::song::kTicksPerBar, S = sc.startBar * T, E = (sc.startBar + sc.bars) * T;
+            for (int tk = S; tk < E;)
             {
-                if (silent.count (bar)) { ++bar; continue; }
-                int end = bar + 1;
-                while (end < sc.startBar + sc.bars && ! silent.count (end) && ! t.splitBars.count (end)) ++end;
-                const float x0 = xOfBar (bar) + 1.0f, x1 = xOfBar (end) - 1.0f;
-                const int c0 = bar;
-                bar = end;
+                if (silent.covers (tk)) { tk = silent.nextEdge (tk, E); continue; }
+                int end = silent.nextEdge (tk, E);
+                if (auto sp = t.splitTicks.upper_bound (tk); sp != t.splitTicks.end() && *sp < end) end = *sp;
+                const float x0 = xOfBar ((double) tk / T) + 1.0f, x1 = xOfBar ((double) end / T) - 1.0f;
+                const int c0 = tk;
+                tk = end;
                 if (x1 < lx || x0 > lx + lw || x1 - x0 < 1.0f) continue;
                 const bool isPicked = pickedClips.count ({ i, c0, end }) > 0;
                 auto clip = Rectangle<float> (x0, row.getY(), x1 - x0, row.getHeight());
@@ -812,7 +831,8 @@ void StudioView::paint (Graphics& g)
     if (clipDragging && dragClipTrack >= 0 && dropStart >= 0 && dropEnd > dropStart && rowShown (dragClipTrack))
     {
         const auto rb = rowBounds (dragClipTrack);
-        auto r = Rectangle<float> (xOfBar (dropStart) + 1.0f, rb.getY(), xOfBar (dropEnd) - xOfBar (dropStart) - 2.0f, rb.getHeight())
+        const double T = lp::song::kTicksPerBar;
+        auto r = Rectangle<float> (xOfBar (dropStart / T) + 1.0f, rb.getY(), xOfBar (dropEnd / T) - xOfBar (dropStart / T) - 2.0f, rb.getHeight())
                      .getIntersection (Rectangle<float> (lx, rb.getY(), lw, rb.getHeight()));
         if (! r.isEmpty())
         {
@@ -829,8 +849,20 @@ void StudioView::paint (Graphics& g)
             if (! same)
             {
                 g.setFont (font (11.0f, lp::ui::Medium));
-                String what = dragMode != 0 ? String (dropEnd - dropStart) + (dropEnd - dropStart == 1 ? " bar" : " bars")
-                                            : String (dragCopy ? "copy to bar " : "move to bar ") + String (dropStart + 1);
+                // (lengths and places as bars and beats: "2 bars 1.5 beats", "bar 9 beat 3")
+                auto len = [] (int ticks)
+                {
+                    const int bars = ticks / lp::song::kTicksPerBar;
+                    const double beats = (ticks % lp::song::kTicksPerBar) / 16.0;
+                    String o;
+                    if (bars > 0) o << bars << (bars == 1 ? " bar" : " bars");
+                    if (beats > 0.0) o << (o.isEmpty() ? "" : " ") << String (beats, beats == std::floor (beats) ? 0 : 2) << (beats == 1.0 ? " beat" : " beats");
+                    return o.isEmpty() ? String ("0") : o;
+                };
+                const int bar = dropStart / lp::song::kTicksPerBar + 1;
+                const double beat = (dropStart % lp::song::kTicksPerBar) / 16.0 + 1.0;
+                String what = dragMode != 0 ? len (dropEnd - dropStart)
+                                            : String (dragCopy ? "copy to bar " : "move to bar ") + String (bar) + (beat > 1.0 ? " beat " + String (beat, beat == std::floor (beat) ? 0 : 2) : String());
                 g.drawText (what, r.reduced (8.0f, 0.0f), Justification::centredLeft, true);
             }
         }
@@ -1172,19 +1204,20 @@ void StudioView::mouseDown (const MouseEvent& e)
             if (e.mods.isPopupMenu())
             {
                 if (hit != nullptr && pickedClips.count ({ i, hit->b0, hit->b1 }) == 0) { pickedClips.clear(); pickedClips.insert ({ i, hit->b0, hit->b1 }); }
-                const int cutBar = (int) std::round (barAtX (e.position.x));
+                const int cutBar = tickAtX (e.position.x); // (a tick: where the cut would go)
                 const bool canCut = hit != nullptr && cutBar > hit->b0 && cutBar < hit->b1;
-                const bool canJoin = hit != nullptr && st.tracks[(size_t) i].splitBars.count (hit->b1) > 0;
+                const bool canJoin = hit != nullptr && st.tracks[(size_t) i].splitTicks.count (hit->b1) > 0;
                 bool anyGone = false;
                 if (sc >= 0)
                     for (int b = 0; b < st.song.sections[(size_t) sc].bars; ++b)
-                        anyGone = anyGone || st.tracks[(size_t) i].silentBars.count (st.song.sections[(size_t) sc].startBar + b) > 0;
+                        anyGone = anyGone || st.tracks[(size_t) i].silent.any ((st.song.sections[(size_t) sc].startBar + b) * lp::song::kTicksPerBar,
+                                                                              (st.song.sections[(size_t) sc].startBar + b + 1) * lp::song::kTicksPerBar);
                 PopupMenu m;
                 m.addSectionHeader (String (st.tracks[(size_t) i].name).toUpperCase() + (sc >= 0 ? String::fromUTF8 ("  \xc2\xb7  ") + String (st.song.sections[(size_t) sc].name).toUpperCase() : String()));
                 m.addItem (1, pickedClips.size() > 1 ? "Delete " + String ((int) pickedClips.size()) + " clips" : String ("Delete this clip"), ! pickedClips.empty());
                 m.addItem (2, "Bring it back (the bars deleted here)", anyGone);
                 m.addItem (6, "Change the track's sound...   (same notes)");
-                m.addItem (4, "Cut here, at bar " + String (cutBar + 1) + "   (cmd+E)", canCut);
+                m.addItem (4, "Cut here, at bar " + String (cutBar / lp::song::kTicksPerBar + 1) + (cutBar % lp::song::kTicksPerBar != 0 ? " beat " + String ((cutBar % lp::song::kTicksPerBar) / 16.0 + 1.0, 2) : String()) + "   (cmd+E)", canCut);
                 m.addItem (5, "Join with the next clip", canJoin);
                 {
                     PopupMenu colours;
@@ -1215,9 +1248,8 @@ void StudioView::mouseDown (const MouseEvent& e)
                     else if (r == 2 && sc >= 0)
                     {
                         const auto now = sp->proc.songJob.getStatus();
-                        std::set<int> bars;
-                        for (int b = 0; b < now.song.sections[(size_t) sc].bars; ++b) bars.insert (now.song.sections[(size_t) sc].startBar + b);
-                        sp->proc.songJob.silenceBars (i, bars, false);
+                        const auto& sec = now.song.sections[(size_t) sc];
+                        sp->proc.songJob.silenceTicks (i, { { sec.startBar * lp::song::kTicksPerBar, (sec.startBar + sec.bars) * lp::song::kTicksPerBar } }, false);
                     }
                     else if (r == 3) sp->askRemove (i);
                     else if (r == 99) sp->proc.songJob.setColour (i, 0);
@@ -1233,7 +1265,7 @@ void StudioView::mouseDown (const MouseEvent& e)
                 dragClipTrack = i; dragB0 = hit->b0; dragB1 = hit->b1; clipDragging = false; dropStart = dropEnd = -1;
                 dragMode = hit->r.getWidth() > 18.0f && e.position.x - hit->r.getX() < 6.0f ? 1
                          : hit->r.getWidth() > 18.0f && hit->r.getRight() - e.position.x < 6.0f ? 2 : 0;
-                grabBar = jlimit (0, hit->b1 - hit->b0 - 1, (int) std::floor (barAtX (e.position.x)) - hit->b0);
+                grabBar = jlimit (0, hit->b1 - hit->b0, tickAtX (e.position.x, false) - hit->b0); // (ticks into the clip)
                 const std::tuple<int, int, int> key { i, hit->b0, hit->b1 };
                 if (e.mods.isShiftDown() || e.mods.isCommandDown())
                 {
@@ -1312,13 +1344,16 @@ void StudioView::mouseDrag (const MouseEvent& e)
         if (! clipDragging && e.getDistanceFromDragStart() < 4) return;
         clipDragging = true;
         dragCopy = e.mods.isAltDown();
-        const int total = std::max (1, proc.songJob.getStatus().song.totalBars()), len = dragB1 - dragB0;
-        const int at = (int) std::round (barAtX (e.position.x));
-        if (dragMode == 1) { dropStart = jlimit (0, dragB1 - 1, at); dropEnd = dragB1; }
-        else if (dragMode == 2) { dropStart = dragB0; dropEnd = jlimit (dragB0 + 1, total, at); }
+        const int T = lp::song::kTicksPerBar;
+        const int total = std::max (1, proc.songJob.getStatus().song.totalBars()) * T, len = dragB1 - dragB0;
+        const bool snap = ! e.mods.isAltDown(); // (option: no snapping, for an edge)
+        if (dragMode == 1) { dropStart = jlimit (0, dragB1 - 1, tickAtX (e.position.x, snap)); dropEnd = dragB1; }
+        else if (dragMode == 2) { dropStart = dragB0; dropEnd = jlimit (dragB0 + 1, total, tickAtX (e.position.x, snap)); }
         else
         {
-            dropStart = jlimit (0, std::max (0, total - len), (int) std::floor (barAtX (e.position.x)) - grabBar);
+            // moved by whole bars: it lands at the same place in its bar, as long as it is
+            const int bar = (int) std::round ((tickAtX (e.position.x, false) - grabBar - dragB0) / (double) T);
+            dropStart = jlimit (0, std::max (0, total - len), dragB0 + bar * T);
             dropEnd = dropStart + len;
         }
         setMouseCursor (dragMode != 0 ? MouseCursor::LeftRightResizeCursor : dragCopy ? MouseCursor::CopyingCursor : MouseCursor::DraggingHandCursor);
@@ -1333,33 +1368,75 @@ void StudioView::mouseUp (const MouseEvent& e)
 {
     if (dragClipTrack >= 0 && clipDragging && dropStart >= 0 && dropEnd > dropStart)
     {
-        const int tr = dragClipTrack, len = dragB1 - dragB0;
+        const int tr = dragClipTrack, T = lp::song::kTicksPerBar;
+        auto& job = proc.songJob;
         if (dragMode == 0 && dropStart != dragB0)
         {
-            // moved (or copied, with option): its own clip where it lands
-            proc.songJob.copyBars (tr, dragB0, len, dropStart, len, ! e.mods.isAltDown());
-            proc.songJob.setSplit (tr, dropStart, true);
-            proc.songJob.setSplit (tr, dropStart + len, true);
+            // moved (or copied, with option) by whole bars: those bars play there; what's outside the clip in them goes
+            // silent, and (a move) the clip leaves its old place
+            const int sb0 = dragB0 / T, sb1 = (dragB1 + T - 1) / T, shift = (dropStart - dragB0) / T;
+            job.copyBars (tr, sb0, sb1 - sb0, sb0 + shift, sb1 - sb0, false);
+            std::vector<std::pair<int, int>> outside { { (sb0 + shift) * T, dropStart }, { dropEnd, (sb1 + shift) * T } };
+            if (! e.mods.isAltDown()) outside.push_back ({ dragB0, dragB1 });
+            outside.erase (std::remove_if (outside.begin(), outside.end(), [&] (auto& p)
+            {
+                // (a move: its old place is silenced only where the new one doesn't land on it)
+                return p.second <= p.first;
+            }), outside.end());
+            std::vector<std::pair<int, int>> gone;
+            for (auto [a2, b2] : outside)
+            {
+                // never silence the clip's own new place
+                if (b2 <= dropStart || a2 >= dropEnd) gone.push_back ({ a2, b2 });
+                else { if (a2 < dropStart) gone.push_back ({ a2, dropStart }); if (b2 > dropEnd) gone.push_back ({ dropEnd, b2 }); }
+            }
+            job.silenceTicks (tr, gone);
+            job.silenceTicks (tr, { { dropStart, dropEnd } }, false);
+            job.setSplit (tr, dropStart, true);
+            job.setSplit (tr, dropEnd, true);
             pickedClips.clear();
-            pickedClips.insert ({ tr, dropStart, dropStart + len });
+            pickedClips.insert ({ tr, dropStart, dropEnd });
         }
         else if (dragMode == 1 && dropStart != dragB0)
         {
-            std::set<int> gone;
-            if (dropStart > dragB0) { for (int b = dragB0; b < dropStart; ++b) gone.insert (b); proc.songJob.silenceBars (tr, gone); }
-            else proc.songJob.copyBars (tr, dragB0, len, dropStart, dragB0 - dropStart, false); // (longer: it plays from its start)
-            proc.songJob.setSplit (tr, dragB0, false);
-            proc.songJob.setSplit (tr, dropStart, true);
+            // its start: later (trimmed away) or earlier (what was there comes back)
+            if (dropStart > dragB0) job.silenceTicks (tr, { { dragB0, dropStart } });
+            else job.silenceTicks (tr, { { dropStart, dragB0 } }, false);
+            job.setSplit (tr, dragB0, false);
+            job.setSplit (tr, dropStart, true);
             pickedClips.clear();
             pickedClips.insert ({ tr, dropStart, dragB1 });
         }
         else if (dragMode == 2 && dropEnd != dragB1)
         {
-            std::set<int> gone;
-            if (dropEnd < dragB1) { for (int b = dropEnd; b < dragB1; ++b) gone.insert (b); proc.songJob.silenceBars (tr, gone); }
-            else proc.songJob.copyBars (tr, dragB0, len, dragB1, dropEnd - dragB1, false); // (longer: it loops on)
-            proc.songJob.setSplit (tr, dragB1, false);
-            proc.songJob.setSplit (tr, dropEnd, true);
+            if (dropEnd < dragB1) job.silenceTicks (tr, { { dropEnd, dragB1 } });
+            else
+            {
+                // longer: what was there comes back; past the track's own sound, the clip loops on (whole bars)
+                job.silenceTicks (tr, { { dragB1, dropEnd } }, false);
+                const auto st = job.getStatus();
+                const auto* env = tr < (int) st.tracks.size() ? envelopeOf (st.tracks[(size_t) tr].stem) : nullptr;
+                bool emptyThere = env != nullptr && ! env->peaks.empty();
+                if (emptyThere && ! st.tracks[(size_t) tr].silent.any (dragB1, dropEnd))
+                {
+                    const double secPerTick = 240.0 / std::max (40.0, st.song.bpm) / T;
+                    const int k0 = (int) (dragB1 * secPerTick * env->rate / (double) std::max<int64> (1, env->length) * env->peaks.size());
+                    const int k1 = (int) (dropEnd * secPerTick * env->rate / (double) std::max<int64> (1, env->length) * env->peaks.size());
+                    float top = 0.0f, there = 0.0f;
+                    for (float v : env->peaks) top = std::max (top, v);
+                    for (int k = std::max (0, k0); k < std::min ((int) env->peaks.size(), k1); ++k) there = std::max (there, env->peaks[(size_t) k]);
+                    emptyThere = there < top * 0.05f;
+                }
+                else emptyThere = false;
+                if (emptyThere)
+                {
+                    const int sb0 = dragB0 / T, sb1 = std::max (sb0 + 1, dragB1 / T), d0 = (dragB1 + T - 1) / T, d1 = (dropEnd + T - 1) / T;
+                    if (d1 > d0) job.copyBars (tr, sb0, sb1 - sb0, d0, d1 - d0, false);
+                    if (d1 * T > dropEnd) job.silenceTicks (tr, { { dropEnd, d1 * T } });
+                }
+            }
+            job.setSplit (tr, dragB1, false);
+            job.setSplit (tr, dropEnd, true);
             pickedClips.clear();
             pickedClips.insert ({ tr, dragB0, dropEnd });
         }

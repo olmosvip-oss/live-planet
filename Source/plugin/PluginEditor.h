@@ -658,7 +658,10 @@ private:
     std::set<std::tuple<int, int, int>> pickedClips; // (track, first bar, end bar): Delete silences them
     const ClipHit* clipAt (int track, juce::Point<float> p) const;
     double barAtX (float x) const;
-    void splitClipAt (int track, int bar);
+    void splitClipAt (int track, int tick);
+    // clips are in ticks (kTicksPerBar a bar): where a click lands, snapped to a grid that follows the zoom
+    int gridTicks() const;
+    int tickAtX (float x, bool snap = true) const;
     bool trackPicked = false;                // a track's name was clicked: Delete removes the track
     juce::Rectangle<float> zoomBtn (int i) const;   // 0 out, 1 in, 2 the whole song
     juce::Rectangle<float> heightBtn (int i) const; // lane height: small, medium, large
@@ -667,7 +670,7 @@ private:
     double wheelZoomRows = 0.0;
     double cuedBar = -1.0;
     // a clip being dragged to another section of its track (option: a copy)
-    int dragClipTrack = -1, dragB0 = 0, dragB1 = 0, dragMode = 0, grabBar = 0; // mode 0 move, 1 its start, 2 its end
+    int dragClipTrack = -1, dragB0 = 0, dragB1 = 0, dragMode = 0, grabBar = 0; // (ticks) mode 0 move, 1 its start, 2 its end
     int dropStart = -1, dropEnd = -1;
     bool clipDragging = false, dragCopy = false;                   // clicked in the bar numbers: where play starts
     juce::Rectangle<float> rewriteBounds (int numTracks) const;
@@ -782,6 +785,9 @@ public:
 private:
     struct Knob { juce::String id; int index; juce::Rectangle<float> r; };
     struct Dev { juce::String id; juce::Rectangle<float> box, power, close, more; std::vector<Knob> knobs; };
+    // the track's own strip, always first: its volume and pan; bypass, effects in or dry when dragged, and the track to drag
+    juce::Rectangle<float> stripBox() const, bypassRect() const, dryRect() const, dragRect() const, volRect() const, panRect() const;
+    bool draggingFile = false;
     std::vector<Dev> layout() const;
     float value (const juce::String& id, int k) const;          // 0..1
     void setValue (const juce::String& id, int k, float v01);   // heard right away
@@ -1586,8 +1592,9 @@ private:
     juce::Rectangle<int> cardDock; // the Studio: the open track, under the arrangement
     int dockPageShown = 0;
     bool dockTall = false; // the open track's grid made bigger: the arrangement shrinks to its sections and a few lanes
-    Segmented dockTabs { { "Sample", "Sound", "Effects", "Grains" }, [this] { return dockPageShown; },
-                         [this] (int i) { dockPageShown = i; if (i != 2) trackEditor.setDockPage (i == 3 ? 2 : i); showDock(); repaint(); }, lnf.th };
+    // (the dock: 0 the sample, 1 its effects (with its volume, pan and drag), 2 its grains)
+    Segmented dockTabs { { "Sample", "Effects", "Grains" }, [this] { return dockPageShown; },
+                         [this] (int i) { dockPageShown = i; if (i != 1) trackEditor.setDockPage (i); showDock(); repaint(); }, lnf.th };
     // effects, like a DAW's: the browser (left of the arrangement) and the open track's devices (the dock's Effects)
     lp::fx::Browser fxBrowser { lnf.th };
     lp::fx::Rack fxRack { proc, lnf.th };
