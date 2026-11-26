@@ -216,6 +216,8 @@ public:
         v->on = true; v->note = note; v->vel = juce::jlimit (0.05f, 1.0f, vel);
         v->countdown = 0.0; v->freeClock = 0.0;
         v->age = 0;
+        lastNote = note;
+        lastNoteAt = ++noteSerial;
         heldCount = countHeld();
         if (! clockRunning) { internalPpq = 0.0; clockRunning = true; }
     }
@@ -389,6 +391,8 @@ public:
     std::array<std::atomic<float>, 96> activity {}, activityAmp {}; // where the grains are reading (0..1 of the sound; -1 none)
     std::atomic<int> activeGrains { 0 }, currentStep { -1 };
     std::atomic<float> meter { 0.0f };
+    std::atomic<int> lastNote { -1 }, lastNoteAt { 0 }; // (the last note played: shown on the screen)
+    std::atomic<int> heldNow { 0 };
     const Source* audioSource() const { return src; }
 
 private:
@@ -412,7 +416,8 @@ private:
         const auto& t = tables[(size_t) g.env];
         return t[(size_t) i] + (t[(size_t) i + 1] - t[(size_t) i]) * (f - (float) i);
     }
-    int countHeld() const { int c = 0; for (auto& v : voices) c += v.on ? 1 : 0; return c; }
+    int countHeld() { int c = 0; for (auto& v : voices) c += v.on ? 1 : 0; heldNow = c; return c; }
+    int noteSerial = 0;
 
     void spawn (Voice& v, int chop, int offset, double interval, int a0, int a1, double chopLen, double rateRatio, int len)
     {

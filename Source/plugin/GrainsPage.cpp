@@ -556,6 +556,16 @@ void GrainsPage::paint (Graphics& g)
             g.setFont (lp::ui::mono (10.0f, false, 0.12f));
             g.setColour (t.inkDim);
             g.drawText (info.toUpperCase(), head, Justification::centredLeft, true);
+            // the note being played (so you can see your keys arrive)
+            if (const int held = proc.grainSynth.heldNow.load(); held > 0 && proc.grainSynth.lastNote.load() >= 0)
+            {
+                auto chip = sc.reduced (18.0f, 12.0f).removeFromTop (20.0f).removeFromRight (420.0f).removeFromLeft (110.0f);
+                g.setColour (t.grass.withAlpha (0.25f));
+                g.fillRoundedRectangle (chip, 10.0f);
+                g.setColour (t.grassLight);
+                g.setFont (lp::ui::mono (10.0f, true, 0.12f));
+                g.drawText ("PLAYING " + noteName (proc.grainSynth.lastNote.load()) + (held > 1 ? " +" + String (held - 1) : String()), chip, Justification::centred, false);
+            }
             const int live = proc.grainSynth.activeGrains.load();
             g.setColour (live > 0 ? t.grassLight : t.inkDim);
             g.drawText (live > 0 ? String (live) + " GRAINS" : (s.mode == G::Step ? "PLAY: KEYS A-K, MIDI OR HOLD NOTE  (PLAY THE SONG TO STEP)" : "PLAY: KEYS A-K, MIDI OR HOLD NOTE"),

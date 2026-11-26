@@ -316,9 +316,18 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     keyEvents.clear();
     const bool toPads = padsTrack.load() >= 0;
     const bool toDrums = ! toPads && drumKeysTrack.load() >= 0 && juce::Time::getMillisecondCounter() - drumKeysLease.load() < 800;
+    const bool grainsOpen = grainsActive.load();
     for (const auto m : midi)
     {
         const auto msg = m.getMessage();
+        // the Grains page is open: every note plays it (your MIDI keyboard, a clip, or Ableton's computer keys)
+        if (grainsOpen && (msg.isNoteOn() || msg.isNoteOff() || msg.isAllNotesOff() || msg.isAllSoundOff()))
+        {
+            if (msg.isNoteOn()) grainSynth.noteOn (msg.getNoteNumber(), msg.getFloatVelocity());
+            else if (msg.isNoteOff()) grainSynth.noteOff (msg.getNoteNumber());
+            else for (int nn = 0; nn < 128; ++nn) grainSynth.noteOff (nn);
+            continue;
+        }
         if (toPads && (msg.isNoteOn() || msg.isNoteOff()))
         {
             // the chop pads are open: C1 (36) and up are pads 1-16 (any other note lands on a pad too)
