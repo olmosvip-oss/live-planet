@@ -241,7 +241,7 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
     {
         // whose notes the new sound plays: a part of the song with notes (keys, chords, a lead...), or a new part
         const auto st = proc.songJob.getStatus();
-        notesFrom.addItem ("a new part that follows your chords", 1);
+        notesFrom.addItem ("a new part, written on your chords (in key)", 1);
         int pick = 1;
         for (int i = 0; i < (int) st.tracks.size(); ++i)
         {
@@ -361,8 +361,7 @@ void LayerPopup::start()
         const String words = describe.getText().trim();
         if (words.isEmpty()) { message = "Type what it should sound like, e.g. \"a vibrant colorful synth\"."; repaint(); describe.grabKeyboardFocus(); return; }
         const int id = notesFrom.getSelectedId();
-        if (id >= 100) proc.songJob.resound (id - 100, words, false, firstSection, sectionCount);
-        else proc.songJob.createLayer (words, lp::song::LoopKind::None, firstSection, sectionCount);
+        proc.songJob.resound (id >= 100 ? id - 100 : -1, words, false, firstSection, sectionCount);
         if (onClosed) onClosed();
         return;
     }

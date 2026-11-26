@@ -2443,9 +2443,14 @@ private:
             song = current;
             tracks = status.tracks;
         }
-        if (tr < 0 || tr >= (int) song.parts.size() || tr >= (int) tracks.size()) return;
-        const auto& was = song.parts[(size_t) tr];
+        // tr -1: a new part, written here on the song's chords (always in key); else that track's notes
+        const bool fromChords = tr < 0;
+        if (! fromChords && (tr >= (int) song.parts.size() || tr >= (int) tracks.size())) return;
         using PK = lp::song::PartKind;
+        lp::song::Part blank;
+        blank.name = "your chords";
+        blank.kind = PK::Melody;
+        const auto& was = fromChords ? blank : song.parts[(size_t) tr];
         auto say = [this] (const juce::String& m)
         {
             const juce::ScopedLock sl (lock);
@@ -2454,7 +2459,7 @@ private:
         };
         // its notes: the ones it plays (a part Loopwright wrote), or read out of its audio (a loop)
         std::vector<lp::song::Note> notes;
-        const bool written = ! was.notes.empty() && was.kind != PK::Drums && was.kind != PK::Loop && was.kind != PK::Fx;
+        const bool written = fromChords || (! was.notes.empty() && was.kind != PK::Drums && was.kind != PK::Loop && was.kind != PK::Fx);
         // (only the sections picked are listened to: much quicker than the whole song)
         double fromBeat = 0.0, toBeat = song.totalBars() * 4.0;
         if (range.first >= 0 && range.second > 0 && range.first < (int) song.sections.size())
@@ -2463,7 +2468,8 @@ private:
             const auto& b = song.sections[(size_t) juce::jlimit (0, (int) song.sections.size() - 1, range.first + range.second - 1)];
             fromBeat = a.startBar * 4.0; toBeat = (b.startBar + b.bars) * 4.0;
         }
-        if (written) notes = was.notes;
+        if (fromChords) notes = partOnChords (req.first, song, songChords (song, tracks), fromBeat, toBeat);
+        else if (written) notes = was.notes;
         else
         {
             say ("listening to the notes in " + juce::String (was.name) + "...");
@@ -2495,6 +2501,7 @@ private:
             notes.erase (std::remove_if (notes.begin(), notes.end(), [&] (const lp::song::Note& n) { return n.beat < from - 1e-6 || n.beat >= to - 1e-6; }), notes.end());
             for (auto& n : notes) n.length = std::min (n.length, to - n.beat);
         }
+        if (notes.empty() && fromChords) { say ("couldn't read the song's chords there"); return; }
         if (notes.empty()) { say ("couldn't hear any notes in " + juce::String (was.name) + (range.first >= 0 ? " there" : "") + " (drums and noise have none)"); return; }
         // the sound: the one-shot in your library whose name matches your words best
         refreshUsable();
@@ -2542,7 +2549,8 @@ private:
         part.name = (nm.isEmpty() ? juce::String ("new sound") : nm).toStdString();
         part.source = fromLibrary ? sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension()
                                   : juce::String ("loopwright: ") + lp::profileFor (part.sound).name;
-        part.remix = "the notes of " + juce::String (was.name) + (written ? "" : " (read from its audio)") + ", played on this sound";
+        part.remix = fromChords ? juce::String ("a new part on the song's chords, played on this sound")
+                                : "the notes of " + juce::String (was.name) + (written ? "" : " (read from its audio)") + ", played on this sound";
         part.mixDb = was.mixDb;
         part.silentBars = was.silentBars; part.barFrom = was.barFrom; part.splitBars = was.splitBars;
         juce::AudioBuffer<float> buf;
@@ -2558,12 +2566,76 @@ private:
         status.song = song;
         if (req.second) status.tracks[(size_t) tr] = info (part, stem, song);
         else status.tracks.push_back (info (part, stem, song));
-        status.message = status.notice = juce::String (was.name) + " now plays on "
+        status.message = status.notice = (fromChords ? juce::String ("a new part on your chords") : juce::String (was.name)) + " now plays on "
                        + (fromLibrary ? juce::File (part.samplePath).getFileNameWithoutExtension() : juce::String (lp::profileFor (part.sound).name))
                        + " (" + juce::String ((int) notes.size()) + " notes)";
         status.noticeAt = juce::Time::getMillisecondCounter();
         ++status.version;
         saveSession();
+    }
+
+    // a new part on the song's chords, in the way the words ask: held chords (pad, keys, strings), an arpeggio
+    // (pluck, arp, bell, and by default), a melody (lead), or the roots (bass). Every note is a chord tone: in key.
+    static std::vector<lp::song::Note> partOnChords (const juce::String& words, const lp::song::Song& song,
+                                                     const std::vector<lp::song::chords::Chord>& chords, double fromBeat, double toBeat)
+    {
+        std::vector<lp::song::Note> out;
+        auto has = [&words] (std::initializer_list<const char*> l) { for (auto* x : l) if (words.containsIgnoreCase (x)) return true; return false; };
+        const int style = has ({ "bass", "808", "sub" }) ? 3 : has ({ "lead", "melody", "hook", "topline" }) ? 2
+                        : has ({ "pad", "keys", "piano", "chord", "string", "organ", "rhodes", "choir", "ambient" }) ? 0 : 1;
+        if (style == 2)
+        {
+            juce::String where;
+            for (auto n : lp::song::hook::write (song, chords, (juce::uint32) words.hashCode(), false, where))
+                if (n.beat >= fromBeat - 1e-6 && n.beat < toBeat - 1e-6) out.push_back (n);
+            return out;
+        }
+        auto tones = [] (const lp::song::chords::Chord& c)
+        {
+            std::vector<int> t { 0, c.minor || c.dim ? 3 : 4, c.dim ? 6 : 7 };
+            if (c.seventh) t.push_back (c.sevenInterval);
+            return t;
+        };
+        // runs of the same chord (each slot is 2 beats)
+        const int s0 = std::max (0, (int) std::floor (fromBeat / 2.0)), s1 = std::min ((int) chords.size(), (int) std::ceil (toBeat / 2.0));
+        for (int s = s0; s < s1;)
+        {
+            int e = s + 1;
+            const auto& c = chords[(size_t) s];
+            while (e < s1 && chords[(size_t) e].valid == c.valid && chords[(size_t) e].root == c.root && chords[(size_t) e].minor == c.minor) ++e;
+            if (c.valid)
+            {
+                const double b0 = s * 2.0, b1 = e * 2.0;
+                const auto t = tones (c);
+                if (style == 0)
+                {
+                    // held: the chord around middle C, its root low enough to sit under the rest
+                    int root = 48 + c.root;
+                    if (root < 52) root += 12;
+                    for (int iv : t) out.push_back ({ b0, b1 - b0 - 0.05, root + iv, 0.7f });
+                }
+                else if (style == 3)
+                {
+                    const int root = 36 + c.root;
+                    for (double b = b0; b < b1 - 1e-6; b += 1.0) out.push_back ({ b, 0.9, root, (std::fmod (b, 4.0) < 0.01) ? 0.95f : 0.75f });
+                }
+                else
+                {
+                    // an arpeggio in 8ths: up through the chord and its octave, and back
+                    const int root = 60 + c.root - (c.root > 7 ? 12 : 0);
+                    std::vector<int> up;
+                    for (int iv : t) up.push_back (root + iv);
+                    up.push_back (root + 12);
+                    std::vector<int> pat (up);
+                    for (int k = (int) up.size() - 2; k > 0; --k) pat.push_back (up[(size_t) k]);
+                    int k = 0;
+                    for (double b = b0; b < b1 - 1e-6; b += 0.5, ++k)
+                        out.push_back ({ b, 0.45, pat[(size_t) (k % (int) pat.size())], (std::fmod (b, 1.0) < 0.01) ? 0.9f : 0.7f });
+                }
+            }
+            s = e;
+        }
+        return out;
     }
 
     // the loop kinds a word points to ("synth" -> synth, lead, pluck, pad)
