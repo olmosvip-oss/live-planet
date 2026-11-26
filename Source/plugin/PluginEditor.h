@@ -616,6 +616,7 @@ public:
     void itemDragExit (const SourceDetails&) override { fxDropRow = -1; repaint(); }
     std::function<void (int, juce::String)> onDropFx;
     std::function<void (int)> onEditNotes; // a MIDI track's lane double-clicked: its notes, below
+    std::function<void (const juce::String&)> onOpenDrawn; // a drawn vocal double-clicked: Draw & sing, on its section
     int fxDropRow = -1;
 public:
     explicit StudioView (LivePlanetProcessor& p) : proc (p) { for (auto* h : { &hFeel, &hTracks }) addAndMakeVisible (*h); }
@@ -1118,6 +1119,10 @@ private:
     int top = 79;                              // the highest note shown (32 notes at a time; scroll for more)
     juce::TextButton octUp { "oct +" }, octDown { "oct -" }, holdBtn { "hold word" }, vibBtn { "vibrato" }, slideBtn { "slide in" }, splitBtn { "split" };
     void splitNote();                          // the selected note in two (the second keeps singing its word)
+    void showWordEditor (int note);            // double-click a word: its text, its volume, how long it rings on
+public:
+    void openSection (const juce::String& sectionName); // (from the Studio: a drawn vocal double-clicked)
+private:
     juce::TextButton recBtn { "record melody" };
     double markerBeat = 0.0;                   // the marker: where "play section" starts (beats into the section)
     bool draggingMarker = false;

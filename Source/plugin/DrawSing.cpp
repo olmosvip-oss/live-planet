@@ -26,6 +26,89 @@ struct DrawSing::Voiced
     std::shared_ptr<AudioBuffer<float>> lastRender;     // the section in your voice, as the notes are now
     String renderedKey;                                 // (which notes it was rendered from)
 
+    // where each word really is in the take: the singer doesn't keep exactly to the notes it was given (a word held a
+    // little longer, the next one late), so each note's stretch of the take is found from the sound itself: between two
+    // words, the quiet dip (or the jump in pitch) nearest where the notes meet; a phrase's first word from where the
+    // voice comes in, its last until it fades. Then a note plays exactly its own word, nothing of the ones beside it.
+    void align()
+    {
+        if (take == nullptr || sungNotes.empty()) return;
+        const double sr = StudioPlayer::fileRate, spb = 60.0 / bpm;
+        const int N = take->getNumSamples(), hop = (int) (sr / 200.0);
+        // a smooth level (RMS, 10 ms), 200 times a second, 0..1
+        std::vector<float> lv;
+        float top = 1.0e-6f;
+        for (int i = 0; i + hop <= N; i += hop)
+        {
+            const int a = jmax (0, i - hop / 2), len = jmin (N - a, hop * 2);
+            const float r = 0.5f * (take->getRMSLevel (0, a, len) + take->getRMSLevel (jmin (1, take->getNumChannels() - 1), a, len));
+            lv.push_back (r);
+            top = jmax (top, r);
+        }
+        for (auto& v : lv) v /= top;
+        const int F = (int) lv.size();
+        auto fr = [hop] (double sample) { return (int) (sample / hop); };
+        // the pitch, for words sung straight on from one to the next (no dip between them)
+        std::vector<float> mono ((size_t) N);
+        for (int i = 0; i < N; ++i) mono[(size_t) i] = take->getSample (0, i);
+        const auto pitch = lp::song::tune::track (mono, sr, hop);
+        auto jumpAt = [&pitch] (int f) { return f >= 3 && f < (int) pitch.size() && pitch[(size_t) f] > 0 && pitch[(size_t) f - 3] > 0 && std::abs (pitch[(size_t) f] - pitch[(size_t) f - 3]) >= 0.8; };
+
+        std::vector<size_t> order (sungNotes.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::sort (order.begin(), order.end(), [this] (size_t a, size_t b) { return sungNotes[a].beat < sungNotes[b].beat; });
+        const size_t n = order.size();
+        std::vector<double> st (n), en (n); // (in samples)
+        for (size_t k = 0; k < n; ++k) { st[k] = sungNotes[order[k]].beat * spb * sr; en[k] = (sungNotes[order[k]].beat + sungNotes[order[k]].len) * spb * sr; }
+        std::vector<double> a0 = st, a1 = en;
+        const double gapForPhrase = 0.3 * sr;
+        for (size_t k = 0; k < n; ++k)
+        {
+            const bool phraseStart = k == 0 || st[k] - en[k - 1] > gapForPhrase;
+            const bool phraseEnd = k + 1 == n || st[k + 1] - en[k] > gapForPhrase;
+            if (phraseStart)
+            {
+                // where the voice comes in, near the note's start
+                const int f0 = jmax (0, fr (st[k] - 0.25 * sr)), f1 = jmin (F - 1, fr (st[k] + 0.25 * sr));
+                for (int f = f0; f <= f1; ++f) if (lv[(size_t) f] > 0.08f) { a0[k] = (double) jmax (0, f - 1) * hop; break; }
+            }
+            if (phraseEnd)
+            {
+                // until it fades, after the note's end (not into the next phrase)
+                const double limit = k + 1 < n ? st[k + 1] - 0.05 * sr : (double) N;
+                int f = jmax (0, fr (en[k] - 0.1 * sr));
+                const int fEnd = jmin (F - 1, fr (jmin (limit, en[k] + 0.7 * sr)));
+                while (f < fEnd && ! (lv[(size_t) f] < 0.05f && (f + 8 >= F || lv[(size_t) f + 8] < 0.05f))) ++f;
+                a1[k] = jmax (a0[k] + 0.04 * sr, (double) f * hop);
+            }
+            else
+            {
+                // between this word and the next: the quiet dip (or the pitch jump) nearest where the notes meet
+                const double m = 0.5 * (en[k] + st[k + 1]);
+                const int lo = jmax (fr (st[k] + 0.04 * sr), fr (m - 0.22 * sr)), hi = jmin (fr (en[k + 1] - 0.04 * sr), fr (m + 0.22 * sr));
+                int best = fr (m);
+                float bestScore = 1.0e9f;
+                for (int f = jmax (1, lo); f <= jmin (F - 2, hi); ++f)
+                {
+                    const bool valley = lv[(size_t) f] <= lv[(size_t) f - 1] && lv[(size_t) f] <= lv[(size_t) f + 1];
+                    const float dist = (float) std::abs (f * hop - m) / (float) (0.22 * sr);
+                    float score = 1.0e9f;
+                    if (valley) score = lv[(size_t) f] * 1.6f + dist * 0.35f;
+                    if (jumpAt (f)) score = jmin (score, 0.45f + dist * 0.35f);
+                    if (score < bestScore) { bestScore = score; best = f; }
+                }
+                a1[k] = (double) best * hop;
+                a0[k + 1] = a1[k];
+            }
+        }
+        for (size_t k = 0; k < n; ++k)
+        {
+            if (a1[k] - a0[k] < 0.03 * sr) continue; // (couldn't tell: as given)
+            auto& s = sungNotes[order[k]];
+            s.beat = a0[k] / sr / spb;
+            s.len = (a1[k] - a0[k]) / sr / spb;
+        }
+    }
     int leadOf (int id)
     {
         const std::lock_guard<std::mutex> l (lock);
@@ -45,7 +128,7 @@ struct DrawSing::Voiced
         const double sr = StudioPlayer::fileRate, spb = 60.0 / bpm;
         const float semis = (float) (n.pitch - s->pitch);
         const double ratio = jlimit (0.25, 4.0, n.len / jmax (0.05, s->len));
-        const String key = String (semis) + ":" + String (ratio, 4);
+        const String key = String (semis) + ":" + String (ratio, 4) + ":" + String (n.ringMs, 0);
         {
             const std::lock_guard<std::mutex> l (lock);
             if (auto it = cache.find (n.id); it != cache.end() && it->second.key == key) return it->second.audio;
@@ -65,10 +148,9 @@ struct DrawSing::Voiced
         }
         const double hopS = sr / 200.0;
         auto envAt = [this, hopS] (int sample) { const int i = (int) (sample / hopS); return i >= 0 && i < (int) env.size() ? env[(size_t) i] : 0.0f; };
-        int wordStart = a0, wordEnd = a1;
-        for (int x = a0; x > jmax (prevEnd, a0 - (int) (0.15 * sr)) && envAt (x) > 0.07f; x -= (int) hopS) wordStart = x;
-        for (int x = a1; x < jmin (nextStart, a1 + (int) (0.9 * sr)) && envAt (x) > 0.07f; x += (int) hopS) wordEnd = x;
-        const double fadeIn = jmax (0.012, (a0 - wordStart) / sr + 0.006), tail = jmax (0.035, (wordEnd - a1) / sr + 0.04);
+        // (the word's stretch is already its own, found in the take: just a few ms either side, for the handovers)
+        ignoreUnused (prevEnd, nextStart, envAt);
+        const double fadeIn = 0.006, tail = n.ringMs >= 0.0f ? 0.006 + n.ringMs * 0.001 : 0.006; // (rings on: as long as you set)
         const int cs = jmax (0, a0 - (int) ((fadeIn + ctx) * sr)), ce = jmin (N, a1 + (int) ((tail + ctx) * sr));
         if (ce - cs < 256) return nullptr;
         const int inLen = ce - cs, outLen = jmax (1, (int) std::round (inLen * ratio));
@@ -210,7 +292,8 @@ String DrawSing::noteKey() const
 {
     String k;
     k << section.getSelectedItemIndex() << ":" << voice.getText() << ":";
-    for (auto& n : notes) k << n.beat << "," << n.len << "," << n.pitch << "," << n.word << "," << (int) n.slur << "," << n.vibrato << "," << (int) n.slide << ";";
+    for (auto& n : notes) k << n.beat << "," << n.len << "," << n.pitch << "," << n.word << "," << (int) n.slur << "," << n.vibrato << "," << (int) n.slide
+                             << "," << n.gainDb << "," << n.ringMs << ";";
     return k;
 }
 
@@ -583,7 +666,7 @@ void DrawSing::mouseDown (const MouseEvent& e)
         repaint();
         return;
     }
-    if (i >= 0 && e.getNumberOfClicks() > 1) { editWord (i); return; }
+    if (i >= 0 && e.getNumberOfClicks() > 1) { showWordEditor (i); return; }
     if (i >= 0)
     {
         selectedNote = i;
@@ -672,6 +755,84 @@ bool DrawSing::keyPressed (const KeyPress& k)
     if (k.getTextCharacter() == 's' || k.getTextCharacter() == 'S') { toggle (2); return true; }
     if (k.getTextCharacter() == 'e' || k.getTextCharacter() == 'E') { splitNote(); return true; }
     return false;
+}
+
+// a word, up close (double-click it): what it says, how loud it is, and how long it rings on after its note
+namespace
+{
+struct WordEditor : public Component
+{
+    WordEditor (const String& word, float gainDb, float ringMs, std::function<void (String, float, float)> changed)
+        : onChange (std::move (changed))
+    {
+        text.setText (word, dontSendNotification);
+        text.setFont (lp::ui::font (15.0f, lp::ui::Medium));
+        text.onTextChange = [this] { send(); };
+        addAndMakeVisible (text);
+        auto dial = [this] (Slider& s, double lo, double hi, double v, std::function<String (double)> fmt)
+        {
+            s.setSliderStyle (Slider::LinearHorizontal);
+            s.setTextBoxStyle (Slider::TextBoxRight, false, 64, 22);
+            s.setRange (lo, hi, 0.0);
+            s.setValue (v, dontSendNotification);
+            s.textFromValueFunction = std::move (fmt);
+            s.updateText();
+            s.onValueChange = [this] { send(); };
+            s.setColour (Slider::thumbColourId, Colour (0xffb9a4ff));
+            s.setColour (Slider::trackColourId, Colour (0xff7c5cff));
+            addAndMakeVisible (s);
+        };
+        dial (volume, -18.0, 6.0, gainDb, [] (double v) { return (v > 0.05 ? "+" : "") + String (v, 1) + " dB"; });
+        volume.setDoubleClickReturnValue (true, 0.0);
+        dial (ring, -50.0, 1500.0, ringMs < 0.0f ? -50.0 : ringMs, [] (double v) { return v < 0.0 ? String ("as sung") : String (roundToInt (v)) + " ms"; });
+        ring.setDoubleClickReturnValue (true, -50.0);
+        setSize (320, 150);
+    }
+    void send() { if (onChange) onChange (text.getText().trim().upToFirstOccurrenceOf (" ", false, false), (float) volume.getValue(), ring.getValue() < 0.0 ? -1.0f : (float) ring.getValue()); }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (12, 10);
+        text.setBounds (r.removeFromTop (30));
+        r.removeFromTop (12);
+        auto row = [&r] (Slider& s) { auto a = r.removeFromTop (30); a.removeFromLeft (78); s.setBounds (a); r.removeFromTop (8); };
+        row (volume);
+        row (ring);
+    }
+    void paint (Graphics& g) override
+    {
+        g.setColour (Colours::white.withAlpha (0.7f));
+        g.setFont (lp::ui::mono (9.5f, true, 0.12f));
+        g.drawText ("VOLUME", volume.getBounds().withX (12).withWidth (76), Justification::centredLeft, false);
+        g.drawText ("RINGS ON", ring.getBounds().withX (12).withWidth (76), Justification::centredLeft, false);
+    }
+    TextEditor text;
+    Slider volume, ring;
+    std::function<void (String, float, float)> onChange;
+};
+}
+
+void DrawSing::showWordEditor (int i)
+{
+    if (i < 0 || i >= (int) notes.size()) return;
+    selectedNote = i;
+    const auto n = notes[(size_t) i];
+    const int id = n.id;
+    SafePointer<DrawSing> self (this);
+    auto ed = std::make_unique<WordEditor> (n.word, n.gainDb, n.ringMs, [self, id] (String w, float db, float ring)
+    {
+        if (self == nullptr) return;
+        for (auto& m : self->notes)
+            if (m.id == id)
+            {
+                if (w.isNotEmpty()) m.word = w;
+                m.gainDb = db;
+                m.ringMs = ring;
+            }
+        self->changedAt = Time::getMillisecondCounter();
+        self->repaint();
+    });
+    auto& box = CallOutBox::launchAsynchronously (std::move (ed), noteRect (n).toNearestInt(), this);
+    ignoreUnused (box);
 }
 
 void DrawSing::editWord (int i)
@@ -1216,6 +1377,7 @@ void DrawSing::loadTake (const String& token, const File& file)
             top = jmax (top, v->env.back());
         }
         for (auto& e : v->env) e = std::sqrt (e / top);
+        v->align(); // (each note's own word, found in the take)
         MessageManager::callAsync ([self, v]
         {
             if (self == nullptr) return;
@@ -1242,16 +1404,51 @@ void DrawSing::renderVoice()
         const double sr = StudioPlayer::fileRate, spb = 60.0 / bpm;
         auto out = std::make_shared<AudioBuffer<float>> (2, (int) (len * sr));
         out->clear();
-        for (size_t i = 0; i < list.size(); ++i)
+        // each word's piece, where it starts in the section (its first consonant can come before the beat)
+        struct P { std::shared_ptr<AudioBuffer<float>> seg; int at = 0, start = 0, end = 0; float gain = 1.0f; };
+        std::vector<P> ps;
+        std::vector<size_t> order;
+        for (size_t i = 0; i < list.size(); ++i) if (use[i]) order.push_back (i);
+        std::sort (order.begin(), order.end(), [&list] (size_t a, size_t b) { return list[a].beat < list[b].beat; });
+        for (size_t i : order)
         {
             if (v->generation.load() != gen) return; // (a newer edit: that one's rendered instead)
-            if (! use[i]) continue;
             const auto seg = v->piece (list[i]);
             if (seg == nullptr) continue;
-            const int at = (int) (list[i].beat * spb * sr) - v->leadOf (list[i].id); // (the word's own start, before the beat)
-            for (int ch = 0; ch < 2; ++ch)
-                for (int k = 0; k < seg->getNumSamples(); ++k)
-                    if (at + k >= 0 && at + k < out->getNumSamples()) out->addSample (ch, at + k, seg->getSample (ch, k));
+            P p;
+            p.seg = seg;
+            p.start = (int) (list[i].beat * spb * sr);
+            p.end = (int) ((list[i].beat + list[i].len) * spb * sr);
+            p.at = p.start - v->leadOf (list[i].id);
+            p.gain = Decibels::decibelsToGain (list[i].gainDb);
+            ps.push_back (p);
+        }
+        // each word owns its own stretch: where two meet (a word's ring-out against the next one's first consonant),
+        // one hands over to the other in a short crossfade, so the same voice is never heard twice (no jumps in level)
+        const int xf = (int) (0.008 * sr);
+        std::vector<int> from (ps.size()), to (ps.size());
+        for (size_t k = 0; k < ps.size(); ++k) { from[k] = ps[k].at; to[k] = ps[k].at + ps[k].seg->getNumSamples(); }
+        for (size_t k = 0; k + 1 < ps.size(); ++k)
+        {
+            auto& a = ps[k]; auto& b = ps[k + 1];
+            if (to[k] <= from[k + 1]) continue; // (a gap: nothing to share)
+            const int boundary = b.start >= a.end ? jmax (a.end, b.at) : b.start;
+            to[k] = jmin (to[k], boundary + xf / 2);
+            from[k + 1] = jmax (from[k + 1], boundary - xf / 2);
+        }
+        for (size_t k = 0; k < ps.size(); ++k)
+        {
+            const auto& p = ps[k];
+            const int n = p.seg->getNumSamples();
+            for (int x = jmax (0, from[k] - p.at); x < jmin (n, to[k] - p.at); ++x)
+            {
+                const int o = p.at + x;
+                if (o < 0 || o >= out->getNumSamples()) continue;
+                float g = p.gain;
+                if (k > 0 && from[k] > p.at) g *= jlimit (0.0f, 1.0f, (float) (o - from[k]) / (float) xf);          // (handed over from the word before)
+                if (k + 1 < ps.size() && to[k] < p.at + n) g *= jlimit (0.0f, 1.0f, (float) (to[k] - o) / (float) xf); // (handing over to the next)
+                for (int ch = 0; ch < 2; ++ch) out->addSample (ch, o, p.seg->getSample (ch, x) * g);
+            }
         }
         MessageManager::callAsync ([v, out, gen, p, start, key]
         {
@@ -1286,4 +1483,22 @@ void DrawSing::leave()
     proc.setVoicePreview (nullptr);
     if (proc.liveTrack.load() < 0) proc.studio.skipTrack = -1;
     proc.guideOn = false;
+}
+
+// a drawn vocal double-clicked in the Studio: its section, here (the notes you drew are kept while Loopwright is open)
+void DrawSing::openSection (const String& sectionName)
+{
+    const auto st = proc.songJob.getStatus();
+    for (int i = 0; i < (int) st.song.sections.size(); ++i)
+        if (String (st.song.sections[(size_t) i].name).equalsIgnoreCase (sectionName.trim()))
+        {
+            if (section.getSelectedItemIndex() != i) section.setSelectedItemIndex (i, sendNotification);
+            // (the notes this section's take was sung from, when they're still known)
+            if (notes.empty())
+                for (auto& [token, list] : sentNotes)
+                    if (auto f = proc.drawnFiles.find (token); f != proc.drawnFiles.end() && f->second.getFileName().containsIgnoreCase (sectionName) && ! list.empty())
+                        notes = list;
+            repaint();
+            return;
+        }
 }

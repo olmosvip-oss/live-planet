@@ -1234,6 +1234,13 @@ void StudioView::mouseDown (const MouseEvent& e)
             if (onEditNotes) onEditNotes (i);
             return;
         }
+        if (e.position.x >= laneLeft() && e.getNumberOfClicks() > 1 && ! e.mods.isPopupMenu()
+            && String (st.tracks[(size_t) i].name).startsWith ("vocal (drawn, ") && onOpenDrawn)
+        {
+            // a drawn vocal, double-clicked: Draw & sing opens on its section, to edit it
+            onOpenDrawn (String (st.tracks[(size_t) i].name).fromFirstOccurrenceOf ("vocal (drawn, ", false, false).upToLastOccurrenceOf (")", false, false));
+            return;
+        }
         if (e.position.x >= laneLeft())
         {
             // the lane: pick a clip (shift / cmd for more); Delete takes it out
