@@ -623,6 +623,7 @@ public:
     void mouseExit (const juce::MouseEvent&) override { hoverRow = -1; hoverAdd = false; repaint(); }
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     void mouseMagnify (const juce::MouseEvent&, float) override;
+    void mouseUp (const juce::MouseEvent&) override;
     bool keyPressed (const juce::KeyPress&) override;
     ArrView* view = nullptr;               // the bars in view (zoom, scroll along), shared with the sections ruler
     int rowStep = 34;                      // how tall each track's lane is (+ the gap)
@@ -652,7 +653,10 @@ private:
     int sectionAt (float x) const;
     void deletePicked();
     double wheelZoomRows = 0.0;
-    double cuedBar = -1.0;                   // clicked in the bar numbers: where play starts
+    double cuedBar = -1.0;
+    // a clip being dragged to another section of its track (option: a copy)
+    int dragClipTrack = -1, dragClipSection = -1, dropSection = -1;
+    bool clipDragging = false, dragCopy = false;                   // clicked in the bar numbers: where play starts
     juce::Rectangle<float> rewriteBounds (int numTracks) const;
     bool hoverRewrite = false;
     void askRemove (int track);

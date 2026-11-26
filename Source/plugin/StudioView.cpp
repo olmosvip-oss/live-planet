@@ -535,6 +535,33 @@ void StudioView::paint (Graphics& g)
         }
     }
 
+    // a clip being dragged: where it lands
+    if (clipDragging && dragClipTrack >= 0 && dropSection >= 0 && dropSection < (int) st.song.sections.size() && rowShown (dragClipTrack))
+    {
+        const auto& sc = st.song.sections[(size_t) dropSection];
+        const auto rb = rowBounds (dragClipTrack);
+        auto r = Rectangle<float> (xOfBar (sc.startBar) + 1.0f, rb.getY(), xOfBar (sc.startBar + sc.bars) - xOfBar (sc.startBar) - 2.0f, rb.getHeight())
+                     .getIntersection (Rectangle<float> (lx, rb.getY(), lw, rb.getHeight()));
+        if (! r.isEmpty())
+        {
+            const bool same = dropSection == dragClipSection;
+            g.setColour (Colours::white.withAlpha (same ? 0.05f : 0.16f));
+            g.fillRoundedRectangle (r, 3.0f);
+            Path outline;
+            outline.addRoundedRectangle (r.reduced (1.0f), 3.0f);
+            Path dashed;
+            const float dashes[] = { 5.0f, 4.0f };
+            PathStrokeType (1.5f).createDashedStroke (dashed, outline, dashes, 2);
+            g.setColour (Colours::white.withAlpha (same ? 0.3f : 0.9f));
+            g.fillPath (dashed);
+            if (! same)
+            {
+                g.setFont (font (11.0f, lp::ui::Medium));
+                g.drawText (String (dragCopy ? "copy to " : "move to ") + String (sc.name), r.reduced (8.0f, 0.0f), Justification::centredLeft, true);
+            }
+        }
+    }
+
     // a scrollbar when there are more tracks than fit (scroll, or click it)
     {
         const int total = (int) st.tracks.size() + 1, shown = visibleRows();
@@ -844,6 +871,7 @@ void StudioView::mouseDown (const MouseEvent& e)
             }
             if (hit != nullptr)
             {
+                dragClipTrack = i; dragClipSection = sc; clipDragging = false; dropSection = -1; // (it may be dragged)
                 const std::pair<int, int> key { i, sc };
                 if (e.mods.isShiftDown() || e.mods.isCommandDown())
                 {
@@ -934,8 +962,40 @@ void StudioView::mouseDown (const MouseEvent& e)
 
 void StudioView::mouseDrag (const MouseEvent& e)
 {
+    if (dragClipTrack >= 0)
+    {
+        // a clip dragged along its lane: where it would land (a whole section), a copy with option held
+        if (! clipDragging && e.getDistanceFromDragStart() < 6) return;
+        clipDragging = true;
+        dragCopy = e.mods.isAltDown();
+        dropSection = sectionAt (e.position.x);
+        setMouseCursor (dragCopy ? MouseCursor::CopyingCursor : MouseCursor::DraggingHandCursor);
+        repaint();
+        return;
+    }
     if (draggingFeel >= 0) { setFeel (draggingFeel, e.position.x); return; }
     if (dragRow >= 0) { setFromX (dragRow, dragCol, e.position.x); repaint(); }
+}
+
+void StudioView::mouseUp (const MouseEvent& e)
+{
+    if (dragClipTrack >= 0 && clipDragging)
+    {
+        const auto st = proc.songJob.getStatus();
+        const int n = (int) st.song.sections.size();
+        if (dropSection >= 0 && dropSection < n && dragClipSection >= 0 && dragClipSection < n && dropSection != dragClipSection)
+        {
+            const auto& a = st.song.sections[(size_t) dragClipSection];
+            const auto& b = st.song.sections[(size_t) dropSection];
+            proc.songJob.copyBars (dragClipTrack, a.startBar, a.bars, b.startBar, b.bars, ! e.mods.isAltDown());
+            pickedClips.clear();
+            pickedClips.insert ({ dragClipTrack, dropSection });
+        }
+        setMouseCursor (MouseCursor::NormalCursor);
+    }
+    dragClipTrack = dragClipSection = dropSection = -1;
+    clipDragging = false;
+    repaint();
 }
 
 void StudioView::askRemove (int track)

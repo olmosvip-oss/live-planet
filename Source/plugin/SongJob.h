@@ -24,7 +24,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -192,6 +192,20 @@ public:
             const juce::ScopedLock sl (lock);
             pendingFlip = { firstSection, sections, amount };
             edits.push_back ({ (int) kind, EditOp::Flip });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
+    // the arrangement: a clip dragged to another section (option: a copy; else it moves). The new place plays the
+    // clip's bars (repeated if it's longer); a move leaves the old place silent
+    void copyBars (int track, int srcStart, int srcBars, int dstStart, int dstBars, bool move)
+    {
+        if (srcBars <= 0 || dstBars <= 0) return;
+        {
+            const juce::ScopedLock sl (lock);
+            pendingCopies.push_back ({ track, { srcStart, srcBars, dstStart, dstBars, move ? 1 : 0 } });
+            edits.push_back ({ track, EditOp::CopyBars });
             status.editing = true;
         }
         startIfNeeded();
@@ -3118,6 +3132,7 @@ private:
             case EditOp::Add: return "add instrument";
             case EditOp::Region: return on ("bars of");
             case EditOp::Silence: return on ("delete in");
+            case EditOp::CopyBars: return on ("clip copy in");
             case EditOp::Flip: return "flip a sample";
             case EditOp::Grains: return on ("grains on");
             case EditOp::Key: return "key change";
@@ -3790,6 +3805,34 @@ private:
             std::sort (notes.begin(), notes.end(), [] (const lp::song::Note& a, const lp::song::Note& b) { return a.beat < b.beat; });
             part.notes = std::move (notes);
             part.remix = "your own pattern";
+        }
+        if (op == EditOp::CopyBars)
+        {
+            const juce::ScopedLock sl (lock);
+            for (auto it = pendingCopies.begin(); it != pendingCopies.end(); ++it)
+                if (it->first == tr)
+                {
+                    const auto [s0, sn, d0, dn, mv] = it->second;
+                    pendingCopies.erase (it);
+                    auto orig = [&part] (int b) { auto f = part.barFrom.find (b); return f != part.barFrom.end() ? f->second : b; };
+                    std::map<int, int> add;
+                    std::set<int> nowSilent;
+                    for (int k = 0; k < dn; ++k)
+                    {
+                        const int sb = s0 + k % sn, db = d0 + k;
+                        if (part.silentBars.count (sb)) nowSilent.insert (db);
+                        add[db] = orig (sb); // (a copy of a copy plays the first one's sound)
+                    }
+                    for (auto [db, from] : add)
+                    {
+                        if (db == from) part.barFrom.erase (db); else part.barFrom[db] = from;
+                        if (nowSilent.count (db)) part.silentBars.insert (db); else part.silentBars.erase (db);
+                    }
+                    if (mv != 0)
+                        for (int k = 0; k < sn; ++k)
+                            if (add.count (s0 + k) == 0) part.silentBars.insert (s0 + k);
+                    break;
+                }
         }
         if (op == EditOp::Silence)
         {
@@ -4532,7 +4575,8 @@ private:
     juce::uint32 currentSeed = 1;
     std::vector<std::pair<int, EditOp>> edits;
     std::map<int, std::pair<int, int>> pendingRegion;
-    std::vector<std::pair<int, std::pair<std::set<int>, bool>>> pendingSilence; // track -> bars, deleted (or back)
+    std::vector<std::pair<int, std::pair<std::set<int>, bool>>> pendingSilence;
+    std::vector<std::pair<int, std::array<int, 5>>> pendingCopies; // track -> src start, src bars, dst start, dst bars, move // track -> bars, deleted (or back)
     std::map<int, GrainSettings> pendingGrains;
     std::map<int, std::vector<lp::song::Note>> pendingNotes;
     std::map<int, std::pair<std::vector<lp::song::ChopSlice>, std::vector<int>>> pendingChops;

@@ -55,6 +55,11 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("chop", ints (p.chopBars)); o->setProperty ("stutter", ints (p.stutterBars));
     o->setProperty ("gap", ints (p.gapBars)); o->setProperty ("swell", ints (p.swellBars));
     o->setProperty ("silent", ints (p.silentBars));
+    {
+        juce::Array<juce::var> bf;
+        for (auto [to, from] : p.barFrom) { bf.add (to); bf.add (from); }
+        o->setProperty ("barFrom", bf);
+    }
     o->setProperty ("colour", (juce::int64) p.colour);
     o->setProperty ("flipSeed", (int) p.flipSeed); o->setProperty ("flipAmount", p.flipAmount);
     juce::Array<juce::var> fx;
@@ -129,6 +134,10 @@ inline Part partFromVar (const juce::var& v)
     for (int x : readInts (v["gap"])) p.gapBars.insert (x);
     for (int x : readInts (v["swell"])) p.swellBars.insert (x);
     for (int x : readInts (v["silent"])) p.silentBars.insert (x);
+    {
+        const auto bf = readInts (v["barFrom"]);
+        for (size_t i = 0; i + 1 < bf.size(); i += 2) p.barFrom[bf[i]] = bf[i + 1];
+    }
     p.colour = (juce::uint32) (juce::int64) v["colour"];
     p.flipSeed = (juce::uint32) (int) v["flipSeed"]; p.flipAmount = v.getProperty ("flipAmount", 2);
     if (auto* a = v["fxHits"].getArray()) for (auto& e : *a) p.fxHits.push_back ({ e[0].toString(), (double) e[1], (bool) e[2], (float) e[3] });

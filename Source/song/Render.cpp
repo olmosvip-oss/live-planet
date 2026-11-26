@@ -1541,6 +1541,33 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     }
     shapeForMix (song, part, buf, sr);
     if (part.flipSeed != 0) flipSlices (buf, sr, spb, song, part);
+    // clips you copied or moved: each of those bars plays another bar's sound (from the track as it was made)
+    if (! part.barFrom.empty())
+    {
+        const juce::AudioBuffer<float> src (buf);
+        const double barLen = spb * 4.0;
+        const int n = buf.getNumSamples(), fade = (int) (0.004 * sr);
+        for (auto [to, from] : part.barFrom)
+        {
+            const int d0 = (int) std::round (to * barLen), s0 = (int) std::round (from * barLen), len = (int) std::round (barLen);
+            if (d0 < 0 || s0 < 0 || d0 >= n || s0 >= n) continue;
+            // (straight on from the bar before when that was copied from the bar before its source: no fade, seamless)
+            const bool joinPrev = part.barFrom.count (to - 1) && part.barFrom.at (to - 1) == from - 1;
+            const bool joinNext = part.barFrom.count (to + 1) && part.barFrom.at (to + 1) == from + 1;
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                const auto* s = src.getReadPointer (ch);
+                for (int i = 0; i < len && d0 + i < n && s0 + i < n; ++i)
+                {
+                    float g = 1.0f;
+                    if (! joinPrev && i < fade) g = (float) i / fade;
+                    if (! joinNext && len - 1 - i < fade) g = std::min (g, (float) (len - 1 - i) / fade);
+                    d[d0 + i] = s[s0 + i] * g;
+                }
+            }
+        }
+    }
     // the bars you deleted: silent (a short fade either side, so nothing clicks; a tail rings on a little)
     if (! part.silentBars.empty())
     {
