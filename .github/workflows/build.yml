@@ -53,6 +53,9 @@ jobs:
             EXTRA+=("-DLOOPWRIGHT_BUY_URL=${BUY:-https://loop-wright.com/api/checkout}")
             echo "licensed build"
           fi
+          if [[ "${{ github.ref }}" == refs/tags/v* || "${{ github.ref }}" == refs/heads/release ]]; then
+            EXTRA+=("-DLOOPWRIGHT_BUILD=${{ github.run_number }}") # (the release is 0.9.<this>: the app knows which it is)
+          fi
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "${EXTRA[@]}"
 
       - name: Build

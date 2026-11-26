@@ -1463,6 +1463,22 @@ private:
 
 #include "GrainsPage.h"
 
+// "A new version of Loopwright is out": shown when a newer release than this one is published
+class UpdateNotice : public juce::Component
+{
+public:
+    UpdateNotice (const lp::ui::Theme*& theme, juce::String version, std::function<void()> closed);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseUp (const juce::MouseEvent& e) override { if (! card().contains (e.position)) later.triggerClick(); }
+
+private:
+    juce::Rectangle<float> card() const;
+    const lp::ui::Theme*& th;
+    juce::String version;
+    juce::TextButton download { "Download the update" }, later { "Later" }, skip { "Skip this version" };
+};
+
 class LivePlanetEditor : public juce::Component,
                          public juce::FileDragAndDropTarget,
                          public juce::DragAndDropContainer,
@@ -1529,6 +1545,8 @@ private:
     TrackEditor trackEditor;
     VoicePage voicePage;
     GrainsPage grainsPage;
+    std::unique_ptr<UpdateNotice> updateNotice;
+    void checkForUpdate();
     VocalsHub vocalsHub;
     lp::ai::AutoAdd autoAdd;
     std::unique_ptr<lp::ai::LayerPopup> layerPopup;

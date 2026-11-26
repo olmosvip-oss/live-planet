@@ -2207,6 +2207,90 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
 
     timerCallback();
     startTimerHz (30);
+    checkForUpdate();
+}
+
+// ---- updates: is a newer release out than this build? (asked once a session; nothing about you is sent)
+#ifndef LOOPWRIGHT_BUILD
+ #define LOOPWRIGHT_BUILD 0
+#endif
+void LivePlanetEditor::checkForUpdate()
+{
+    static std::atomic<bool> asked { false };
+    if (LOOPWRIGHT_BUILD <= 0 || asked.exchange (true)) return; // (a test build, or already asked this session)
+    Component::SafePointer<LivePlanetEditor> safe (this);
+    Thread::launch ([safe]
+    {
+        const URL url ("https://api.github.com/repos/olmosvip-oss/live-planet/releases/latest");
+        auto in = url.createInputStream (URL::InputStreamOptions (URL::ParameterHandling::inAddress)
+                                             .withConnectionTimeoutMs (8000)
+                                             .withExtraHeaders ("User-Agent: Loopwright\r\nAccept: application/vnd.github+json"));
+        if (in == nullptr) return;
+        const auto tag = JSON::parse (in->readEntireStreamAsString())["tag_name"].toString(); // e.g. "v0.9.131"
+        const int build = tag.fromLastOccurrenceOf (".", false, false).getIntValue();
+        if (! tag.startsWith ("v") || build <= LOOPWRIGHT_BUILD) return;
+        if ((int) lp::setting ("skipUpdate", 0) == build) return; // ("skip this version")
+        MessageManager::callAsync ([safe, tag]
+        {
+            if (safe == nullptr || safe->updateNotice != nullptr) return;
+            auto* ed = safe.getComponent();
+            ed->updateNotice = std::make_unique<UpdateNotice> (ed->lnf.th, tag.substring (1), [safe]
+            {
+                MessageManager::callAsync ([safe] { if (safe != nullptr) safe->updateNotice.reset(); });
+            });
+            ed->addAndMakeVisible (*ed->updateNotice);
+            ed->updateNotice->setBounds (ed->getLocalBounds());
+            ed->updateNotice->toFront (true);
+        });
+    });
+}
+
+UpdateNotice::UpdateNotice (const lp::ui::Theme*& theme, String v, std::function<void()> closed) : th (theme), version (std::move (v))
+{
+    download.getProperties().set ("primary", true);
+    download.onClick = [closed] { URL ("https://loop-wright.com/download").launchInDefaultBrowser(); closed(); };
+    later.onClick = [closed] { closed(); };
+    skip.onClick = [this, closed] { lp::setSetting ("skipUpdate", version.fromLastOccurrenceOf (".", false, false).getIntValue()); closed(); };
+    for (auto* b : { &download, &later, &skip }) { b->setWantsKeyboardFocus (false); addAndMakeVisible (*b); }
+}
+
+Rectangle<float> UpdateNotice::card() const
+{
+    return getLocalBounds().toFloat().withSizeKeepingCentre (520.0f, 250.0f);
+}
+
+void UpdateNotice::resized()
+{
+    const auto c = card().toNearestInt();
+    download.setBounds (c.getX() + 28, c.getBottom() - 66, 210, 40);
+    later.setBounds (download.getRight() + 10, c.getBottom() - 66, 90, 40);
+    skip.setBounds (later.getRight() + 10, c.getBottom() - 66, c.getRight() - 28 - later.getRight() - 10, 40);
+}
+
+void UpdateNotice::paint (Graphics& g)
+{
+    const auto& t = *th;
+    g.fillAll (Colours::black.withAlpha (0.45f));
+    const auto c = card();
+    g.setColour (t.body.withAlpha (0.97f));
+    g.fillRoundedRectangle (c, 18.0f);
+    g.setGradientFill (ColourGradient (t.grass.withAlpha (0.25f), c.getX(), c.getY(), t.grass.withAlpha (0.0f), c.getX(), c.getY() + 120.0f, false));
+    g.fillRoundedRectangle (c, 18.0f);
+    g.setColour (t.grass.withAlpha (0.6f));
+    g.drawRoundedRectangle (c.reduced (0.5f), 18.0f, 1.2f);
+    auto r = c.reduced (28.0f, 24.0f);
+    g.setFont (lp::ui::mono (10.0f, true, 0.14f));
+    g.setColour (t.grassLight);
+    g.drawText ("UPDATE  " + version, r.removeFromTop (16.0f), Justification::centredLeft, false);
+    r.removeFromTop (8.0f);
+    g.setFont (lp::ui::font (24.0f, lp::ui::Medium, -0.01f));
+    g.setColour (t.ink);
+    g.drawText ("There's a new version of Loopwright", r.removeFromTop (32.0f), Justification::centredLeft, false);
+    r.removeFromTop (6.0f);
+    g.setFont (lp::ui::font (14.0f));
+    g.setColour (t.inkDim);
+    g.drawFittedText ("Download it and run the installer, then restart Loopwright (and your DAW, if you use it there) to get the new features. "
+                      "Your songs and settings stay as they are.", r.removeFromTop (60.0f).toNearestInt(), Justification::topLeft, 3);
 }
 
 void LivePlanetEditor::startTour()
