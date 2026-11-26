@@ -606,8 +606,16 @@ private:
 };
 
 // The studio: every track of the song, where its sound came from, and its mixer and remix tools
-class StudioView : public juce::Component, public juce::TooltipClient
+class StudioView : public juce::Component, public juce::TooltipClient, public juce::DragAndDropTarget
 {
+public:
+    // an effect dropped from the browser onto a track
+    bool isInterestedInDragSource (const SourceDetails& d) override { return d.description.toString().startsWith ("fx:"); }
+    void itemDropped (const SourceDetails& d) override;
+    void itemDragMove (const SourceDetails& d) override;
+    void itemDragExit (const SourceDetails&) override { fxDropRow = -1; repaint(); }
+    std::function<void (int, juce::String)> onDropFx;
+    int fxDropRow = -1;
 public:
     explicit StudioView (LivePlanetProcessor& p) : proc (p) { for (auto* h : { &hFeel, &hTracks }) addAndMakeVisible (*h); }
     void resized() override;
@@ -704,6 +712,71 @@ public:
 private:
     Col dragCol = None;
 };
+
+// Effects, like a DAW's: a browser of effects to drag onto a track, and the open track's devices (on / off, knobs, remove)
+namespace lp::fx
+{
+struct Kind { const char* id; const char* name; const char* about; int group; }; // group 0 the chain's, 1 the track's own
+const std::vector<Kind>& kinds();
+bool isOn (LivePlanetProcessor&, int track, const juce::String& id);
+void add (LivePlanetProcessor&, int track, const juce::String& id); // switched on, at a good starting setting
+void remove (LivePlanetProcessor&, int track, const juce::String& id);
+
+// the browser: a list of effects (drag one onto a track; double-click: onto the open track)
+class Browser : public juce::Component, public juce::TooltipClient
+{
+public:
+    Browser (const lp::ui::Theme*& theme) : th (theme) {}
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override { hover = -1; repaint(); }
+    juce::String getTooltip() override;
+    std::function<void (const juce::String&)> onAdd; // double-click: on the open track
+private:
+    int itemAt (juce::Point<float>) const;
+    juce::Rectangle<float> itemRect (int i) const;
+    const lp::ui::Theme*& th;
+    int hover = -1, pressed = -1;
+    bool dragging = false;
+};
+
+// the open track's devices, side by side
+class Rack : public juce::Component, public juce::DragAndDropTarget
+{
+public:
+    Rack (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme) {}
+    void setTrack (int t) { if (t != track) { track = t; repaint(); } }
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    bool isInterestedInDragSource (const SourceDetails& d) override { return d.description.toString().startsWith ("fx:"); }
+    void itemDropped (const SourceDetails& d) override;
+    void itemDragEnter (const SourceDetails&) override { dropping = true; repaint(); }
+    void itemDragExit (const SourceDetails&) override { dropping = false; repaint(); }
+    std::function<void()> onChanged;       // (the mix to save)
+    std::function<void (int)> onOpenChain; // the full window for the chain's effects
+private:
+    struct Knob { juce::String id; int index; juce::Rectangle<float> r; };
+    struct Dev { juce::String id; juce::Rectangle<float> box, power, close, more; std::vector<Knob> knobs; };
+    std::vector<Dev> layout() const;
+    float value (const juce::String& id, int k) const;          // 0..1
+    void setValue (const juce::String& id, int k, float v01);   // heard right away
+    juce::String valueText (const juce::String& id, int k) const;
+    static juce::StringArray knobNames (const juce::String& id);
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    int track = -1;
+    bool dropping = false;
+    juce::String dragId; int dragKnob = -1; float dragStart = 0.0f;
+    lp::song::VocalChain editing;  // the chain while a knob is being turned (kept with the song when let go)
+    bool pendingChain = false;
+};
+}
 
 // EDIT: one track at a time, like a sampler: its sample (choose which bars play), its own effects and remix tools
 class FilePill : public juce::Component, public juce::SettableTooltipClient
@@ -1365,6 +1438,7 @@ private:
 
 class LivePlanetEditor : public juce::Component,
                          public juce::FileDragAndDropTarget,
+                         public juce::DragAndDropContainer,
                          private juce::Timer
 {
 public:
@@ -1493,7 +1567,16 @@ private:
     juce::Rectangle<int> cardDock; // the Studio: the open track, under the arrangement
     int dockPageShown = 0;
     bool dockTall = false; // the open track's grid made bigger: the arrangement shrinks to its sections and a few lanes
-    Segmented dockTabs { { "Sample", "Sound", "Grains" }, [this] { return dockPageShown; }, [this] (int i) { dockPageShown = i; trackEditor.setDockPage (i); repaint(); }, lnf.th };
+    Segmented dockTabs { { "Sample", "Sound", "Effects", "Grains" }, [this] { return dockPageShown; },
+                         [this] (int i) { dockPageShown = i; if (i != 2) trackEditor.setDockPage (i == 3 ? 2 : i); showDock(); repaint(); }, lnf.th };
+    // effects, like a DAW's: the browser (left of the arrangement) and the open track's devices (the dock's Effects)
+    lp::fx::Browser fxBrowser { lnf.th };
+    lp::fx::Rack fxRack { proc, lnf.th };
+    bool browserOpen = false;
+    juce::TextButton fxBtn { "Effects" };
+    std::unique_ptr<juce::Component> chainWindow;
+    void showDock();          // the dock: the track editor, or the open track's effects
+    void addFx (int track, const juce::String& id);
     bool dragging = false;
 
     juce::String cityText, headerText, nowText, statusText;

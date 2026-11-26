@@ -1997,7 +1997,25 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     studioView.rowStep = jlimit (22, 72, (int) lp::setting ("laneHeight", 42));
     studioView.onRowStep = [] (int h) { lp::setSetting ("laneHeight", h); };
     studioView.selectedTrack = [this] { return trackEditor.selected(); };
-    dockTabs.setTooltip ("Sample: the track's sample, its drum grid or its notes. Sound: its volume and effects. Grains: re-plays it in tiny slices, in time.");
+    dockTabs.setTooltip ("Sample: the track's sample, its drum grid or its notes. Sound: its volume and effects. Effects: its devices (drag more in from the browser). Grains: re-plays it in tiny slices, in time.");
+    // effects: a browser to drag from, the devices of the open track
+    addChildComponent (fxBrowser);
+    addChildComponent (fxRack);
+    addChildComponent (fxBtn);
+    fxBtn.getProperties().set ("glass", true);
+    fxBtn.setWantsKeyboardFocus (false);
+    fxBtn.setTooltip ("Audio effects: drag one onto a track (or double-click it for the open track)");
+    fxBtn.onClick = [this] { browserOpen = ! browserOpen; fxBtn.getProperties().set ("primary", browserOpen); resized(); repaint(); };
+    fxBrowser.onAdd = [this] (const String& id) { addFx (trackEditor.selected(), id); };
+    studioView.onDropFx = [this] (int t, String id) { addFx (t, id); };
+    fxRack.onOpenChain = [this] (int t)
+    {
+        Component::SafePointer<LivePlanetEditor> sp (this);
+        chainWindow = std::make_unique<VocalPanel> (proc, t, [sp] { MessageManager::callAsync ([sp] { if (sp != nullptr) sp->chainWindow.reset(); }); });
+        addAndMakeVisible (*chainWindow);
+        chainWindow->setBounds (getLocalBounds());
+        chainWindow->toFront (true);
+    };
     addChildComponent (dockTabs);
     trackEditor.setDockPage (0);
     playButton.songMode = [this] { return page == Write || page == Studio || page == Edit; };
@@ -2294,8 +2312,11 @@ void LivePlanetEditor::setPage (int p)
     if (p != Studio) trackEditor.stopLive(); // the drum editor's loop stops when you leave it
     const bool write = p == Write, studio = p == Studio, edit = false, sound = p == Sound, sky = false; // (the weather page is gone)
     const bool haveSong0 = proc.songJob.getStatus().haveSong;
-    trackEditor.setVisible (studio && haveSong0);
+    trackEditor.setVisible (studio && haveSong0 && dockPageShown != 2);
     dockTabs.setVisible (studio && haveSong0);
+    fxBtn.setVisible (studio && haveSong0);
+    fxBrowser.setVisible (studio && haveSong0 && browserOpen);
+    if (! studio) fxRack.setVisible (false);
     // vocals: your vocals, or (with the voice helper switched on) a new one made with AI
     if (! voiceOn()) vocalTab = 0;
     vocalTabs.setVisible (p == Voice && voiceOn());
@@ -2548,7 +2569,8 @@ void LivePlanetEditor::timerCallback()
         sampleView.setVisible (false);
     if (page == Studio && proc.songJob.getStatus().haveSong)
     {
-        if (! trackEditor.isVisible() && ! dockCollapsed) { trackEditor.setVisible (true); dockTabs.setVisible (true); }
+        if (! trackEditor.isVisible() && ! fxRack.isVisible() && ! dockCollapsed) { showDock(); dockTabs.setVisible (true); }
+        if (fxRack.isVisible()) { fxRack.setTrack (trackEditor.selected()); fxRack.repaint(); }
         trackEditor.refresh();
         if (trackEditor.wantsTall() != dockTall) { dockTall = trackEditor.wantsTall(); resized(); repaint(); }
     }
@@ -2806,6 +2828,29 @@ void LivePlanetEditor::paint (Graphics& g)
 }
 
 // the Studio's divider: the gap between the arrangement and the open track
+// an effect onto a track: switched on there, and the dock shows that track's effects
+void LivePlanetEditor::addFx (int track, const String& id)
+{
+    const auto st = proc.songJob.getStatus();
+    if (track < 0 || track >= (int) st.tracks.size()) return;
+    lp::fx::add (proc, track, id);
+    if (trackEditor.selected() != track) trackEditor.select (track);
+    dockCollapsed = false;
+    dockPageShown = 2;
+    showDock();
+    resized();
+    repaint();
+}
+
+void LivePlanetEditor::showDock()
+{
+    const bool studio = page == Studio && proc.songJob.getStatus().haveSong && ! dockCollapsed;
+    const bool fx = studio && dockPageShown == 2;
+    trackEditor.setVisible (studio && ! fx);
+    fxRack.setVisible (fx);
+    if (fx) { fxRack.setTrack (trackEditor.selected()); fxRack.setBounds (trackEditor.getBounds()); }
+}
+
 Rectangle<int> LivePlanetEditor::splitBounds() const
 {
     return page == Studio ? Rectangle<int> (cardTimeline.getX(), cardTimeline.getBottom(), cardTimeline.getWidth(), 10) : Rectangle<int>();
@@ -2908,9 +2953,13 @@ void LivePlanetEditor::resized()
     // ---- write: the hero + settings (song panel), the song, the drag buttons
     songPanel.setBounds (M, 84, W - 2 * M, 342);
     // the studio: the arrangement (sections over every track's lane), and the open track docked under it
-    cardTimeline = page == Studio ? Rectangle<int> (M, 84, W - 2 * M, dockCollapsed ? B - 84 - 10 - 40 : dockTall && ! splitByHand ? jmin (232, studioSplit) : studioSplit)
+    // (the effects browser, when open, takes a column on the left)
+    const int L = page == Studio && browserOpen ? M + 206 + 12 : M;
+    fxBrowser.setBounds (M, 84, 206, B - 84);
+    fxBrowser.setVisible (page == Studio && browserOpen && proc.songJob.getStatus().haveSong);
+    cardTimeline = page == Studio ? Rectangle<int> (L, 84, W - M - L, dockCollapsed ? B - 84 - 10 - 40 : dockTall && ! splitByHand ? jmin (232, studioSplit) : studioSplit)
                                   : Rectangle<int> (M, 442, W - 2 * M, B - 442);
-    cardDock = { M, cardTimeline.getBottom() + 10, W - 2 * M, B - cardTimeline.getBottom() - 10 };
+    cardDock = { cardTimeline.getX(), cardTimeline.getBottom() + 10, cardTimeline.getWidth(), B - cardTimeline.getBottom() - 10 };
     if (page == Studio)
     {
         studioView.setBounds (cardTimeline.getX() + 2, cardTimeline.getY() + 82, cardTimeline.getWidth() - 4, cardTimeline.getHeight() - 86);
@@ -2918,9 +2967,10 @@ void LivePlanetEditor::resized()
         const int lx = studioView.getX() + (int) studioView.laneLeft(), rx = studioView.getX() + (int) studioView.laneRight();
         songView.setBounds (lx - 8, cardTimeline.getY() + 34, rx - lx + 16, 50);
         trackEditor.setBounds (cardDock.getX() + 18, cardDock.getY() + 34, cardDock.getWidth() - 36, jmax (10, cardDock.getHeight() - 42));
-        trackEditor.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
+        showDock();
         dockTabs.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
-        dockTabs.setBounds (cardDock.getRight() - 18 - 270, cardDock.getY() + 8, 270, 24);
+        dockTabs.setBounds (cardDock.getRight() - 18 - 340, cardDock.getY() + 8, 340, 24);
+        fxBtn.setBounds (cardTimeline.getX() + 196, cardTimeline.getY() + 9, 96, 30);
     }
     else
         songView.setBounds (cardTimeline.getX() + 12, cardTimeline.getY() + 46, cardTimeline.getWidth() - 24, cardTimeline.getHeight() - 104);

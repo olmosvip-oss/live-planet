@@ -74,6 +74,7 @@ target_sources(LivePlanet PRIVATE
     Source/plugin/VocalsHub.cpp
     Source/plugin/AiTools.cpp
     Source/plugin/VoiceCards.cpp
+    Source/plugin/Effects.cpp
     Source/plugin/DrawSing.cpp
     Source/plugin/GrainView.cpp
     Source/plugin/SourcesPanel.cpp

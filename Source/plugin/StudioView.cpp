@@ -638,6 +638,16 @@ void StudioView::paint (Graphics& g)
         }
     }
 
+    // an effect being dragged over a track: that track, outlined
+    if (fxDropRow >= 0 && rowShown (fxDropRow))
+    {
+        const auto rb = rowBounds (fxDropRow);
+        g.setColour (th.grassLight.withAlpha (0.18f));
+        g.fillRoundedRectangle (rb, 6.0f);
+        g.setColour (th.grassLight);
+        g.drawRoundedRectangle (rb.reduced (0.5f), 6.0f, 1.5f);
+    }
+
     // a scrollbar when there are more tracks than fit (scroll, or click it)
     {
         const int total = (int) st.tracks.size() + 1, shown = visibleRows();
@@ -1115,6 +1125,24 @@ void StudioView::mouseUp (const MouseEvent& e)
     dragClipTrack = dropStart = dropEnd = -1;
     clipDragging = false;
     repaint();
+}
+
+// an effect dragged in from the browser: the track under it lights up; dropped, it goes on that track
+void StudioView::itemDragMove (const SourceDetails& d)
+{
+    int row = -1;
+    const int n = (int) proc.songJob.getStatus().tracks.size();
+    for (int i = 0; i < n; ++i) if (rowShown (i) && rowBounds (i).contains (d.localPosition.toFloat())) row = i;
+    if (row != fxDropRow) { fxDropRow = row; repaint(); }
+}
+
+void StudioView::itemDropped (const SourceDetails& d)
+{
+    itemDragMove (d);
+    const int row = fxDropRow;
+    fxDropRow = -1;
+    repaint();
+    if (row >= 0 && onDropFx) onDropFx (row, d.description.toString().fromFirstOccurrenceOf ("fx:", false, false));
 }
 
 void StudioView::askRemove (int track)
