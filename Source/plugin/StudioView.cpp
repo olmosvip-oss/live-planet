@@ -13,7 +13,7 @@ namespace
         static const uint32 pal[] = { 0xffff8a5c, 0xfff2c94c, 0xff8fd16a, 0xff4fd1c5, 0xff5aa9ff, 0xffa08cff, 0xffe57ad1, 0xffff6b81, 0xffd4a373, 0xff6fd3ff };
         return Colour (pal[(size_t) ((i % 10) + 10) % 10]);
     }
-    const int heights[] = { 24, 34, 52 };
+    const int heights[] = { 24, 42, 64 };
 }
 
 Rectangle<float> StudioView::rowBounds (int row) const
@@ -500,7 +500,7 @@ void StudioView::paint (Graphics& g)
                 auto clip = Rectangle<float> (x0, row.getY(), x1 - x0, row.getHeight());
                 clipHits.push_back ({ i, (int) si, c0, end, clip });
                 // the clip in its track's colour (light, like a DAW), the wave dark over it
-                g.setColour (tc.withAlpha (muted ? 0.12f : isPicked ? 0.8f : 0.55f));
+                g.setColour (muted ? tc.withAlpha (0.14f) : tc.brighter (isPicked ? 0.45f : 0.25f).withAlpha (0.9f));
                 g.fillRoundedRectangle (clip, 3.0f);
                 g.setColour (tc.withAlpha (muted ? 0.2f : 0.6f));
                 g.drawRoundedRectangle (clip.reduced (0.5f), 3.0f, 1.0f);
@@ -539,8 +539,8 @@ void StudioView::paint (Graphics& g)
                             h = hi[(size_t) k0] + (hi[(size_t) k1] - hi[(size_t) k0]) * f;
                             l = lo[(size_t) k0] + (lo[(size_t) k1] - lo[(size_t) k0]) * f;
                         }
-                        upper.push_back ({ x, mid - std::max (0.4f, h / top * half) });
-                        lower.push_back ({ x, mid - std::min (-0.4f, l / top * half) });
+                        upper.push_back ({ x, mid - std::max (0.4f, std::min (1.0f, h / (top * 0.85f)) * half) });
+                        lower.push_back ({ x, mid - std::min (-0.4f, std::max (-1.0f, l / (top * 0.85f)) * half) });
                     }
                     if (upper.size() > 1)
                     {

@@ -24,7 +24,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars, Create }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -184,6 +184,21 @@ public:
         startIfNeeded();
     }
     double songBpmNow() const { const juce::ScopedLock sl (lock); return current.parts.empty() ? 0.0 : current.bpm; }
+
+    // "create": a loop from your library that matches what you typed ("a vibrant colorful synth"), in the song's tempo,
+    // following the song's chords (each chord: the sample moved there), over these sections. kind: a hint (or None)
+    void createLayer (const juce::String& words, lp::song::LoopKind kind, int firstSection, int sections)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingFlip = { firstSection, sections, 0 };
+            pendingWords = words;
+            edits.push_back ({ (int) kind, EditOp::Create });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    juce::String pendingWords;
 
     // "flip a sample": a loop of this kind from your library, in the song's key and tempo, chopped into something new,
     // over these sections (amount 1 light .. 3 heavy)
@@ -2395,7 +2410,54 @@ private:
     // adds a track: a loop of one kind from your library, in tempo and in key, placed where that kind fits
     std::array<int, 3> pendingFlip { 0, 0, 2 };
     // flipSections > 0: a flipped sample over those sections only (else the loop as it is, where a producer would put it)
-    void addInstrument (lp::song::LoopKind kind, int flipFirst = 0, int flipSections = 0, int flipAmount = 2)
+    // the loop kinds a word points to ("synth" -> synth, lead, pluck, pad)
+    static std::vector<lp::song::LoopKind> kindsInWords (const juce::String& w)
+    {
+        using LK = lp::song::LoopKind;
+        std::vector<LK> k;
+        auto has = [&w] (std::initializer_list<const char*> l) { for (auto* x : l) if (w.containsIgnoreCase (x)) return true; return false; };
+        if (has ({ "synth", "analog", "saw", "supersaw" })) for (LK x : { LK::Synth, LK::Lead, LK::Pluck, LK::Pad }) k.push_back (x);
+        if (has ({ "lead" })) k.push_back (LK::Lead);
+        if (has ({ "pluck", "arp" })) k.push_back (LK::Pluck);
+        if (has ({ "pad", "ambient", "atmos" })) k.push_back (LK::Pad);
+        if (has ({ "key", "piano", "rhodes", "organ", "epiano" })) k.push_back (LK::Keys);
+        if (has ({ "guitar", "gtr" })) k.push_back (LK::Guitar);
+        if (has ({ "bass", "808", "sub" })) k.push_back (LK::Bass);
+        if (has ({ "string", "violin", "cello", "orchestra" })) k.push_back (LK::Strings);
+        if (has ({ "brass", "horn", "trumpet", "sax" })) k.push_back (LK::Brass);
+        if (has ({ "flute", "woodwind", "clarinet" })) k.push_back (LK::Woodwind);
+        if (has ({ "bell", "kalimba", "mallet", "marimba", "vibraphone" })) k.push_back (LK::Mallet);
+        if (has ({ "vocal", "vox", "choir", "voice" })) k.push_back (LK::Vocal);
+        return k;
+    }
+
+    // words to look for in a sample's name or pack, for what you typed (a few synonyms for how it should feel)
+    static juce::StringArray searchWords (const juce::String& typed)
+    {
+        juce::StringArray out;
+        static const std::map<juce::String, juce::StringArray> feel {
+            { "vibrant", { "bright", "vibrant", "shimmer", "sparkle", "glow" } }, { "colorful", { "bright", "color", "colour", "prism", "rainbow" } },
+            { "colourful", { "bright", "color", "colour", "prism" } }, { "bright", { "bright", "shine", "sparkle" } },
+            { "dark", { "dark", "night", "moody", "shadow" } }, { "warm", { "warm", "analog", "vintage", "soft" } },
+            { "dreamy", { "dream", "ethereal", "airy", "float" } }, { "sad", { "sad", "melancholy", "emotional", "minor" } },
+            { "happy", { "happy", "bright", "sunny", "uplift" } }, { "lofi", { "lofi", "lo-fi", "dusty", "vinyl", "tape" } },
+            { "lo-fi", { "lofi", "lo-fi", "dusty", "vinyl", "tape" } }, { "hard", { "hard", "aggressive", "dirty", "distort" } },
+            { "smooth", { "smooth", "soft", "silk", "mellow" } }, { "retro", { "retro", "80s", "vintage", "analog" } } };
+        juce::StringArray tokens;
+        tokens.addTokens (typed.toLowerCase(), " ,.-/", "");
+        tokens.removeEmptyStrings();
+        static const juce::StringArray skip { "a", "an", "the", "create", "make", "some", "with", "and", "of", "for", "me", "please", "layer", "sound", "that" };
+        for (auto& t : tokens)
+        {
+            if (skip.contains (t)) continue;
+            out.addIfNotAlreadyThere (t);
+            if (auto f = feel.find (t); f != feel.end()) for (auto& x : f->second) out.addIfNotAlreadyThere (x);
+        }
+        return out;
+    }
+
+    // words: "create" (a loop matching them, following the song's chords); else flipSections > 0: a flip
+    void addInstrument (lp::song::LoopKind kind, int flipFirst = 0, int flipSections = 0, int flipAmount = 2, juce::String words = {})
     {
         using LK = lp::song::LoopKind;
         lp::song::Song song;
@@ -2412,6 +2474,33 @@ private:
         juce::Random rng;
         std::vector<std::pair<float, const lp::song::LibraryEntry*>> pool;
         refreshUsable();
+        const bool create = words.isNotEmpty();
+        if (create)
+        {
+            // every melodic loop that fits the tempo, scored by how well its name matches what you typed
+            auto wanted = kindsInWords (words);
+            if (kind != LK::None && kind != LK::Other) wanted.push_back (kind);
+            const auto look = searchWords (words);
+            for (int k = 1; k < lp::song::kNumLoopKinds; ++k)
+            {
+                const LK lk = (LK) k;
+                if (lk == LK::Drums || lk == LK::Perc || lk == LK::FX) continue;
+                const bool kindOk = wanted.empty() || std::find (wanted.begin(), wanted.end(), lk) != wanted.end();
+                if (! kindOk) continue;
+                for (auto* e : usableLib.loopsOfKind (lk, song.bpm))
+                {
+                    bool used = false;
+                    for (auto& p : song.parts) used = used || p.samplePath == e->path;
+                    if (used) continue;
+                    const auto name = (e->path + " " + e->pack).toLowerCase();
+                    float score = rng.nextFloat() * 1.5f + ((e->styles & styleBit) ? 1.0f : 0.0f);
+                    for (auto& w : look) if (w.length() > 2 && name.contains (w)) score += 4.0f;
+                    if (! wanted.empty() && wanted.front() == lk) score += 2.0f; // (the kind you named first)
+                    pool.push_back ({ score, e });
+                }
+            }
+        }
+        else
         for (auto* e : usableLib.loopsOfKind (kind, song.bpm))
         {
             bool used = false;
@@ -2420,7 +2509,7 @@ private:
             pool.push_back ({ (packsInSong.contains (e->pack) ? 2.5f : 0.0f) + ((e->styles & styleBit) ? 1.5f : 0.0f) + rng.nextFloat() * 2.0f, e });
         }
         std::sort (pool.begin(), pool.end(), [] (auto& a, auto& b) { return a.first > b.first; });
-        const bool tonal = kind != LK::Drums && kind != LK::Perc && kind != LK::FX;
+        const bool tonal = create || (kind != LK::Drums && kind != LK::Perc && kind != LK::FX);
         lp::song::Part part;
         part.name = lp::song::loopKindName (kind);
         part.kind = lp::song::PartKind::Loop;
@@ -2436,9 +2525,10 @@ private:
             if (tune == 99) continue;
             found.push_back ({ e, b, tune, soundsLike (e->path, currentRef, currentTarget.wish) });
         }
-        // the ones that sound most like your reference first
-        std::stable_sort (found.begin(), found.end(), [] (const Found& a, const Found& b)
-            { return a.like * 3.0f - (float) std::abs (a.tune) * 0.35f > b.like * 3.0f - (float) std::abs (b.tune) * 0.35f; });
+        // the ones that sound most like your reference first (what you typed decides, when you typed something)
+        if (! create)
+            std::stable_sort (found.begin(), found.end(), [] (const Found& a, const Found& b)
+                { return a.like * 3.0f - (float) std::abs (a.tune) * 0.35f > b.like * 3.0f - (float) std::abs (b.tune) * 0.35f; });
         for (size_t i = 0; i < found.size() && i < 5; ++i)
         {
             if (i == 0) bars = found[i].bars;
@@ -2448,15 +2538,41 @@ private:
         if (part.candidates.isEmpty())
         {
             const juce::ScopedLock sl (lock);
-            status.message = juce::String ("no ") + part.name + " loops in your library fit this song's key and tempo";
+            status.message = create ? "nothing in your library matches \"" + words + "\" at this tempo: try other words, or flip a sample"
+                                    : juce::String ("no ") + part.name + " loops in your library fit this song's key and tempo";
             return;
         }
         part.samplePath = part.candidates[0];
         part.autoTune = part.candidateTunes[0];
         part.loopBars = bars;
-        const bool flip = flipSections > 0;
+        const bool flip = flipSections > 0 && ! create;
         std::vector<std::string> where { "verse", "chorus" };
-        if (flip)
+        if (create && flipSections > 0)
+        {
+            // over the sections you picked, following the song's chords: each half bar the sample moves to its chord
+            const int a = juce::jlimit (0, (int) song.sections.size() - 1, flipFirst);
+            const int b = juce::jlimit (a + 1, (int) song.sections.size(), flipFirst + flipSections);
+            const int from = song.sections[(size_t) a].startBar, to = song.sections[(size_t) b - 1].startBar + song.sections[(size_t) b - 1].bars;
+            for (int bb = from; bb < to; bb += bars) part.loopStartBars.push_back (bb);
+            ensureBarSrc (part, song.totalBars());
+            for (int bb = 0; bb < (int) part.barSrc.size(); ++bb) if (bb < from || bb >= to) part.barSrc[(size_t) bb] = -1;
+            std::vector<TrackInfo> tracks;
+            { const juce::ScopedLock sl (lock); tracks = status.tracks; }
+            const auto chords = songChords (song, tracks);
+            for (int s = from * 2; s < to * 2 && s < (int) chords.size(); ++s)
+            {
+                if (! chords[(size_t) s].valid) continue;
+                int d = ((chords[(size_t) s].root - song.key) % 12 + 12) % 12;
+                if (d > 6) d -= 12;
+                if (d != 0) part.slotShift[s] = d;
+            }
+            juce::String nm = words.trim();
+            for (auto* lead : { "create ", "make ", "a ", "an " }) if (nm.startsWithIgnoreCase (lead)) nm = nm.substring ((int) strlen (lead)).trim();
+            if (nm.length() > 28) nm = nm.substring (0, 26).trim() + "..";
+            part.name = nm.isEmpty() ? std::string ("layer") : nm.toStdString();
+            where.clear();
+        }
+        else if (flip)
         {
             // over the sections you picked, the loop repeated
             where.clear();
@@ -2484,7 +2600,7 @@ private:
         if (part.loopStartBars.empty())
             for (int b = 0; b + bars <= song.totalBars(); b += bars) part.loopStartBars.push_back (b);
         part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
-        part.remix = remixText (part, 0.0, song) + (flip ? " (flipped: chopped and re-ordered)" : " (added by you)");
+        part.remix = remixText (part, 0.0, song) + (create ? " (follows the song's chords)" : flip ? " (flipped: chopped and re-ordered)" : " (added by you)");
         saveFeatures();
         song.parts.push_back (part);
         juce::AudioBuffer<float> buf;
@@ -3136,6 +3252,7 @@ private:
             case EditOp::Silence: return on ("delete in");
             case EditOp::CopyBars: return on ("clip copy in");
             case EditOp::Flip: return "flip a sample";
+            case EditOp::Create: return "create a layer";
             case EditOp::Grains: return on ("grains on");
             case EditOp::Key: return "key change";
             case EditOp::Notes: return on ("notes of");
@@ -3632,6 +3749,14 @@ private:
             std::array<int, 3> f;
             { const juce::ScopedLock sl (lock); f = pendingFlip; }
             addInstrument ((lp::song::LoopKind) tr, f[0], f[1], f[2]);
+            return;
+        }
+        if (op == EditOp::Create)
+        {
+            std::array<int, 3> f;
+            juce::String words;
+            { const juce::ScopedLock sl (lock); f = pendingFlip; words = pendingWords; }
+            addInstrument ((lp::song::LoopKind) tr, f[0], f[1], 0, words.isEmpty() ? juce::String ("layer") : words);
             return;
         }
         if (op == EditOp::AddHook || op == EditOp::AddChops) { addHook (op == EditOp::AddChops); return; }

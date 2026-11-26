@@ -626,7 +626,7 @@ public:
     void mouseUp (const juce::MouseEvent&) override;
     bool keyPressed (const juce::KeyPress&) override;
     ArrView* view = nullptr;               // the bars in view (zoom, scroll along), shared with the sections ruler
-    int rowStep = 34;                      // how tall each track's lane is (+ the gap)
+    int rowStep = 42;                      // how tall each track's lane is (+ the gap)
     std::function<void (int)> onRowStep;   // (remembered)
     std::function<void()> onMixChanged;
     std::function<void (int)> onOpenTrack; // clicking a track's name opens it in the editor
@@ -922,9 +922,10 @@ private:
     int loopBars = 0; // 0: a part played through; else a loop this many bars long, repeated
     juce::TextButton asPart { "Instrumental" }, asLoop { "Loop" }, loop1 { "1 bar" }, loop2 { "2 bars" }, loop4 { "4 bars" };
     // flip a sample from your library (chopped into something new) or have the AI play it
-    bool flipMode = true;
+    int mode = 0; // 0 create (a sample matching your words, following the chords), 1 flip a sample, 2 AI audio
     int flipAmount = 2;
-    juce::TextButton modeFlip { "Flip a sample" }, modeAi { "AI generate" }, amtLight { "Light flip" }, amtMed { "Medium" }, amtHeavy { "Heavy" };
+    void setMode (int m);
+    juce::TextButton modeCreate { "Create" }, modeFlip { "Flip a sample" }, modeAi { "AI audio" }, amtLight { "Light flip" }, amtMed { "Medium" }, amtHeavy { "Heavy" };
     void showType();
     juce::TextEditor describe;
     juce::TextButton go { "Generate" }, cancel { "Cancel" };

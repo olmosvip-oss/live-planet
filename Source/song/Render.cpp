@@ -1547,6 +1547,44 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     }
     shapeForMix (song, part, buf, sr);
     if (part.flipSeed != 0) flipSlices (buf, sr, spb, song, part);
+    // a sample that follows the song's chords: each stretch on one chord moved to that chord (its timing kept)
+    if (! part.slotShift.empty())
+    {
+        const juce::AudioBuffer<float> src (buf);
+        const double slotLen = spb * 2.0;
+        const int n = buf.getNumSamples(), pad = (int) (0.06 * sr), fade = (int) (0.012 * sr);
+        auto shiftOf = [&part] (int s) { auto f = part.slotShift.find (s); return f != part.slotShift.end() ? f->second : 0; };
+        const int slots = (int) std::ceil (n / slotLen);
+        for (int s = 0; s < slots;)
+        {
+            const int semis = shiftOf (s);
+            int e = s + 1;
+            while (e < slots && shiftOf (e) == semis) ++e;
+            if (semis != 0)
+            {
+                const int a = (int) std::round (s * slotLen), b = std::min (n, (int) std::round (e * slotLen));
+                const int a0 = std::max (0, a - pad), b0 = std::min (n, b + pad);
+                if (b > a && b0 - a0 > 64)
+                {
+                    juce::AudioBuffer<float> seg (2, b0 - a0);
+                    for (int ch = 0; ch < 2; ++ch) seg.copyFrom (ch, 0, src, std::min (ch, src.getNumChannels() - 1), a0, b0 - a0);
+                    auto moved = stretchAndPitch (seg, b0 - a0, semis, sr, false, false);
+                    for (int ch = 0; ch < 2; ++ch)
+                    {
+                        auto* d = buf.getWritePointer (ch);
+                        for (int i = a; i < b; ++i)
+                        {
+                            float w = 1.0f; // (blended in and out over a few ms where the chord changes)
+                            if (i - a < fade) w = (float) (i - a) / fade;
+                            if (b - 1 - i < fade) w = std::min (w, (float) (b - 1 - i) / fade);
+                            d[i] = d[i] * (1.0f - w) + moved.getSample (ch, i - a0) * w;
+                        }
+                    }
+                }
+            }
+            s = e;
+        }
+    }
     // clips you copied or moved: each of those bars plays another bar's sound (from the track as it was made)
     if (! part.barFrom.empty())
     {

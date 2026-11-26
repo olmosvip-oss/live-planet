@@ -325,37 +325,34 @@ void LivePlanetLookAndFeel::drawButtonBackground (Graphics& g, Button& b, const 
     const float rad = r.getHeight() * 0.5f;
     if ((bool) b.getProperties().getWithDefault ("ai", false))
     {
-        // the AI's own colour (coral into magenta), glassy: a soft glow, a light top half, a crisp rim
+        // sleek: dark glass with a fine edge that fades from the theme colour into a soft rose; a touch lighter on hover
         const float a = b.isEnabled() ? 1.0f : 0.45f;
-        auto body = r.reduced (2.0f);
+        auto body = r.reduced (1.5f);
         const float rr = body.getHeight() * 0.5f;
-        for (int i = 3; i >= 1; --i)
-        {
-            g.setColour (Colour (0xffff5a8a).withAlpha (a * (over ? 0.16f : 0.10f) / (float) i));
-            g.fillRoundedRectangle (body.expanded ((float) i * 0.9f), rr + (float) i);
-        }
-        ColourGradient cg (Colour (0xffff8a4c).withMultipliedAlpha (a), body.getX(), body.getY(), Colour (0xffe8418f).withMultipliedAlpha (a), body.getRight(), body.getBottom(), false);
-        g.setGradientFill (cg);
+        g.setColour (Colours::white.withAlpha (a * (down ? 0.05f : over ? 0.10f : 0.06f)));
         g.fillRoundedRectangle (body, rr);
-        if (over || down) { g.setColour (Colours::white.withAlpha (down ? 0.0f : 0.10f)); g.fillRoundedRectangle (body, rr); }
-        if (down) { g.setColour (Colours::black.withAlpha (0.12f)); g.fillRoundedRectangle (body, rr); }
-        ColourGradient gloss (Colours::white.withAlpha (0.30f * a), 0.0f, body.getY(), Colours::white.withAlpha (0.0f), 0.0f, body.getCentreY() + 2.0f, false);
-        g.setGradientFill (gloss);
-        g.fillRoundedRectangle (body.reduced (1.0f).withHeight (body.getHeight() * 0.55f), rr - 1.0f);
-        g.setColour (Colours::white.withAlpha (0.38f * a));
-        g.drawRoundedRectangle (body.reduced (0.5f), rr, 1.0f);
-        return;
-    }
-    if (primary)
-    {
-        g.setColour ((b.isEnabled() ? th->grass : th->grass.withSaturation (0.2f)).brighter (over ? 0.12f : 0.0f).darker (down ? 0.15f : 0.0f));
-        g.fillRoundedRectangle (r, rad);
+        ColourGradient sheen (Colours::white.withAlpha (0.07f * a), 0.0f, body.getY(), Colours::white.withAlpha (0.0f), 0.0f, body.getCentreY(), false);
+        g.setGradientFill (sheen);
+        g.fillRoundedRectangle (body.reduced (1.0f), rr - 1.0f);
+        ColourGradient edge (th->grassLight.withAlpha ((over ? 0.95f : 0.7f) * a), body.getX(), body.getCentreY(),
+                             Colour (0xfff08aa8).withAlpha ((over ? 0.85f : 0.55f) * a), body.getRight(), body.getCentreY(), false);
+        g.setGradientFill (edge);
+        g.drawRoundedRectangle (body.reduced (0.5f), rr, 1.2f);
         return;
     }
     if ((bool) b.getProperties().getWithDefault ("glass", false))
     {
         // on glass: a clear pill with a fine light rim (faint when it can't be used)
         const float en = b.isEnabled() ? 1.0f : 0.35f;
+        if (primary)
+        {
+            // picked: the theme colour, softly, under the glass
+            g.setColour (th->grass.withAlpha (en * (over ? 0.85f : 0.7f)));
+            g.fillRoundedRectangle (r, rad);
+            g.setColour (Colours::white.withAlpha (0.25f * en));
+            g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
+            return;
+        }
         g.setColour (Colours::white.withAlpha (en * (down ? 0.04f : over ? 0.11f : 0.06f)));
         g.fillRoundedRectangle (r, rad);
         g.setColour (Colours::white.withAlpha (en * (over ? 0.22f : 0.13f)));
@@ -392,9 +389,10 @@ void LivePlanetLookAndFeel::drawButtonText (Graphics& g, TextButton& b, bool, bo
         star.quadraticTo (cx, cy, cx - s, cy);
         star.quadraticTo (cx, cy, cx, cy - s);
         star.closeSubPath();
-        g.setColour (Colours::white.withAlpha (b.isEnabled() ? 1.0f : 0.6f));
+        g.setGradientFill (ColourGradient (th->grassLight, cx - s, cy - s, Colour (0xfff08aa8), cx + s, cy + s, false));
         g.fillPath (star);
         g.fillEllipse (cx + s * 0.9f, cy - s * 1.15f, s * 0.45f, s * 0.45f);
+        g.setColour (Colours::white.withAlpha (b.isEnabled() ? 0.95f : 0.5f));
         g.setFont (f);
         g.drawText (b.getButtonText(), Rectangle<float> (x0 + 2.0f * s + gap, 0.0f, tw + 4.0f, (float) b.getHeight()), Justification::centredLeft, false);
         return;
@@ -1980,7 +1978,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     songView.view = &arrView;
     studioView.view = &arrView;
     arrView.changed = [this] { songView.repaint(); studioView.repaint(); };
-    studioView.rowStep = jlimit (22, 72, (int) lp::setting ("laneHeight", 34));
+    studioView.rowStep = jlimit (22, 72, (int) lp::setting ("laneHeight", 42));
     studioView.onRowStep = [] (int h) { lp::setSetting ("laneHeight", h); };
     studioView.selectedTrack = [this] { return trackEditor.selected(); };
     dockTabs.setTooltip ("Sample: the track's sample, its drum grid or its notes. Sound: its volume and effects. Grains: re-plays it in tiny slices, in time.");

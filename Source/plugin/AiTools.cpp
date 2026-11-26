@@ -225,8 +225,9 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
         b->setWantsKeyboardFocus (false);
         addAndMakeVisible (*b);
     }
-    for (auto [b, tip] : { T { &modeFlip, "A loop from your own sample library, in the song's key and tempo, chopped up and re-ordered so it's yours (quick, no AI)" },
-                           T { &modeAi, "The AI plays a new part over your song (needs the voice helper; slower, and hit or miss on drums)" },
+    for (auto [b, tip] : { T { &modeCreate, "Type what you want (\"a vibrant colorful synth\"): the sample in your library that matches it best, at the song's tempo, following the song's chords" },
+                           T { &modeFlip, "A loop from your own sample library, in the song's key and tempo, chopped up and re-ordered so it's yours (quick, no AI)" },
+                           T { &modeAi, "The AI makes new audio for it (needs the voice helper; slower, and hit or miss)" },
                            T { &amtLight, "A few slices moved: still close to the loop" }, T { &amtMed, "Re-ordered, some slices backwards, a stutter now and then" },
                            T { &amtHeavy, "Chopped hard: a new riff from the loop's pieces" } })
     {
@@ -235,8 +236,9 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
         b->setWantsKeyboardFocus (false);
         addAndMakeVisible (*b);
     }
-    modeFlip.onClick = [this] { flipMode = true; showType(); resized(); repaint(); };
-    modeAi.onClick = [this] { flipMode = false; showType(); resized(); repaint(); };
+    modeCreate.onClick = [this] { setMode (0); };
+    modeFlip.onClick = [this] { setMode (1); };
+    modeAi.onClick = [this] { setMode (2); };
     amtLight.onClick = [this] { flipAmount = 1; showType(); };
     amtMed.onClick = [this] { flipAmount = 2; showType(); };
     amtHeavy.onClick = [this] { flipAmount = 3; showType(); };
@@ -245,8 +247,7 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
     loop1.onClick = [this] { loopBars = 1; showType(); };
     loop2.onClick = [this] { loopBars = 2; showType(); };
     loop4.onClick = [this] { loopBars = 4; showType(); };
-    showType();
-    describe.setTextToShowWhenEmpty ("describe it: funky disco bass, syncopated", Colours::grey);
+    describe.setTextToShowWhenEmpty ("describe it: a vibrant colorful synth", Colours::grey);
     describe.setFont (font (14.0f));
     describe.setIndents (12, 9);
     addAndMakeVisible (describe);
@@ -255,9 +256,23 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
     cancel.getProperties().set ("glass", true);
     describe.setColour (TextEditor::backgroundColourId, Colours::white.withAlpha (0.05f));
     describe.setColour (TextEditor::outlineColourId, Colours::white.withAlpha (0.14f));
-    describe.setColour (TextEditor::focusedOutlineColourId, Colour (0xffff7a6a));
+    describe.setColour (TextEditor::focusedOutlineColourId, th->grassLight.withAlpha (0.8f));
     go.onClick = [this] { start(); };
+    describe.onReturnKey = [this] { start(); };
+    setMode (0);
     cancel.onClick = [this] { if (onClosed) onClosed(); };
+}
+
+void LayerPopup::setMode (int m)
+{
+    mode = m;
+    if (mode == 0) { kind = {}; for (auto* c : chips) { c->getProperties().set ("primary", false); c->repaint(); } } // (an instrument is just a hint here)
+    else if (kind.isEmpty()) pickKind (chips[1]);
+    describe.setTextToShowWhenEmpty (mode == 0 ? "describe it: a vibrant colorful synth" : "describe it: funky disco bass, syncopated", Colours::grey);
+    showType();
+    resized();
+    repaint();
+    if (mode != 1 && isShowing()) describe.grabKeyboardFocus();
 }
 
 void LayerPopup::showType()
@@ -268,13 +283,14 @@ void LayerPopup::showType()
     lit (loop1, loopBars == 1);
     lit (loop2, loopBars == 2);
     lit (loop4, loopBars == 4);
-    for (auto* b : { &loop1, &loop2, &loop4 }) b->setVisible (! flipMode && loopBars > 0);
-    lit (modeFlip, flipMode);
-    lit (modeAi, ! flipMode);
+    for (auto* b : { &loop1, &loop2, &loop4 }) b->setVisible (mode == 2 && loopBars > 0);
+    lit (modeCreate, mode == 0);
+    lit (modeFlip, mode == 1);
+    lit (modeAi, mode == 2);
     lit (amtLight, flipAmount == 1);
     lit (amtMed, flipAmount == 2);
     lit (amtHeavy, flipAmount == 3);
-    for (auto* b : { &asPart, &asLoop }) b->setVisible (! flipMode);
+    for (auto* b : { &asPart, &asLoop }) b->setVisible (mode == 2);
     {
         // flip: how many loops your library has for each (none: greyed out)
         const auto st = proc.songJob.getStatus();
@@ -285,24 +301,25 @@ void LayerPopup::showType()
             c->getProperties().set ("label", base);
             int n = 0;
             for (auto lk : flipKindsFor (id)) n += (size_t) lk < st.kindCounts.size() ? st.kindCounts[(size_t) lk] : 0;
-            c->setButtonText (flipMode ? base + "  " + String (n) : base);
-            c->setEnabled (! flipMode || n > 0);
+            c->setButtonText (mode != 2 ? base + "  " + String (n) : base);
+            c->setEnabled (mode == 2 || n > 0);
         }
         // (the one picked has nothing to flip: the first that has)
         for (auto* c : chips)
-            if (c->getProperties()["id"].toString() == kind && ! c->isEnabled())
+            if (mode == 1 && c->getProperties()["id"].toString() == kind && ! c->isEnabled())
             {
                 for (auto* d : chips) if (d->isEnabled()) { pickKind (d); break; }
                 break;
             }
     }
-    for (auto* b : { &amtLight, &amtMed, &amtHeavy }) b->setVisible (flipMode);
-    describe.setVisible (! flipMode);
-    go.setButtonText (flipMode ? "Flip it" : "Generate");
+    for (auto* b : { &amtLight, &amtMed, &amtHeavy }) b->setVisible (mode == 1);
+    describe.setVisible (mode != 1);
+    go.setButtonText (mode == 0 ? "Create" : mode == 1 ? "Flip it" : "Generate");
 }
 
 void LayerPopup::pickKind (TextButton* b)
 {
+    if (mode == 0 && kind == b->getProperties()["id"].toString()) { kind = {}; b->getProperties().set ("primary", false); b->repaint(); return; } // (a hint: click again to drop it)
     kind = b->getProperties()["id"].toString();
     for (auto* c : chips) { c->getProperties().set ("primary", c == b); c->repaint(); }
 }
@@ -311,7 +328,20 @@ void LayerPopup::start()
 {
     const auto st = proc.songJob.getStatus();
     if (! st.haveSong || firstSection < 0 || firstSection + sectionCount > (int) st.song.sections.size()) return;
-    if (flipMode)
+    if (mode == 0)
+    {
+        // what you typed (and the instrument, if you picked one): the best match in your library, following the chords
+        String words = describe.getText().trim();
+        String label;
+        for (auto* c : chips) if (c->getProperties()["id"].toString() == kind) label = c->getProperties().getWithDefault ("label", c->getButtonText()).toString();
+        if (words.isEmpty() && label.isEmpty()) { message = "Type what you want (like \"a vibrant colorful synth\"), or pick an instrument."; repaint(); return; }
+        if (words.isEmpty()) words = label.toLowerCase();
+        const auto hint = kind.isNotEmpty() ? flipKindsFor (kind).front() : lp::song::LoopKind::None;
+        proc.songJob.createLayer (words, hint, firstSection, sectionCount);
+        if (onClosed) onClosed();
+        return;
+    }
+    if (mode == 1)
     {
         // its own kind if your library has loops of it, else the closest kind that does
         int k = -1;
@@ -355,12 +385,20 @@ void LayerPopup::resized()
     c.removeFromTop (54);
     {
         auto t = c.removeFromTop (32);
+        modeCreate.setBounds (t.removeFromLeft (110));
+        t.removeFromLeft (8);
         modeFlip.setBounds (t.removeFromLeft (140));
         t.removeFromLeft (8);
-        modeAi.setBounds (t.removeFromLeft (124));
+        modeAi.setBounds (t.removeFromLeft (110));
         c.removeFromTop (12);
     }
-    if (flipMode)
+    if (mode == 0)
+    {
+        // what you want, typed (the main thing here); the instruments below are only a hint
+        describe.setBounds (c.removeFromTop (40));
+        c.removeFromTop (14);
+    }
+    else if (mode == 1)
     {
         auto t = c.removeFromTop (30);
         amtLight.setBounds (t.removeFromLeft (100)); t.removeFromLeft (6);
@@ -389,14 +427,14 @@ void LayerPopup::resized()
         x += w + 8;
     }
     c.removeFromTop (16);
-    if (! flipMode) { describe.setBounds (c.removeFromTop (38)); c.removeFromTop (16); }
+    if (mode == 2) { describe.setBounds (c.removeFromTop (38)); c.removeFromTop (16); }
     auto bt = c.removeFromTop (40);
     cancel.setBounds (bt.removeFromRight (100));
     bt.removeFromRight (10);
     go.setBounds (bt);
 }
 
-Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (600, flipMode ? 340 : 400); }
+Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (600, mode == 0 ? 320 : mode == 1 ? 310 : 400); }
 
 void LayerPopup::setBackdrop (Image img)
 {
@@ -470,8 +508,9 @@ void LayerPopup::paint (Graphics& g)
         where << (where.isEmpty() ? "" : " + ") << String (st.song.sections[(size_t) i].name);
     g.setFont (font (12.0f));
     g.setColour (th->inkDim);
-    g.drawText (flipMode ? "A loop from your library flipped over " + where + ": in key, in time, chopped so it's yours."
-                         : "Played by the AI over " + where + ", in key and in time. It lands as a new track.", in.removeFromTop (20.0f), Justification::centredLeft, true);
+    g.drawText (mode == 0 ? "A sample from your library that matches your words, over " + where + ", in time and following your chords."
+                : mode == 1 ? "A loop from your library flipped over " + where + ": in key, in time, chopped so it's yours."
+                            : "New audio made by the AI over " + where + ", in key and in time (needs the voice helper).", in.removeFromTop (20.0f), Justification::centredLeft, true);
     if (message.isNotEmpty())
     {
         g.setColour (Colour (0xffff8f8f));

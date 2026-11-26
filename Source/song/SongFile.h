@@ -60,6 +60,9 @@ inline juce::var partToVar (const Part& p)
         juce::Array<juce::var> bf;
         for (auto [to, from] : p.barFrom) { bf.add (to); bf.add (from); }
         o->setProperty ("barFrom", bf);
+        juce::Array<juce::var> ss;
+        for (auto [slot, semis] : p.slotShift) { ss.add (slot); ss.add (semis); }
+        o->setProperty ("slotShift", ss);
     }
     o->setProperty ("colour", (juce::int64) p.colour);
     o->setProperty ("flipSeed", (int) p.flipSeed); o->setProperty ("flipAmount", p.flipAmount);
@@ -139,6 +142,8 @@ inline Part partFromVar (const juce::var& v)
     {
         const auto bf = readInts (v["barFrom"]);
         for (size_t i = 0; i + 1 < bf.size(); i += 2) p.barFrom[bf[i]] = bf[i + 1];
+        const auto ss = readInts (v["slotShift"]);
+        for (size_t i = 0; i + 1 < ss.size(); i += 2) p.slotShift[ss[i]] = ss[i + 1];
     }
     p.colour = (juce::uint32) (juce::int64) v["colour"];
     p.flipSeed = (juce::uint32) (int) v["flipSeed"]; p.flipAmount = v.getProperty ("flipAmount", 2);
