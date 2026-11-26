@@ -169,14 +169,15 @@ Rectangle<float> StudioView::colBounds (int row, Col c) const
 Rectangle<float> StudioView::addBounds (int numTracks) const
 {
     auto r = rowBounds (numTracks);
-    return { r.getX() + 2.0f, r.getY() + 1.0f, 150.0f, std::min (24.0f, r.getHeight() - 2.0f) };
+    return { r.getX() + 2.0f, r.getY() + 1.0f, 118.0f, std::min (24.0f, r.getHeight() - 2.0f) };
 }
 
 // next to "add instrument": a new take of every track you haven't locked
 Rectangle<float> StudioView::rewriteBounds (int numTracks) const
 {
+    // (both stay in the names column, clear of the lanes where a new track pulses while it's made)
     const auto a = addBounds (numTracks);
-    return { a.getRight() + 10.0f, a.getY(), 200.0f, a.getHeight() };
+    return { a.getRight() + 8.0f, a.getY(), laneLeft() - 8.0f - (a.getRight() + 8.0f), a.getHeight() };
 }
 
 void StudioView::showAddMenu()
@@ -641,14 +642,14 @@ void StudioView::paint (Graphics& g)
         g.fillRoundedRectangle (r, 5.0f);
         g.setColour (Colours::white.withAlpha (0.85f));
         g.setFont (font (11.0f, lp::ui::Medium));
-        g.drawText ("+  add instrument", r, Justification::centred, false);
+        g.drawText ("+  instrument", r, Justification::centred, false);
         int locked = 0;
         for (auto& tr : st.tracks) locked += tr.locked ? 1 : 0;
         auto w = rewriteBounds ((int) st.tracks.size());
         g.setColour (hoverRewrite ? th.grass.withAlpha (0.45f) : th.grass.withAlpha (0.22f));
         g.fillRoundedRectangle (w, 5.0f);
         g.setColour (Colours::white.withAlpha (0.9f));
-        g.drawText (locked > 0 ? "write the rest again (" + String (locked) + " locked)" : String ("write the rest again"), w, Justification::centred, false);
+        g.drawFittedText (locked > 0 ? "rewrite the rest (" + String (locked) + " locked)" : String ("write the rest again"), w.reduced (6.0f, 0.0f).toNearestInt(), Justification::centred, 1, 0.8f);
     }
 
     // ---- the song's feel, for the whole song at once (one line along the bottom)
