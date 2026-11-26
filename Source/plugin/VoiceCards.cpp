@@ -159,9 +159,11 @@ std::vector<String> VoicePicker::shownVoices() const
 {
     std::vector<String> out;
     const auto q = search.getText().trim();
+    const auto hidden = lp::setting ("hiddenVoices", Array<var>());
     for (int i = 0; i < voices.getNumItems(); ++i)
     {
         const auto n = voices.getItemText (i);
+        if (hidden.getArray() != nullptr && hidden.getArray()->contains (n)) continue; // (you removed it)
         const auto ab = about (n);
         if (tab == 1 && ! ab.madeFromYours) continue;
         if (tab == 2 && ab.madeFromYours) continue;
@@ -270,6 +272,33 @@ void VoicePicker::paint (Graphics& g)
 void VoicePicker::mouseDown (const MouseEvent& e)
 {
     if (! card().contains (e.getPosition())) { if (onClosed) onClosed(); return; }
+    for (auto& [cr, name] : cards)
+        if (cr.contains (e.position) && e.mods.isPopupMenu())
+        {
+            // right-click: take it out of Loopwright (its file stays where it is), or bring removed ones back
+            const auto hidden = lp::setting ("hiddenVoices", Array<var>());
+            const int nHidden = hidden.getArray() != nullptr ? hidden.getArray()->size() : 0;
+            PopupMenu m;
+            m.addSectionHeader (name);
+            m.addItem (1, "Remove this voice");
+            m.addItem (2, "Bring back removed voices (" + String (nHidden) + ")", nHidden > 0);
+            SafePointer<VoicePicker> self (this);
+            const String nm = name;
+            m.showMenuAsync (PopupMenu::Options(), [self, nm] (int r)
+            {
+                if (self == nullptr || r <= 0) return;
+                Array<var> list;
+                if (r == 1)
+                {
+                    if (auto* a = lp::setting ("hiddenVoices", Array<var>()).getArray()) list = *a;
+                    if (! list.contains (nm)) list.add (nm);
+                    self->message = "\"" + nm + "\" is removed (right-click any voice to bring it back)";
+                }
+                lp::setSetting ("hiddenVoices", list);
+                self->repaint();
+            });
+            return;
+        }
     for (auto& [cr, name] : cards)
         if (cr.contains (e.position))
         {
