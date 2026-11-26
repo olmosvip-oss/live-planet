@@ -16,9 +16,61 @@ namespace
     const int heights[] = { 24, 42, 64 };
 }
 
+Rectangle<float> StudioView::displayBounds (int d) const
+{
+    return { 10.0f, rowsTop + (float) (d - scroll) * (float) rowStep, (float) getWidth() - 20.0f, (float) rowStep - 2.0f };
+}
+
 Rectangle<float> StudioView::rowBounds (int row) const
 {
-    return { 10.0f, rowsTop + (float) (row - scroll) * (float) rowStep, (float) getWidth() - 20.0f, (float) rowStep - 2.0f };
+    const int d = displayOf (row);
+    return d < 0 ? Rectangle<float> (10.0f, -10000.0f, (float) getWidth() - 20.0f, (float) rowStep - 2.0f) : displayBounds (d);
+}
+
+int StudioView::displayOf (int track) const
+{
+    if (track >= (int) rowOfTrack.size()) return (int) drows.size(); // (the "add" row, after everything)
+    return track >= 0 ? rowOfTrack[(size_t) track] : -1;
+}
+
+Rectangle<float> StudioView::groupBounds (const String& g) const
+{
+    for (size_t d = 0; d < drows.size(); ++d) if (drows[d].track < 0 && drows[d].group == g) return displayBounds ((int) d);
+    return {};
+}
+
+std::vector<int> StudioView::membersOf (const String& g) const
+{
+    std::vector<int> out;
+    const auto st = proc.songJob.getStatus();
+    for (int i = 0; i < (int) st.tracks.size(); ++i) if (st.tracks[(size_t) i].folder == g) out.push_back (i);
+    return out;
+}
+
+void StudioView::buildRows()
+{
+    const auto st = proc.songJob.getStatus();
+    const int n = (int) st.tracks.size();
+    drows.clear();
+    rowOfTrack.assign ((size_t) n, -1);
+    inGroup.assign ((size_t) n, false);
+    std::set<String> done;
+    for (int i = 0; i < n; ++i)
+    {
+        const auto& g = st.tracks[(size_t) i].folder;
+        if (g.isEmpty()) { rowOfTrack[(size_t) i] = (int) drows.size(); drows.push_back ({ i, {} }); continue; }
+        if (done.count (g)) continue;
+        done.insert (g);
+        drows.push_back ({ -1, g });
+        for (int j = i; j < n; ++j)
+            if (st.tracks[(size_t) j].folder == g)
+            {
+                inGroup[(size_t) j] = true;
+                if (collapsed.count (g)) continue;
+                rowOfTrack[(size_t) j] = (int) drows.size();
+                drows.push_back ({ j, g });
+            }
+    }
 }
 
 int StudioView::visibleRows() const
@@ -103,6 +155,21 @@ bool StudioView::keyPressed (const KeyPress& k)
         splitClipAt (tr, (int) std::round (barAtX (lastMouse.x)));
         return true;
     }
+    if (k.getModifiers().isCommandDown() && (k.getKeyCode() == 'G' || k.getKeyCode() == 'g'))
+    {
+        if (k.getModifiers().isShiftDown())
+        {
+            // cmd+shift+G: the picked tracks out of their group
+            std::vector<int> t (selTracks.begin(), selTracks.end());
+            if (t.empty() && selectedTrack) t.push_back (selectedTrack());
+            proc.songJob.setGroup (t, {});
+        }
+        else groupPicked();
+        repaint();
+        return true;
+    }
+    if (k.getModifiers().isCommandDown() && (k.getKeyCode() == 'D' || k.getKeyCode() == 'd') && selectedTrack) { proc.songJob.duplicateTrack (selectedTrack()); return true; }
+    if (k.getModifiers().isCommandDown() && (k.getKeyCode() == 'R' || k.getKeyCode() == 'r') && selectedTrack) { askRename (selectedTrack()); return true; }
     if (k == KeyPress::escapeKey && (! pickedClips.empty() || trackPicked)) { pickedClips.clear(); trackPicked = false; repaint(); return true; }
     if (view != nullptr && (k.getTextCharacter() == '=' || k.getTextCharacter() == '+' || k.getTextCharacter() == '-'))
     {
@@ -122,6 +189,7 @@ void StudioView::mouseMagnify (const MouseEvent& e, float scale)
 
 void StudioView::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
 {
+    buildRows();
     const auto st = proc.songJob.getStatus();
     const int totalBars = std::max (1, st.song.totalBars());
     if (view != nullptr && view->wheel (e, w, laneLeft(), laneRight() - laneLeft(), totalBars)) return;
@@ -139,7 +207,7 @@ void StudioView::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w
         }
         return;
     }
-    const int total = (int) st.tracks.size() + 1; // + the "add" row
+    const int total = totalRows(); // + the "add" row
     const int maxScroll = std::max (0, total - visibleRows());
     // as far as you scroll: a trackpad's many small steps add up to a row at a time
     wheelRows -= (double) w.deltaY * (w.isSmooth ? 6.0 : 10.0) * 24.0 / rowStep;
@@ -155,7 +223,7 @@ Rectangle<float> StudioView::colBounds (int row, Col c) const
 {
     // the track's head, left of its lane: mute, solo, lock, its name, its volume
     auto r = rowBounds (row);
-    const float x = r.getX() + 4.0f, y = r.getCentreY() - 11.0f;
+    const float x = r.getX() + 4.0f + (row >= 0 && row < (int) inGroup.size() && inGroup[(size_t) row] ? 10.0f : 0.0f), y = r.getCentreY() - 11.0f;
     switch (c)
     {
         case Mute:   return { x + 2, y + 2, 18, 18 };
@@ -304,7 +372,8 @@ void StudioView::paint (Graphics& g)
     auto head = Rectangle<float> (16.0f, 6.0f, laneLeft() - 16.0f, 16.0f);
     g.drawText (String (st.tracks.size()) + " TRACKS", head, Justification::centredLeft, false);
     {
-        const int total = (int) st.tracks.size() + 1;
+        buildRows();
+        const int total = totalRows();
         scroll = jlimit (0, std::max (0, total - visibleRows()), scroll);
         const int hiddenBelow = total - (scroll + visibleRows()), hiddenAbove = scroll;
         if (hiddenBelow > 0 || hiddenAbove > 0)
@@ -384,6 +453,60 @@ void StudioView::paint (Graphics& g)
         }
     }
 
+    // each group's own row: fold, its name, M / S and a volume for all of it; its lane a band in its colour
+    for (size_t d = 0; d < drows.size(); ++d)
+    {
+        if (drows[d].track >= 0 || (int) d < scroll || (int) d >= scroll + visibleRows()) continue;
+        const auto& gname = drows[d].group;
+        const auto row = displayBounds ((int) d);
+        std::vector<int> mem;
+        for (int j = 0; j < (int) st.tracks.size(); ++j) if (st.tracks[(size_t) j].folder == gname) mem.push_back (j);
+        if (mem.empty()) continue;
+        const Colour gc = st.tracks[(size_t) mem.front()].colour != 0 ? Colour (st.tracks[(size_t) mem.front()].colour) : accent.brighter (0.15f);
+        bool allMuted = true, allSolo = true;
+        float gainSum = 0.0f;
+        for (int j : mem) { auto& mm = proc.studio.mix[(size_t) j]; allMuted = allMuted && mm.mute.load(); allSolo = allSolo && mm.solo.load(); gainSum += mm.gainDb.load(); }
+        auto hr = row.withRight (lx - 6.0f);
+        g.setColour (gc.withAlpha (0.16f));
+        g.fillRoundedRectangle (hr, 5.0f);
+        g.setColour (gc);
+        g.fillRoundedRectangle (Rectangle<float> (hr.getX(), hr.getY(), 4.0f, hr.getHeight()), 2.0f);
+        // the fold (a triangle), M, S, its name and how many tracks
+        const bool folded = collapsed.count (gname) > 0;
+        const float cy = row.getCentreY();
+        Path tri;
+        if (folded) tri.addTriangle (hr.getX() + 12.0f, cy - 5.0f, hr.getX() + 12.0f, cy + 5.0f, hr.getX() + 19.0f, cy);
+        else tri.addTriangle (hr.getX() + 10.0f, cy - 3.5f, hr.getX() + 20.0f, cy - 3.5f, hr.getX() + 15.0f, cy + 3.5f);
+        g.setColour (txt);
+        g.fillPath (tri);
+        auto gpill = [&g] (Rectangle<float> r, const String& label, bool on, Colour onCol)
+        {
+            g.setColour (on ? onCol : Colours::white.withAlpha (0.08f));
+            g.fillRoundedRectangle (r, 4.0f);
+            g.setColour (on ? Colour (0xff0b1015) : Colours::white.withAlpha (0.75f));
+            g.setFont (font (10.5f, lp::ui::Medium));
+            g.drawText (label, r, Justification::centred, false);
+        };
+        gpill ({ hr.getX() + 26.0f, cy - 9.0f, 18.0f, 18.0f }, "M", allMuted, Colour (0xfff2a33a));
+        gpill ({ hr.getX() + 47.0f, cy - 9.0f, 18.0f, 18.0f }, "S", allSolo, th.grassLight);
+        g.setColour (txt);
+        g.setFont (font (12.5f, lp::ui::Medium));
+        g.drawText (gname, Rectangle<float> (hr.getX() + 74.0f, cy - 12.0f, laneLeft() - 160.0f - hr.getX(), 14.0f), Justification::centredLeft, true);
+        g.setColour (dim);
+        g.setFont (lp::ui::mono (9.0f, false, 0.1f));
+        g.drawText (String ((int) mem.size()) + " TRACKS" + (folded ? "  (FOLDED)" : ""), Rectangle<float> (hr.getX() + 74.0f, cy + 1.0f, 200.0f, 12.0f), Justification::centredLeft, false);
+        {
+            // the group's volume: where its tracks sit on average (dragging moves them all together)
+            const auto vb = Rectangle<float> (laneLeft() - 70.0f, cy - 4.0f, 54.0f, 8.0f);
+            g.setColour (Colours::white.withAlpha (0.1f));
+            g.fillRoundedRectangle (vb, 4.0f);
+            g.setColour (gc);
+            g.fillRoundedRectangle (vb.withWidth (std::max (vb.getHeight(), vb.getWidth() * jmap (gainSum / (float) mem.size(), -30.0f, 6.0f, 0.0f, 1.0f))), 4.0f);
+        }
+        g.setColour (gc.withAlpha (0.08f));
+        g.fillRect (Rectangle<float> (lx, row.getY(), lw, row.getHeight()));
+    }
+
     for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
     {
         if (! rowShown (i)) continue;
@@ -392,10 +515,10 @@ void StudioView::paint (Graphics& g)
         auto row = rowBounds (i);
         // the theme colour (picked at the bottom of the window), unless you gave this track its own
         const Colour tc = t.colour != 0 ? Colour (t.colour) : accent.brighter (0.15f);
-        const bool picked = selectedTrack && selectedTrack() == i;
+        const bool picked = (selectedTrack && selectedTrack() == i) || selTracks.count (i) > 0;
         {
-            // its head: lit when it's open below (outlined when Delete would remove it)
-            auto hr = row.withRight (lx - 6.0f);
+            // its head: lit when it's open below or picked (outlined when Delete would remove it); in a group, a little in
+            auto hr = row.withRight (lx - 6.0f).withTrimmedLeft (i < (int) inGroup.size() && inGroup[(size_t) i] ? 10.0f : 0.0f);
             g.setColour (Colours::white.withAlpha (picked ? 0.08f : i == hoverRow ? 0.05f : 0.025f));
             g.fillRoundedRectangle (hr, 5.0f);
             if (picked && trackPicked)
@@ -435,7 +558,8 @@ void StudioView::paint (Graphics& g)
 
         // its name and where it came from
         const float hy = row.getCentreY() - 11.0f;
-        auto nameArea = Rectangle<float> (row.getX() + 72.0f, hy, colBounds (i, Volume).getX() - 22.0f - row.getX() - 76.0f, 22.0f);
+        const float ind = i < (int) inGroup.size() && inGroup[(size_t) i] ? 10.0f : 0.0f;
+        auto nameArea = Rectangle<float> (row.getX() + 72.0f + ind, hy, colBounds (i, Volume).getX() - 22.0f - row.getX() - 76.0f, 22.0f);
         String name = t.name;
         if (t.reversed) name << " (rev)";
         if (t.pitch != 0) name << " " << (t.pitch > 0 ? "+" : "") << t.pitch;
@@ -576,7 +700,7 @@ void StudioView::paint (Graphics& g)
         {
             // (one is starting: the list scrolls down so it has its own row, under the tracks)
             hadGhost = true;
-            scroll = std::max (0, (int) st.tracks.size() + 1 - visibleRows());
+            scroll = std::max (0, totalRows() - visibleRows());
         }
         if (! list.empty() && rowShown ((int) st.tracks.size()))
         {
@@ -650,7 +774,7 @@ void StudioView::paint (Graphics& g)
 
     // a scrollbar when there are more tracks than fit (scroll, or click it)
     {
-        const int total = (int) st.tracks.size() + 1, shown = visibleRows();
+        const int total = totalRows(), shown = visibleRows();
         if (total > shown)
         {
             const auto sb = scrollBar();
@@ -812,6 +936,8 @@ Rectangle<float> StudioView::scrollBar() const
 
 void StudioView::mouseDown (const MouseEvent& e)
 {
+    buildRows();
+    dragGroup = {};
     const auto st = proc.songJob.getStatus();
     setWantsKeyboardFocus (true); // (the window turns it off for everything but text boxes; Delete needs it here)
     grabKeyboardFocus();
@@ -859,7 +985,7 @@ void StudioView::mouseDown (const MouseEvent& e)
     if (scrollBar().expanded (4.0f, 0.0f).contains (e.position))
     {
         // a click on the scrollbar: that part of the track list
-        const int total = (int) st.tracks.size() + 1;
+        const int total = totalRows();
         const float f = (e.position.y - scrollBar().getY()) / scrollBar().getHeight();
         scroll = jlimit (0, std::max (0, total - visibleRows()), (int) std::round (f * total - visibleRows() * 0.5f));
         repaint();
@@ -895,6 +1021,63 @@ void StudioView::mouseDown (const MouseEvent& e)
     if (! st.tracks.empty() && rowShown ((int) st.tracks.size()) && rewriteBounds ((int) st.tracks.size()).contains (e.position))
     {
         proc.songJob.rewriteUnlocked();
+        return;
+    }
+    // a group's row
+    for (size_t d = 0; d < drows.size(); ++d)
+    {
+        if (drows[d].track >= 0 || (int) d < scroll || (int) d >= scroll + visibleRows()) continue;
+        const auto row = displayBounds ((int) d);
+        if (! row.contains (e.position) || e.position.x >= laneLeft()) continue;
+        const auto gname = drows[d].group;
+        const auto mem = membersOf (gname);
+        const float x = e.position.x - row.getX();
+        if (e.mods.isPopupMenu())
+        {
+            PopupMenu m;
+            m.addSectionHeader (gname.toUpperCase());
+            m.addItem (1, "Rename group...");
+            m.addItem (2, "Ungroup   (cmd+shift+G)");
+            m.addItem (3, collapsed.count (gname) ? "Unfold" : "Fold");
+            SafePointer<StudioView> sp (this);
+            m.showMenuAsync (PopupMenu::Options(), [sp, gname, mem] (int r)
+            {
+                if (sp == nullptr) return;
+                if (r == 2) { sp->proc.songJob.setGroup (mem, {}); sp->collapsed.erase (gname); }
+                else if (r == 3) { if (sp->collapsed.count (gname)) sp->collapsed.erase (gname); else sp->collapsed.insert (gname); }
+                else if (r == 1)
+                {
+                    auto* w = new AlertWindow ("Rename group", {}, MessageBoxIconType::NoIcon, sp.getComponent());
+                    w->addTextEditor ("name", gname);
+                    w->addButton ("Rename", 1, KeyPress (KeyPress::returnKey));
+                    w->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+                    w->enterModalState (true, ModalCallbackFunction::create ([sp, w, gname] (int ok)
+                    {
+                        const auto to = w->getTextEditorContents ("name").trim();
+                        if (sp != nullptr && ok == 1 && to.isNotEmpty() && to != gname) sp->proc.songJob.renameGroup (gname, to);
+                    }), true);
+                }
+                if (sp != nullptr) sp->repaint();
+            });
+            return;
+        }
+        if (x < 24.0f || e.getNumberOfClicks() > 1) { if (collapsed.count (gname)) collapsed.erase (gname); else collapsed.insert (gname); }
+        else if (x < 66.0f)
+        {
+            const bool mute = x < 45.0f;
+            bool all = true;
+            for (int j : mem) all = all && (mute ? proc.studio.mix[(size_t) j].mute.load() : proc.studio.mix[(size_t) j].solo.load());
+            for (int j : mem) (mute ? proc.studio.mix[(size_t) j].mute : proc.studio.mix[(size_t) j].solo) = ! all;
+            mixDirty = true;
+            if (onMixChanged) onMixChanged();
+        }
+        else if (e.position.x >= laneLeft() - 74.0f)
+        {
+            dragGroup = gname;
+            dragGroupFrom.clear();
+            for (int j : mem) dragGroupFrom.push_back (proc.studio.mix[(size_t) j].gainDb.load());
+        }
+        repaint();
         return;
     }
     for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
@@ -986,43 +1169,8 @@ void StudioView::mouseDown (const MouseEvent& e)
         pickedClips.clear();
         if (e.mods.isPopupMenu())
         {
-            const auto& tr = st.tracks[(size_t) i];
-            PopupMenu m;
-            m.addSectionHeader (String (tr.name).toUpperCase());
-            m.addItem (2, "Swap: another sound for this part", tr.canSwap);
-            m.addItem (3, tr.reversed ? "Play it forwards again" : "Reverse it", tr.canReverse);
-            m.addItem (6, "Change its sound...   (same notes: \"a vibrant synth\")");
-            m.addItem (4, "Pitch up a semitone");
-            m.addItem (5, "Pitch down a semitone");
-            {
-                // its colour: pick one (or back to its own)
-                PopupMenu colours;
-                const char* names[] = { "Orange", "Yellow", "Green", "Teal", "Blue", "Violet", "Pink", "Red", "Tan", "Sky" };
-                for (int c = 0; c < 10; ++c)
-                {
-                    PopupMenu::Item it (names[c]);
-                    it.itemID = 100 + c;
-                    it.colour = trackColour (c);
-                    it.isTicked = tr.colour == trackColour (c).getARGB();
-                    colours.addItem (it);
-                }
-                colours.addSeparator();
-                colours.addItem (99, "Theme colour (automatic)", tr.colour != 0);
-                m.addSubMenu ("Colour", colours);
-            }
-            m.addSeparator();
-            m.addItem (1, "Remove \"" + tr.name + "\" from the song", st.tracks.size() > 1);
-            m.showMenuAsync (PopupMenu::Options(), [this, i] (int r)
-            {
-                if (r == 99) proc.songJob.setColour (i, 0);
-                else if (r >= 100 && r < 110) proc.songJob.setColour (i, trackColour (r - 100).getARGB());
-                if (r == 6) askResound (i);
-                if (r == 1) askRemove (i);
-                else if (r == 2) proc.songJob.editTrack (i, SongJob::EditOp::Swap);
-                else if (r == 3) proc.songJob.editTrack (i, SongJob::EditOp::Reverse);
-                else if (r == 4) proc.songJob.editTrack (i, SongJob::EditOp::PitchUp);
-                else if (r == 5) proc.songJob.editTrack (i, SongJob::EditOp::PitchDown);
-            });
+            if (selTracks.count (i) == 0) selTracks = { i };
+            showTrackMenu (i);
             if (onOpenTrack) onOpenTrack (i);
             return;
         }
@@ -1030,6 +1178,9 @@ void StudioView::mouseDown (const MouseEvent& e)
         if (c == None)
         {
             trackPicked = true; // (Delete now removes the track)
+            // shift / cmd-click: more tracks picked (to group them); a plain click: just this one
+            if (e.mods.isShiftDown() || e.mods.isCommandDown()) { if (selTracks.count (i)) selTracks.erase (i); else selTracks.insert (i); }
+            else selTracks = { i };
             if (onOpenTrack) onOpenTrack (i); // (its name or its lane: it opens below)
             repaint();
             return;
@@ -1063,6 +1214,18 @@ void StudioView::mouseDown (const MouseEvent& e)
 
 void StudioView::mouseDrag (const MouseEvent& e)
 {
+    if (dragGroup.isNotEmpty())
+    {
+        // the whole group up or down together (each keeps its place against the others)
+        const float delta = (float) e.getDistanceFromDragStartX() / 54.0f * 36.0f;
+        const auto mem = membersOf (dragGroup);
+        for (size_t k = 0; k < mem.size() && k < dragGroupFrom.size(); ++k)
+            proc.studio.mix[(size_t) mem[k]].gainDb = jlimit (-30.0f, 6.0f, dragGroupFrom[k] + delta);
+        mixDirty = true;
+        if (onMixChanged) onMixChanged();
+        repaint();
+        return;
+    }
     if (dragClipTrack >= 0)
     {
         // a clip dragged along its lane: where it would land (a whole section), a copy with option held
@@ -1130,6 +1293,7 @@ void StudioView::mouseUp (const MouseEvent& e)
 // an effect dragged in from the browser: the track under it lights up; dropped, it goes on that track
 void StudioView::itemDragMove (const SourceDetails& d)
 {
+    buildRows();
     int row = -1;
     const int n = (int) proc.songJob.getStatus().tracks.size();
     for (int i = 0; i < n; ++i) if (rowShown (i) && rowBounds (i).contains (d.localPosition.toFloat())) row = i;
@@ -1143,6 +1307,143 @@ void StudioView::itemDropped (const SourceDetails& d)
     fxDropRow = -1;
     repaint();
     if (row >= 0 && onDropFx) onDropFx (row, d.description.toString().fromFirstOccurrenceOf ("fx:", false, false));
+}
+
+namespace
+{
+    // a grid of colours in the menu, like a DAW's: click one
+    struct ColourGrid : public PopupMenu::CustomComponent
+    {
+        ColourGrid (std::shared_ptr<uint32> chosenOut, uint32 current) : chosen (std::move (chosenOut)), now (current) {}
+        static constexpr int cols = 14, rows = 4, cell = 18, gap = 4;
+        static Colour colourAt (int c, int r)
+        {
+            if (c == cols - 1) return Colour::greyLevel (0.85f - 0.2f * (float) r); // (greys, last column)
+            const float hue = (float) c / (float) (cols - 1);
+            const float sat[rows] = { 0.45f, 0.75f, 0.3f, 0.6f }, bri[rows] = { 0.98f, 0.92f, 0.8f, 0.62f };
+            return Colour::fromHSV (hue, sat[r], bri[r], 1.0f);
+        }
+        void getIdealSize (int& w, int& h) override { w = cols * (cell + gap) + 16; h = rows * (cell + gap) + 12; }
+        Rectangle<float> cellRect (int c, int r) const { return { 8.0f + (float) c * (cell + gap), 6.0f + (float) r * (cell + gap), (float) cell, (float) cell }; }
+        void paint (Graphics& g) override
+        {
+            for (int r = 0; r < rows; ++r)
+                for (int c = 0; c < cols; ++c)
+                {
+                    const auto cr = cellRect (c, r);
+                    g.setColour (colourAt (c, r));
+                    g.fillRoundedRectangle (cr, 3.0f);
+                    if (colourAt (c, r).getARGB() == now || (hc == c && hr == r))
+                    {
+                        g.setColour (Colours::white);
+                        g.drawRoundedRectangle (cr.expanded (1.5f), 4.0f, 1.5f);
+                    }
+                }
+        }
+        void mouseMove (const MouseEvent& e) override
+        {
+            hc = hr = -1;
+            for (int r = 0; r < rows; ++r) for (int c = 0; c < cols; ++c) if (cellRect (c, r).expanded (2.0f).contains (e.position)) { hc = c; hr = r; }
+            repaint();
+        }
+        void mouseUp (const MouseEvent&) override { if (hc >= 0) { *chosen = colourAt (hc, hr).getARGB(); triggerMenuItem(); } }
+        std::shared_ptr<uint32> chosen;
+        uint32 now;
+        int hc = -1, hr = -1;
+    };
+}
+
+// the track's menu (right-click its name), like a DAW's
+void StudioView::showTrackMenu (int i)
+{
+    const auto st = proc.songJob.getStatus();
+    if (i < 0 || i >= (int) st.tracks.size()) return;
+    const auto& tr = st.tracks[(size_t) i];
+    std::vector<int> picked (selTracks.begin(), selTracks.end());
+    if (picked.empty()) picked.push_back (i);
+    PopupMenu m;
+    m.addSectionHeader (picked.size() > 1 ? String ((int) picked.size()) + " TRACKS" : String (tr.name).toUpperCase());
+    m.addItem (10, "Rename   (cmd+R)", picked.size() == 1);
+    m.addItem (11, "Duplicate   (cmd+D)", picked.size() == 1 && (int) st.tracks.size() < StudioPlayer::maxTracks);
+    m.addItem (1, picked.size() > 1 ? "Delete " + String ((int) picked.size()) + " tracks" : String ("Delete   (Del)"), st.tracks.size() > picked.size());
+    m.addSeparator();
+    m.addItem (12, picked.size() > 1 ? "Group these tracks   (cmd+G)" : String ("Group track   (cmd+G)"));
+    m.addItem (13, "Ungroup   (cmd+shift+G)", tr.folder.isNotEmpty());
+    m.addSeparator();
+    m.addItem (2, "Swap: another sound for this part", tr.canSwap && picked.size() == 1);
+    m.addItem (6, "Change its sound...   (same notes)", picked.size() == 1);
+    m.addItem (3, tr.reversed ? "Play it forwards again" : "Reverse it", tr.canReverse && picked.size() == 1);
+    m.addItem (4, "Pitch up a semitone", picked.size() == 1);
+    m.addItem (5, "Pitch down a semitone", picked.size() == 1);
+    m.addSeparator();
+    auto chosen = std::make_shared<uint32> (0);
+    m.addCustomItem (20, std::make_unique<ColourGrid> (chosen, tr.colour), nullptr, "Colour");
+    m.addItem (99, "Theme colour (automatic)", tr.colour != 0);
+    SafePointer<StudioView> sp (this);
+    m.showMenuAsync (PopupMenu::Options(), [sp, i, picked, chosen] (int r)
+    {
+        if (sp == nullptr) return;
+        auto& job = sp->proc.songJob;
+        if (r == 20 && *chosen != 0) for (int t : picked) job.setColour (t, *chosen);
+        else if (r == 99) for (int t : picked) job.setColour (t, 0);
+        else if (r == 10) sp->askRename (i);
+        else if (r == 11) job.duplicateTrack (i);
+        else if (r == 12) sp->groupPicked();
+        else if (r == 13) job.setGroup (picked, {});
+        else if (r == 6) sp->askResound (i);
+        else if (r == 2) job.editTrack (i, SongJob::EditOp::Swap);
+        else if (r == 3) job.editTrack (i, SongJob::EditOp::Reverse);
+        else if (r == 4) job.editTrack (i, SongJob::EditOp::PitchUp);
+        else if (r == 5) job.editTrack (i, SongJob::EditOp::PitchDown);
+        else if (r == 1)
+        {
+            if (picked.size() == 1) sp->askRemove (i);
+            else
+            {
+                // several: from the last up (so the others keep their places while each goes)
+                auto order = picked;
+                std::sort (order.rbegin(), order.rend());
+                for (int t : order) { sp->proc.studio.removeTrackMix (t); job.editTrack (t, SongJob::EditOp::Remove); }
+                sp->selTracks.clear();
+            }
+        }
+        sp->repaint();
+    });
+}
+
+// cmd+G: the picked tracks (or the open one) into a new group, named for the next number
+void StudioView::groupPicked()
+{
+    std::vector<int> t (selTracks.begin(), selTracks.end());
+    if (t.empty() && selectedTrack && selectedTrack() >= 0) t.push_back (selectedTrack());
+    if (t.empty()) return;
+    const auto st = proc.songJob.getStatus();
+    int n = 1;
+    for (;; ++n)
+    {
+        bool used = false;
+        for (auto& tr : st.tracks) used = used || tr.folder == "Group " + String (n);
+        if (! used) break;
+    }
+    proc.songJob.setGroup (t, "Group " + String (n));
+    selTracks.clear();
+    repaint();
+}
+
+void StudioView::askRename (int track)
+{
+    const auto st = proc.songJob.getStatus();
+    if (track < 0 || track >= (int) st.tracks.size()) return;
+    auto* w = new AlertWindow ("Rename track", {}, MessageBoxIconType::NoIcon, this);
+    w->addTextEditor ("name", st.tracks[(size_t) track].name);
+    w->addButton ("Rename", 1, KeyPress (KeyPress::returnKey));
+    w->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+    SafePointer<StudioView> sp (this);
+    w->enterModalState (true, ModalCallbackFunction::create ([sp, w, track] (int ok)
+    {
+        const auto to = w->getTextEditorContents ("name").trim();
+        if (sp != nullptr && ok == 1 && to.isNotEmpty()) sp->proc.songJob.renameTrack (track, to);
+    }), true);
 }
 
 void StudioView::askRemove (int track)
@@ -1168,6 +1469,7 @@ void StudioView::askRemove (int track)
 
 void StudioView::mouseMove (const MouseEvent& e)
 {
+    buildRows();
     lastMouse = e.position;
     {
         // over a clip's edge: it can be dragged shorter or longer

@@ -25,7 +25,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars, Create, Resound }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars, Create, Resound, Duplicate }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -51,6 +51,7 @@ public:
         std::set<int> silentBars; // the bars you deleted in the arrangement
         std::set<int> splitBars;  // where you cut its clips
         juce::uint32 colour = 0;  // the colour you picked for it (0: its place in the palette)
+        juce::String folder;      // the group (folder) it's in (empty: none)
     };
 
     struct Status
@@ -2387,6 +2388,7 @@ private:
         t.silentBars = p.silentBars;
         t.splitBars = p.splitBars;
         t.colour = p.colour;
+        t.folder = p.group;
         t.source = p.source;
         t.remix = p.remix;
         t.stem = stem;
@@ -3484,6 +3486,7 @@ private:
             case EditOp::Flip: return "flip a sample";
             case EditOp::Create: return "create a layer";
             case EditOp::Resound: return on ("sound of");
+            case EditOp::Duplicate: return on ("duplicate of");
             case EditOp::Grains: return on ("grains on");
             case EditOp::Key: return "key change";
             case EditOp::Notes: return on ("notes of");
@@ -3552,6 +3555,50 @@ public:
         status.tracks[(size_t) track].colour = argb;
         status.song = current;
         saveSession();
+    }
+    // tracks into a group (a folder), by name; an empty name takes them out of theirs. Nothing is re-recorded.
+    void setGroup (const std::vector<int>& tracks, const juce::String& name)
+    {
+        const juce::ScopedLock sl (lock);
+        for (int t : tracks)
+            if (t >= 0 && t < (int) current.parts.size() && t < (int) status.tracks.size())
+            {
+                current.parts[(size_t) t].group = name;
+                status.tracks[(size_t) t].folder = name;
+            }
+        status.song = current;
+        saveSession();
+    }
+    // a group renamed (every track in it)
+    void renameGroup (const juce::String& from, const juce::String& to)
+    {
+        const juce::ScopedLock sl (lock);
+        for (size_t t = 0; t < current.parts.size() && t < status.tracks.size(); ++t)
+            if (current.parts[t].group == from) { current.parts[t].group = to; status.tracks[t].folder = to; }
+        status.song = current;
+        saveSession();
+    }
+    // a track's name, as you'd like it shown
+    void renameTrack (int track, const juce::String& name)
+    {
+        const juce::ScopedLock sl (lock);
+        if (track < 0 || track >= (int) current.parts.size() || track >= (int) status.tracks.size() || name.trim().isEmpty()) return;
+        current.parts[(size_t) track].name = name.trim().toStdString();
+        status.tracks[(size_t) track].name = name.trim();
+        status.song = current;
+        ++status.version;
+        saveSession();
+    }
+    // a copy of a track, under the last one (the same sound, its own file: change either on its own after)
+    void duplicateTrack (int track)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            if (track < 0 || track >= (int) current.parts.size() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
+            edits.push_back ({ track, EditOp::Duplicate });
+            status.editing = true;
+        }
+        startIfNeeded();
     }
     // a cut in a track's clip at the start of this bar (on = false: joined again); nothing is re-recorded
     void setSplit (int track, int bar, bool on)
@@ -3983,6 +4030,31 @@ private:
             return;
         }
         if (op == EditOp::Resound) { applyResound (tr); return; }
+        if (op == EditOp::Duplicate)
+        {
+            lp::song::Song song;
+            juce::File stem;
+            {
+                const juce::ScopedLock sl (lock);
+                if (tr < 0 || tr >= (int) current.parts.size() || tr >= (int) status.tracks.size()) return;
+                song = current; stem = status.tracks[(size_t) tr].stem;
+            }
+            auto part = song.parts[(size_t) tr];
+            part.name = (juce::String (part.name) + " copy").toStdString();
+            part.locked = false;
+            const int at = (int) song.parts.size();
+            const auto copy = currentFolder.getChildFile ("stems").getChildFile (
+                juce::String (at + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (copy " + juce::String (++editCounter) + ").wav");
+            if (! stem.copyFileTo (copy)) return;
+            song.parts.push_back (part);
+            const juce::ScopedLock sl (lock);
+            current = song;
+            status.song = song;
+            status.tracks.push_back (info (part, copy, song));
+            ++status.version;
+            saveSession();
+            return;
+        }
         if (op == EditOp::Create)
         {
             std::array<int, 3> f;

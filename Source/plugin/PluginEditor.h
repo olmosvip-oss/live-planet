@@ -686,7 +686,25 @@ private:
     int scroll = 0;                 // first track row shown
     double wheelRows = 0.0;         // scrolling, a bit at a time
     int visibleRows() const;
-    bool rowShown (int row) const { return row >= scroll && row < scroll + visibleRows(); }
+    bool rowShown (int row) const { const int d = displayOf (row); return d >= 0 && d >= scroll && d < scroll + visibleRows(); }
+    // groups (folders): what's shown, in order: a group's row, then its tracks (folded: just the group's row)
+    struct DRow { int track = -1; juce::String group; }; // track -1: the group's own row
+    std::vector<DRow> drows;
+    std::vector<int> rowOfTrack;      // track -> its place in drows (-1: in a folded group)
+    std::vector<bool> inGroup;        // (its head sits a little in, under its group)
+    std::set<juce::String> collapsed; // groups folded
+    std::set<int> selTracks;          // the tracks picked (shift / cmd-click their names): grouped with cmd+G
+    void buildRows();
+    int displayOf (int track) const;
+    int totalRows() const { return (int) drows.size() + 1; } // (+ the "add" row)
+    juce::Rectangle<float> displayBounds (int d) const;
+    juce::Rectangle<float> groupBounds (const juce::String& g) const;
+    std::vector<int> membersOf (const juce::String& g) const;
+    juce::String dragGroup;           // a group's volume being dragged
+    std::vector<float> dragGroupFrom;
+    void groupPicked();               // cmd+G: the picked tracks (or the open one) into a new group
+    void showTrackMenu (int track);   // the track's menu (right-click its name)
+    void askRename (int track);
     Col colAt (int row, juce::Point<float> p) const;
     void setFromX (int row, Col c, float x);
     std::unique_ptr<juce::FileChooser> chooser;
