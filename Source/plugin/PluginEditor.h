@@ -1338,6 +1338,7 @@ private:
     // (AI freestyle retired: it made up its own melody and lost words)
     Segmented who { { "Write melody", "I sing it" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; clean.setToggleState (i == 1, juce::dontSendNotification); resized(); refreshButtons(); repaint(); }, th };
     juce::TextButton recordTake { "Record my take" }, useTake { "Use a recording..." }, hearTake { "hear it" };
+    juce::String notReady; // (why Create is greyed out)
     juce::File takeFile;          // your take, cut to the section
     double takeSecs = 0.0;
     bool takeRecording = false;

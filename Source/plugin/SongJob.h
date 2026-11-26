@@ -1426,7 +1426,8 @@ private:
         if (! profile.valid)
         {
             status.stage = Stage::Failed;
-            status.message = "that song is too short or too quiet to learn from (it needs at least 8 seconds).";
+            status.message = "that's too short or too quiet to learn a song's feel from (it needs at least 8 seconds). A recording of your "
+                             "voice? Drop it on Vocals > Create with AI (I sing it) or on Draw & sing instead.";
             return;
         }
         status.profile = profile;

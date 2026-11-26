@@ -122,7 +122,7 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
     recordTake.onClick = [this] { if (takeRecording) finishTakeRecording(); else startTakeRecording(); };
     useTake.onClick = [this]
     {
-        chooser = std::make_unique<FileChooser> ("Your take over the section (WAV or AIFF)", File(), "*.wav;*.aif;*.aiff;*.flac");
+        chooser = std::make_unique<FileChooser> ("Your take over the section", File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a;*.caf");
         chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
         {
             if (fc.getResult().existsAsFile()) useTakeFile (fc.getResult());
@@ -463,6 +463,14 @@ void VoicePage::refreshButtons()
     recordTake.setEnabled (proc.canRecordMic());
     recordTake.setButtonText (takeRecording ? "Stop" : proc.canRecordMic() ? "Record my take" : "Record (in the app)");
     create.setEnabled (ready);
+    // (greyed out: say what's missing, so it never just sits there)
+    notReady = ready || working || snap.sending ? String()
+             : ! snap.connected ? String ("Start the voice helper on this computer to create")
+             : mine && ! haveTake ? String ("Record your take in the app, or drop / pick a recording of you over this section")
+             : ! mine && lyrics.getText().trim().isEmpty() ? String ("Type your words first")
+             : voice.getText().isEmpty() ? String ("Pick a voice")
+             : ! consent.getToggleState() ? String ("Switch on \"this is my voice, or I have the singer's permission\" to create")
+             : String();
     create.setButtonText (snap.sending ? "Sending your section..."
                           : (mine ? String ("Create from my take") : whoSings == 0 ? String ("Write & sing") : String ("Create vocal")) + String::fromUTF8 ("  \xc2\xb7  about ") + String (minutesEstimate()) + " min");
     if (stop.isVisible() != working) { stop.setVisible (working); resized(); }
@@ -857,6 +865,14 @@ void VoicePage::paint (Graphics& g)
                               resultsArea().withHeight (retrying ? 64.0f : 40.0f).toNearestInt(), Justification::topLeft, 4, 1.0f);
         }
     }
+
+    if (notReady.isNotEmpty() && create.isVisible())
+    {
+        // (why Create is greyed out, just under it)
+        g.setFont (font (11.5f, lp::ui::Medium));
+        g.setColour (Colour (0xfff2c14e));
+        g.drawText (notReady, create.getBounds().toFloat().translated (0.0f, (float) create.getHeight() + 2.0f).withHeight (16.0f), Justification::centredLeft, true);
+    }
 }
 
 // ---- one finished version: hear it with the song, see how it did, drag it out, or make it a track
@@ -974,7 +990,7 @@ void VoicePage::useTakeFile (const File& f)
     AudioFormatManager fm;
     fm.registerBasicFormats();
     std::unique_ptr<AudioFormatReader> rd (fm.createReaderFor (f));
-    if (rd == nullptr || rd->sampleRate <= 0) { takeMessage = "That file can't be read: use a WAV or AIFF"; repaint(); return; }
+    if (rd == nullptr || rd->sampleRate <= 0) { takeMessage = "That file can't be read: use a WAV, AIFF, MP3 or M4A"; repaint(); return; }
     const double dur = (double) rd->lengthInSamples / rd->sampleRate;
     const double from = dur >= sc.start + sc.secs - 0.5 && sc.start > 0.5 ? sc.start : 0.0;
     const int a = (int) (from * rd->sampleRate), n = (int) jmin<int64> (rd->lengthInSamples - a, (int64) (sc.secs * rd->sampleRate));
@@ -1006,7 +1022,7 @@ void VoicePage::useTakeFile (const File& f)
 bool VoicePage::isInterestedInFileDrag (const StringArray& files)
 {
     for (auto& f : files)
-        for (auto* ext : { ".wav", ".aif", ".aiff", ".flac" })
+        for (auto* ext : { ".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".caf" })
             if (f.endsWithIgnoreCase (ext)) return true;
     return false;
 }
