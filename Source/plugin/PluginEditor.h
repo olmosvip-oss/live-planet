@@ -1335,7 +1335,8 @@ private:
     // who makes the melody: 0, Loopwright writes it over the song's chords (sung note for note); 1, you, from your own
     // take; 2, the AI improvises one (takes, the best kept)
     int whoSings = 0;
-    Segmented who { { "Write melody", "I sing it", "AI freestyle" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; clean.setToggleState (i == 1, juce::dontSendNotification); resized(); refreshButtons(); repaint(); }, th };
+    // (AI freestyle retired: it made up its own melody and lost words)
+    Segmented who { { "Write melody", "I sing it" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; clean.setToggleState (i == 1, juce::dontSendNotification); resized(); refreshButtons(); repaint(); }, th };
     juce::TextButton recordTake { "Record my take" }, useTake { "Use a recording..." }, hearTake { "hear it" };
     juce::File takeFile;          // your take, cut to the section
     double takeSecs = 0.0;

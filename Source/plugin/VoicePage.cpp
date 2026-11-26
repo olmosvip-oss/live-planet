@@ -114,8 +114,7 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
     addAndMakeVisible (versions);
     who.setTooltip ("Write melody: Loopwright writes a melody for your words over the song's own chords, and the voice sings it note for "
                     "note (every word, in key, in time). I sing it: you rap or sing the lines over the section (rough is fine), and it keeps "
-                    "your exact words and timing, then cleans, tunes and turns it into the voice. AI freestyle: the AI makes up its own melody "
-                    "(looser; it can lose words).");
+                    "your exact words and timing, then cleans, tunes and turns it into the voice.");
     addAndMakeVisible (who);
     for (auto* b : { &recordTake, &useTake, &hearTake }) { b->setWantsKeyboardFocus (false); addChildComponent (*b); }
     recordTake.setTooltip ("Plays the section with a one-bar count-in and records your mic until it ends (in the Loopwright app; in a DAW, record there and drop it here)");
