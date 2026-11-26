@@ -1641,6 +1641,9 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
             }
         }
     }
+    // (the track as it is before the silences: the moved clips take their sound from it)
+    std::unique_ptr<juce::AudioBuffer<float>> beforeSilence;
+    if (! part.moved.empty()) beforeSilence = std::make_unique<juce::AudioBuffer<float>> (buf);
     // the bars you deleted: silent (a short fade either side, so nothing clicks; a tail rings on a little)
     if (! part.silent.empty())
     {
@@ -1658,6 +1661,45 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
                 for (int i = 0; i < fade && a - fade + i >= 0; ++i) d[a - fade + i] *= 1.0f - (float) i / (float) fade;
                 for (int i = a; i < b; ++i) d[i] = 0.0f;
                 for (int i = 0; i < fade && b + i < n; ++i) d[b + i] *= (float) i / (float) fade;
+            }
+        }
+    }
+    // clips you moved off the grid (or copied): each plays its own stretch of the track, over whatever is there
+    if (beforeSilence != nullptr)
+    {
+        const double tickLen = spb * 4.0 / lp::song::kTicksPerBar;
+        const int n = buf.getNumSamples(), fade = (int) (0.004 * sr);
+        for (auto& c : part.moved)
+        {
+            const int d0 = juce::jlimit (0, n, (int) std::round (c.dst0 * tickLen)), d1 = juce::jlimit (0, n, (int) std::round (c.dst1 * tickLen));
+            const int shift = (int) std::round (c.src0 * tickLen) - (int) std::round (c.dst0 * tickLen);
+            if (d1 <= d0) continue;
+            // (the stretches silent in it, in samples of the source)
+            std::vector<std::pair<int, int>> mask;
+            for (auto [a, b] : c.mask) mask.push_back ({ (int) std::round (a * tickLen), (int) std::round (b * tickLen) });
+            auto maskGain = [&mask, fade] (int sIdx)
+            {
+                float g = 1.0f;
+                for (auto [a, b] : mask)
+                {
+                    if (sIdx >= a && sIdx < b) return 0.0f;
+                    if (sIdx < a && a - sIdx < fade) g = std::min (g, (float) (a - sIdx) / fade);
+                    if (sIdx >= b && sIdx - b < fade) g = std::min (g, (float) (sIdx - b) / fade);
+                }
+                return g;
+            };
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                const auto* src = beforeSilence->getReadPointer (ch);
+                for (int i = d0; i < d1; ++i)
+                {
+                    const int si = i + shift;
+                    float g = (si >= 0 && si < n) ? maskGain (si) : 0.0f;
+                    if (i - d0 < fade) g *= (float) (i - d0) / fade;
+                    if (d1 - 1 - i < fade) g *= (float) (d1 - 1 - i) / fade;
+                    d[i] = (si >= 0 && si < n) ? src[si] * g : 0.0f;
+                }
             }
         }
     }

@@ -60,6 +60,17 @@ inline juce::var partToVar (const Part& p)
         o->setProperty ("silentTicks", sp);
     }
     o->setProperty ("splitTicks", ints (p.splitTicks));
+    if (! p.moved.empty())
+    {
+        juce::Array<juce::var> mv;
+        for (auto& c : p.moved)
+        {
+            juce::Array<juce::var> mask;
+            for (auto [a, b] : c.mask) { mask.add (a); mask.add (b); }
+            mv.add (juce::Array<juce::var> { c.dst0, c.dst1, c.src0, mask });
+        }
+        o->setProperty ("moved", mv);
+    }
     {
         juce::Array<juce::var> bf;
         for (auto [to, from] : p.barFrom) { bf.add (to); bf.add (from); }
@@ -152,6 +163,15 @@ inline Part partFromVar (const juce::var& v)
         for (size_t i = 0; i + 1 < sp.size(); i += 2) p.silent.add (sp[i], sp[i + 1]);
     }
     for (int x : readInts (v["splitTicks"])) p.splitTicks.insert (x);
+    if (auto* mv = v["moved"].getArray())
+        for (auto& e : *mv)
+        {
+            lp::song::Part::MovedClip c;
+            c.dst0 = e[0]; c.dst1 = e[1]; c.src0 = e[2];
+            if (auto* mask = e[3].getArray())
+                for (int i = 0; i + 1 < mask->size(); i += 2) c.mask.push_back ({ (double) (*mask)[i], (double) (*mask)[i + 1] });
+            if (c.dst1 > c.dst0) p.moved.push_back (c);
+        }
     {
         const auto bf = readInts (v["barFrom"]);
         for (size_t i = 0; i + 1 < bf.size(); i += 2) p.barFrom[bf[i]] = bf[i + 1];

@@ -18,7 +18,7 @@ struct DrawSing::Voiced
     std::shared_ptr<const AudioBuffer<float>> take;      // the section, as sung (48 kHz, from the section's start)
     std::vector<lp::song::lyricmelody::Note> sungNotes; // the notes it was sung on
     double bpm = 120.0;
-    struct Seg { String key; std::shared_ptr<AudioBuffer<float>> audio; };
+    struct Seg { String key; std::shared_ptr<AudioBuffer<float>> audio; int lead = 0; }; // lead: samples before the note's start
     std::mutex lock;
     std::map<int, Seg> cache;                           // by note id: its piece, re-pitched and re-timed
     std::atomic<int> generation { 0 };
@@ -26,6 +26,12 @@ struct DrawSing::Voiced
     std::shared_ptr<AudioBuffer<float>> lastRender;     // the section in your voice, as the notes are now
     String renderedKey;                                 // (which notes it was rendered from)
 
+    int leadOf (int id)
+    {
+        const std::lock_guard<std::mutex> l (lock);
+        auto it = cache.find (id);
+        return it != cache.end() ? it->second.lead : (int) (0.012 * StudioPlayer::fileRate);
+    }
     const lp::song::lyricmelody::Note* sungOf (int id) const
     {
         for (auto& s : sungNotes) if (s.id == id) return &s;
@@ -45,9 +51,25 @@ struct DrawSing::Voiced
             if (auto it = cache.find (n.id); it != cache.end() && it->second.key == key) return it->second.audio;
         }
         const int N = take->getNumSamples();
-        const double fadeIn = 0.012, tail = 0.035, ctx = 0.2;
+        const double ctx = 0.2;
         const int a0 = (int) (s->beat * spb * sr), a1 = (int) ((s->beat + s->len) * spb * sr);
-        const int cs = jmax (0, a0 - (int) (ctx * sr)), ce = jmin (N, a1 + (int) ((tail + ctx) * sr));
+        // the whole word, as it was sung: its start (a consonant before the beat) and its end (it rings on past the note)
+        // are found in the take, as far as the words either side of it
+        int prevEnd = 0, nextStart = N;
+        for (auto& o : sungNotes)
+        {
+            const int o0 = (int) (o.beat * spb * sr), o1 = (int) ((o.beat + o.len) * spb * sr);
+            if (o.id == s->id) continue;
+            if (o1 <= a0 + 1) prevEnd = jmax (prevEnd, o1);
+            if (o0 >= a1 - 1) nextStart = jmin (nextStart, o0);
+        }
+        const double hopS = sr / 200.0;
+        auto envAt = [this, hopS] (int sample) { const int i = (int) (sample / hopS); return i >= 0 && i < (int) env.size() ? env[(size_t) i] : 0.0f; };
+        int wordStart = a0, wordEnd = a1;
+        for (int x = a0; x > jmax (prevEnd, a0 - (int) (0.15 * sr)) && envAt (x) > 0.07f; x -= (int) hopS) wordStart = x;
+        for (int x = a1; x < jmin (nextStart, a1 + (int) (0.9 * sr)) && envAt (x) > 0.07f; x += (int) hopS) wordEnd = x;
+        const double fadeIn = jmax (0.012, (a0 - wordStart) / sr + 0.006), tail = jmax (0.035, (wordEnd - a1) / sr + 0.04);
+        const int cs = jmax (0, a0 - (int) ((fadeIn + ctx) * sr)), ce = jmin (N, a1 + (int) ((tail + ctx) * sr));
         if (ce - cs < 256) return nullptr;
         const int inLen = ce - cs, outLen = jmax (1, (int) std::round (inLen * ratio));
         AudioBuffer<float> in (2, inLen), out (2, outLen);
@@ -72,11 +94,11 @@ struct DrawSing::Voiced
         if (to - from < 64) return nullptr;
         auto seg = std::make_shared<AudioBuffer<float>> (2, to - from);
         for (int ch = 0; ch < 2; ++ch) seg->copyFrom (ch, 0, out, ch, from, to - from);
-        const int fi = jmin (seg->getNumSamples() / 3, (int) (fadeIn * sr)), fo = jmin (seg->getNumSamples() / 3, (int) (0.025 * sr));
+        const int fi = jmin (seg->getNumSamples() / 3, (int) (0.010 * sr)), fo = jmin (seg->getNumSamples() / 3, (int) (0.03 * sr));
         seg->applyGainRamp (0, fi, 0.0f, 1.0f);
         seg->applyGainRamp (seg->getNumSamples() - fo, fo, 1.0f, 0.0f);
         const std::lock_guard<std::mutex> l (lock);
-        cache[n.id] = { key, seg };
+        cache[n.id] = { key, seg, (int) ((a0 - cs) * r) - from };
         return seg;
     }
 };
@@ -84,7 +106,7 @@ struct DrawSing::Voiced
 
 DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme)
 {
-    section.onChange = [this] { notes.clear(); viewStart = 0.0; selectedNote = -1; voiced = nullptr; leave(); repaint(); };
+    section.onChange = [this] { notes.clear(); viewStart = 0.0; markerBeat = 0.0; selectedNote = -1; voiced = nullptr; leave(); repaint(); };
     voice.onChange = [this] { if (voice.getText().isNotEmpty()) lp::setSetting ("voice", voice.getText()); }; // (remembered for every page)
     addVoiceBtn.setTooltip ("Add your voice: 10 to 30 seconds of you singing or rapping, clean, with no music (a WAV). It stays on this computer "
                             "and is picked for you from then on.");
@@ -322,7 +344,9 @@ void DrawSing::refresh()
 }
 
 // ---- the roll's geometry
-Rectangle<float> DrawSing::roll() const { return rollCard().toFloat().reduced (18.0f, 16.0f).withTrimmedTop (34.0f).withTrimmedBottom (40.0f); }
+Rectangle<float> DrawSing::roll() const { return rollCard().toFloat().reduced (18.0f, 16.0f).withTrimmedTop (54.0f).withTrimmedBottom (40.0f); }
+// the strip above the notes: click or drag to put the marker (where "play section" starts)
+Rectangle<float> DrawSing::ruler() const { const auto r = roll(); return { r.getX() + 44.0f, r.getY() - 20.0f, r.getWidth() - 44.0f, 18.0f }; }
 Rectangle<int> DrawSing::rollCard() const { return { 0, 0, getWidth() - 340, getHeight() }; }
 Rectangle<int> DrawSing::sideCard() const { return { getWidth() - 326, 0, 326, getHeight() }; }
 float DrawSing::rowH() const { return roll().getHeight() / (float) kRows; }
@@ -513,6 +537,12 @@ void DrawSing::mouseDown (const MouseEvent& e)
     setWantsKeyboardFocus (true); // (the window turns it off for everything but text boxes; the roll needs its keys)
     grabKeyboardFocus();
     if (wordBox.isVisible()) commitWord();
+    if (ruler().expanded (0.0f, 2.0f).contains (e.position))
+    {
+        draggingMarker = true;
+        setMarker (e);
+        return;
+    }
     if (! roll().withTrimmedLeft (44.0f).contains (e.position)) return;
     autoPaused = false; // (you're changing the notes: "sing as I draw" works again)
     const int i = noteAt (e.position);
@@ -550,8 +580,21 @@ void DrawSing::mouseDown (const MouseEvent& e)
     repaint();
 }
 
+void DrawSing::setMarker (const MouseEvent& e)
+{
+    // on the grid (the zoom's step), or anywhere with cmd held
+    double b = beatAt (e.position.x);
+    if (! e.mods.isCommandDown()) b = std::round (b / (snap() * 2.0)) * snap() * 2.0;
+    markerBeat = jlimit (0.0, sectionBeats(), b);
+    // (while it plays, the song jumps there)
+    if (proc.previewPlaying.load())
+        proc.previewPos = (sectionStartSeconds() + markerBeat * 60.0 / jmax (40.0, proc.songJob.getStatus().song.bpm)) * StudioPlayer::fileRate;
+    repaint();
+}
+
 void DrawSing::mouseDrag (const MouseEvent& e)
 {
+    if (draggingMarker) { setMarker (e); return; }
     if (selectedNote < 0 || selectedNote >= (int) notes.size() || drag == Drag::None) return;
     auto& n = notes[(size_t) selectedNote];
     if (drag == Drag::Resize)
@@ -569,6 +612,7 @@ void DrawSing::mouseDrag (const MouseEvent& e)
 
 void DrawSing::mouseUp (const MouseEvent&)
 {
+    if (draggingMarker) { draggingMarker = false; return; }
     drag = Drag::None;
     // (sorted left to right; the note you had stays picked, for hold, vibrato and slide)
     const bool had = selectedNote >= 0 && selectedNote < (int) notes.size();
@@ -716,7 +760,7 @@ void DrawSing::hearIt()
     if (hear.getButtonText() == "stop") { proc.previewPlaying = false; hear.setButtonText ("play section"); return; }
     if (! proc.songJob.getStatus().haveSong) return;
     proc.setVoicePreview (nullptr);
-    proc.previewPos = jmax (0.0, sectionStartSeconds() + viewStart * 60.0 / jmax (40.0, proc.songJob.getStatus().song.bpm) - 0.5) * StudioPlayer::fileRate;
+    proc.previewPos = jmax (0.0, sectionStartSeconds() + markerBeat * 60.0 / jmax (40.0, proc.songJob.getStatus().song.bpm)) * StudioPlayer::fileRate;
     proc.previewPlaying = true;
     hear.setButtonText ("stop");
 }
@@ -996,6 +1040,40 @@ void DrawSing::paint (Graphics& g)
     }
     }
 
+    // the strip above: bar and beat numbers, and the marker (where play starts)
+    if (st.haveSong)
+    {
+        const auto ru = ruler();
+        g.setColour (Colours::white.withAlpha (0.04f));
+        g.fillRoundedRectangle (ru, 4.0f);
+        g.setFont (lp::ui::mono (9.0f, false, 0.08f));
+        const int c = section.getSelectedItemIndex();
+        const int firstBar = st.haveSong && c >= 0 && c < (int) st.song.sections.size() ? st.song.sections[(size_t) c].startBar : 0;
+        for (int b = (int) std::ceil (viewStart); b <= (int) (viewStart + beatsShown); ++b)
+        {
+            const float x = xOf (b);
+            if (x < ru.getX() || x > ru.getRight()) continue;
+            const bool bar = b % 4 == 0;
+            g.setColour (Colours::white.withAlpha (bar ? 0.35f : 0.14f));
+            g.drawVerticalLine ((int) x, ru.getBottom() - (bar ? 9.0f : 5.0f), ru.getBottom());
+            if (bar)
+            {
+                g.setColour (t.inkDim);
+                g.drawText (String (firstBar + b / 4 + 1), Rectangle<float> (x + 3.0f, ru.getY(), 40.0f, 11.0f), Justification::centredLeft, false);
+            }
+        }
+        const float mx = xOf (markerBeat);
+        if (mx >= ru.getX() - 1.0f && mx <= ru.getRight() + 1.0f)
+        {
+            const Colour cyan (0xff3fd2e8);
+            g.setColour (cyan.withAlpha (0.55f));
+            g.drawVerticalLine ((int) mx, ru.getBottom(), roll().getBottom());
+            Path tri;
+            tri.addTriangle (mx - 6.0f, ru.getY() + 4.0f, mx + 6.0f, ru.getY() + 4.0f, mx, ru.getBottom() - 1.0f);
+            g.setColour (cyan);
+            g.fillPath (tri);
+        }
+    }
     // ---- what's happening
     String s = message;
     if (statusText) if (const auto a = statusText(); a.isNotEmpty()) s = a;
@@ -1140,7 +1218,7 @@ void DrawSing::renderVoice()
             if (! use[i]) continue;
             const auto seg = v->piece (list[i]);
             if (seg == nullptr) continue;
-            const int at = (int) ((list[i].beat * spb - 0.012) * sr);
+            const int at = (int) (list[i].beat * spb * sr) - v->leadOf (list[i].id); // (the word's own start, before the beat)
             for (int ch = 0; ch < 2; ++ch)
                 for (int k = 0; k < seg->getNumSamples(); ++k)
                     if (at + k >= 0 && at + k < out->getNumSamples()) out->addSample (ch, at + k, seg->getSample (ch, k));

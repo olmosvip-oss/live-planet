@@ -107,6 +107,19 @@ inline Song rebuild (const Song& old, const std::vector<Item>& plan)
         part.chopBars.clear(); part.stutterBars.clear(); part.silent = {}; part.barFrom.clear(); part.splitTicks.clear(); part.slotShift.clear();
         std::map<int, int> firstNew; // old bar -> the first new bar that plays it
         for (int nb = 0; nb < newBars; ++nb) firstNew.emplace (fromBar[(size_t) nb], nb); part.gapBars.clear(); part.swellBars.clear();
+        // clips moved off the grid: where their bars went (dropped if their bar or their sound's bar is gone)
+        part.moved.clear();
+        for (auto c : was.moved)
+        {
+            const int T = lp::song::kTicksPerBar;
+            const int db = (int) std::floor (c.dst0 / T), sb = (int) std::floor (c.src0 / T);
+            const auto fd = firstNew.find (db), fs = firstNew.find (sb);
+            if (fd == firstNew.end() || fs == firstNew.end()) continue;
+            const double dd = (double) (fd->second - db) * T, ds = (double) (fs->second - sb) * T;
+            c.dst0 += dd; c.dst1 += dd; c.src0 += ds;
+            for (auto& m : c.mask) { m.first += ds; m.second += ds; }
+            part.moved.push_back (c);
+        }
         std::vector<int> starts;
         for (int nb = 0; nb < newBars; ++nb)
         {

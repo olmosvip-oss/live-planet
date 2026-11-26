@@ -397,6 +397,10 @@ struct Part
     Spans silent;                    // the stretches you deleted or trimmed away (ticks: kTicksPerBar a bar)
     std::map<int, int> barFrom;
     std::set<int> splitTicks;        // where you cut its clips (ticks)
+    // clips moved or copied off the grid: [dst0, dst1) plays the track from src0 on (in ticks, fractions allowed),
+    // with the stretches that were silent in it then (mask, in source ticks). Played over everything else, last wins.
+    struct MovedClip { double dst0 = 0, dst1 = 0, src0 = 0; std::vector<std::pair<double, double>> mask; };
+    std::vector<MovedClip> moved;
     std::map<int, int> slotShift;    // a sample that follows the song's chords: semitones it moves, each half bar         // where you cut its clips (a clip starts at each of these bars)      // clips you copied (option-drag) or moved: this bar plays that bar's sound        // bars you deleted from this track in the arrangement (it's silent there)
     std::vector<FxHit> fxHits;       // Fx parts: the transition sounds and where they land
     float mixDb = 0.0f;              // where it sits in the mix vs. its kind's usual level (lead up, background down)

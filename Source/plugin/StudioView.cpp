@@ -81,6 +81,7 @@ int StudioView::visibleRows() const
 Rectangle<float> StudioView::zoomBtn (int i) const
 {
     const float r = laneRight();
+    if (i == 3) return { r - 40.0f - 6.0f - 2.0f * 22.0f - 8.0f - 52.0f, 5.0f, 52.0f, 18.0f }; // (snap to the grid: on / off)
     if (i == 2) return { r - 40.0f, 5.0f, 40.0f, 18.0f };
     return { r - 40.0f - 6.0f - (float) (2 - i) * 22.0f, 5.0f, 20.0f, 18.0f };
 }
@@ -454,7 +455,7 @@ void StudioView::paint (Graphics& g)
                 g.setColour (Colours::white.withAlpha (four ? 0.07f : 0.03f));
                 g.drawVerticalLine ((int) x, rowsTop - 2.0f, lanesBottom);
             }
-            if (bar % every == 0 && bar < totalBars && x < zoomBtn (0).getX() - 22.0f)
+            if (bar % every == 0 && bar < totalBars && x < zoomBtn (3).getX() - 22.0f)
             {
                 g.setColour (Colours::white.withAlpha (0.18f));
                 g.drawVerticalLine ((int) x, 17.0f, 26.0f);
@@ -471,6 +472,16 @@ void StudioView::paint (Graphics& g)
     }
     // zoom: out, in, the whole song (or cmd + scroll, pinch, - and + keys); lane height: small, medium, large
     {
+        {
+            // snap: clips move, trim and cut on the grid (on), or anywhere (off; or hold cmd while you drag)
+            const auto sb = zoomBtn (3);
+            const bool on = snapOn();
+            g.setColour (on ? accent.withAlpha (0.45f) : Colours::white.withAlpha (sb.contains (lastMouse) ? 0.16f : 0.07f));
+            g.fillRoundedRectangle (sb, 4.0f);
+            g.setColour (on ? Colours::white : txt.withAlpha (0.6f));
+            g.setFont (lp::ui::mono (9.0f, true, 0.1f));
+            g.drawText ("SNAP", sb, Justification::centred, false);
+        }
         const char* zl[] = { "-", "+", "FIT" };
         for (int i = 0; i < 3; ++i)
         {
@@ -974,7 +985,7 @@ void StudioView::paint (Graphics& g)
         {
             const auto f = font (11.0f, lp::ui::Medium);
             const float w = std::min (laneRight() - laneLeft() - 140.0f, GlyphArrangement::getStringWidth (f, msg) + 22.0f);
-            auto pr = Rectangle<float> (zoomBtn (0).getX() - 10.0f - w, 4.0f, w, 20.0f);
+            auto pr = Rectangle<float> (zoomBtn (3).getX() - 10.0f - w, 4.0f, w, 20.0f);
             g.setColour (th.body.withAlpha (0.92f));
             g.fillRoundedRectangle (pr, 10.0f);
             g.setColour ((msg.contains ("didn't work") ? Colour (0xffff8f8f) : th.grassLight).withAlpha (0.5f));
@@ -1049,6 +1060,12 @@ void StudioView::mouseDown (const MouseEvent& e)
     grabKeyboardFocus();
     {
         const int totalBars = std::max (1, st.song.totalBars());
+        if (zoomBtn (3).expanded (2.0f).contains (e.position))
+        {
+            lp::setSetting ("snapGrid", ! snapOn());
+            repaint();
+            return;
+        }
         for (int i = 0; i < 3; ++i)
             if (view != nullptr && zoomBtn (i).expanded (2.0f).contains (e.position))
             {
@@ -1346,14 +1363,20 @@ void StudioView::mouseDrag (const MouseEvent& e)
         dragCopy = e.mods.isAltDown();
         const int T = lp::song::kTicksPerBar;
         const int total = std::max (1, proc.songJob.getStatus().song.totalBars()) * T, len = dragB1 - dragB0;
-        const bool snap = ! e.mods.isAltDown(); // (option: no snapping, for an edge)
+        // (the grid: SNAP on, unless option (edges) or cmd (anything) is held; SNAP off: anywhere)
+        const bool snap = snapOn() && ! e.mods.isAltDown() && ! e.mods.isCommandDown();
         if (dragMode == 1) { dropStart = jlimit (0, dragB1 - 1, tickAtX (e.position.x, snap)); dropEnd = dragB1; }
         else if (dragMode == 2) { dropStart = dragB0; dropEnd = jlimit (dragB0 + 1, total, tickAtX (e.position.x, snap)); }
         else
         {
-            // moved by whole bars: it lands at the same place in its bar, as long as it is
-            const int bar = (int) std::round ((tickAtX (e.position.x, false) - grabBar - dragB0) / (double) T);
-            dropStart = jlimit (0, std::max (0, total - len), dragB0 + bar * T);
+            // moved: on the grid (it keeps its place against the grid lines), or anywhere
+            const double want = barAtX (e.position.x) * T - grabBar;
+            const bool free = ! snapOn() || e.mods.isCommandDown();
+            const int g = gridTicks();
+            double start = free ? want : dragB0 + std::round ((want - dragB0) / g) * g;
+            start = jlimit (0.0, (double) std::max (0, total - len), start);
+            dropStartF = start;
+            dropStart = (int) std::round (start);
             dropEnd = dropStart + len;
         }
         setMouseCursor (dragMode != 0 ? MouseCursor::LeftRightResizeCursor : dragCopy ? MouseCursor::CopyingCursor : MouseCursor::DraggingHandCursor);
@@ -1370,7 +1393,14 @@ void StudioView::mouseUp (const MouseEvent& e)
     {
         const int tr = dragClipTrack, T = lp::song::kTicksPerBar;
         auto& job = proc.songJob;
-        if (dragMode == 0 && dropStart != dragB0)
+        if (dragMode == 0 && std::abs (dropStartF - dragB0) > 1e-6)
+        {
+            // moved (or copied, with option): it plays there, exactly where you let go
+            job.moveClip (tr, dragB0, dragB1, dropStartF, e.mods.isAltDown());
+            pickedClips.clear();
+            pickedClips.insert ({ tr, dropStart, dropEnd });
+        }
+        else if (false)
         {
             // moved (or copied, with option) by whole bars: those bars play there; what's outside the clip in them goes
             // silent, and (a move) the clip leaves its old place
@@ -1443,6 +1473,7 @@ void StudioView::mouseUp (const MouseEvent& e)
     }
     if (clipDragging) setMouseCursor (MouseCursor::NormalCursor);
     dragClipTrack = dropStart = dropEnd = -1;
+    dropStartF = -1.0;
     clipDragging = false;
     repaint();
 }

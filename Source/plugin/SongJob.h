@@ -25,7 +25,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars, Create, Resound, Duplicate, AddMidi }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars, Create, Resound, Duplicate, AddMidi, MoveClip }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -243,6 +243,32 @@ public:
             const juce::ScopedLock sl (lock);
             pendingCopies.push_back ({ track, { srcStart, srcBars, dstStart, dstBars, move ? 1 : 0 } });
             edits.push_back ({ track, EditOp::CopyBars });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+
+    // moved clips lose the stretch a..b (where they land): deleted, trimmed, or covered by another
+    static void cutMoved (lp::song::Part& part, double a, double b)
+    {
+        std::vector<lp::song::Part::MovedClip> out;
+        for (auto& c : part.moved)
+        {
+            if (c.dst1 <= a || c.dst0 >= b) { out.push_back (c); continue; }
+            if (c.dst0 < a) { auto l = c; l.dst1 = a; out.push_back (l); }
+            if (c.dst1 > b) { auto r = c; r.src0 += b - c.dst0; r.dst0 = b; out.push_back (r); }
+        }
+        part.moved = std::move (out);
+    }
+
+    // a clip (src0..src1, in ticks) moved, or copied, to start at dst (in ticks, any fraction: off the grid)
+    void moveClip (int track, int src0, int src1, double dst, bool copy)
+    {
+        if (src1 <= src0) return;
+        {
+            const juce::ScopedLock sl (lock);
+            pendingMoves.push_back ({ track, { (double) src0, (double) src1, dst, copy ? 1.0 : 0.0 } });
+            edits.push_back ({ track, EditOp::MoveClip });
             status.editing = true;
         }
         startIfNeeded();
@@ -2390,6 +2416,17 @@ private:
         t.name = p.name;
         t.locked = p.locked;
         t.silent = p.silent;
+        for (auto& c : p.moved)
+        {
+            // (a moved clip shows where it plays now, with its own silent stretches)
+            t.silent.remove ((int) std::round (c.dst0), (int) std::round (c.dst1));
+            for (auto [a, b] : c.mask)
+            {
+                const double x = std::max (c.dst0, a - c.src0 + c.dst0), y = std::min (c.dst1, b - c.src0 + c.dst0);
+                if (y > x) t.silent.add ((int) std::round (x), (int) std::round (y));
+            }
+        }
+
         t.splitTicks = p.splitTicks;
         t.colour = p.colour;
         t.folder = p.group;
@@ -3482,6 +3519,7 @@ private:
             case EditOp::Region: return on ("bars of");
             case EditOp::Silence: return on ("delete in");
             case EditOp::CopyBars: return on ("clip copy in");
+            case EditOp::MoveClip: return on ("clip move in");
             case EditOp::Flip: return "flip a sample";
             case EditOp::Create: return "create a layer";
             case EditOp::Resound: return on ("sound of");
@@ -4395,6 +4433,53 @@ private:
                     break;
                 }
         }
+        if (op == EditOp::MoveClip)
+        {
+            const juce::ScopedLock sl (lock);
+            for (auto it = pendingMoves.begin(); it != pendingMoves.end(); ++it)
+                if (it->first == tr)
+                {
+                    const auto [s0, s1, dst, cp] = it->second;
+                    pendingMoves.erase (it);
+                    const double delta = dst - s0;
+                    // the clip as it sounds now, piece by piece: from a clip moved before (its sound comes along), or the track's own
+                    std::vector<double> cuts { s0, s1 };
+                    for (auto& c : part.moved) for (double x : { c.dst0, c.dst1 }) if (x > s0 && x < s1) cuts.push_back (x);
+                    std::sort (cuts.begin(), cuts.end());
+                    cuts.erase (std::unique (cuts.begin(), cuts.end()), cuts.end());
+                    std::vector<lp::song::Part::MovedClip> add;
+                    for (size_t k = 0; k + 1 < cuts.size(); ++k)
+                    {
+                        const double a = cuts[k], b = cuts[k + 1], mid = 0.5 * (a + b);
+                        const lp::song::Part::MovedClip* over = nullptr;
+                        for (auto& c : part.moved) if (mid >= c.dst0 && mid < c.dst1) over = &c; // (the last one wins)
+                        lp::song::Part::MovedClip m;
+                        m.dst0 = a + delta; m.dst1 = b + delta;
+                        if (over != nullptr) { m.src0 = over->src0 + (a - over->dst0); m.mask = over->mask; }
+                        else
+                        {
+                            m.src0 = a;
+                            for (auto [x, y] : part.silent.m) if (x < b && y > a) m.mask.push_back ({ (double) std::max ((double) x, a), (double) std::min ((double) y, b) });
+                        }
+                        add.push_back (m);
+                    }
+                    if (cp < 0.5)
+                    {
+                        // a move: the old place goes silent (the moved clips there are cut too)
+                        part.silent.add ((int) s0, (int) s1);
+                        cutMoved (part, s0, s1);
+                    }
+                    // (the new place: whatever was moved there before is covered; it's cut, so the list stays short)
+                    cutMoved (part, s0 + delta, s1 + delta);
+                    for (auto& m : add) part.moved.push_back (m);
+                    // (cuts that were where it lands belonged to what was there: the moved clip shows whole)
+                    for (auto it = part.splitTicks.begin(); it != part.splitTicks.end();)
+                        it = (*it > (int) std::round (s0 + delta) && *it < (int) std::round (s1 + delta)) ? part.splitTicks.erase (it) : std::next (it);
+                    part.splitTicks.insert ((int) std::round (s0 + delta));
+                    part.splitTicks.insert ((int) std::round (s1 + delta));
+                    break;
+                }
+        }
         if (op == EditOp::Silence)
         {
             const juce::ScopedLock sl (lock);
@@ -4402,7 +4487,10 @@ private:
                 if (it->first == tr)
                 {
                     for (auto [a, b] : it->second.first)
+                    {
                         if (it->second.second) part.silent.add (a, b); else part.silent.remove (a, b);
+                        if (it->second.second) cutMoved (part, a, b); // (a moved clip deleted or trimmed there too)
+                    }
                     pendingSilence.erase (it);
                     break;
                 }
@@ -5145,6 +5233,7 @@ private:
     std::vector<std::pair<int, EditOp>> edits;
     std::map<int, std::pair<int, int>> pendingRegion;
     std::vector<std::pair<int, std::pair<std::vector<std::pair<int, int>>, bool>>> pendingSilence;
+    std::vector<std::pair<int, std::array<double, 4>>> pendingMoves; // track -> src0, src1, dst, copy
     std::vector<std::pair<int, std::array<int, 5>>> pendingCopies; // track -> src start, src bars, dst start, dst bars, move // track -> bars, deleted (or back)
     std::map<int, GrainSettings> pendingGrains;
     std::map<int, std::vector<lp::song::Note>> pendingNotes;

@@ -672,6 +672,8 @@ private:
     // a clip being dragged to another section of its track (option: a copy)
     int dragClipTrack = -1, dragB0 = 0, dragB1 = 0, dragMode = 0, grabBar = 0; // (ticks) mode 0 move, 1 its start, 2 its end
     int dropStart = -1, dropEnd = -1;
+    double dropStartF = -1.0;                 // (where a moved clip lands, exactly: off the grid when SNAP is off)
+    static bool snapOn() { return (bool) lp::setting ("snapGrid", true); }
     bool clipDragging = false, dragCopy = false;                   // clicked in the bar numbers: where play starts
     juce::Rectangle<float> rewriteBounds (int numTracks) const;
     bool hoverRewrite = false;
@@ -1114,6 +1116,10 @@ private:
     juce::TextButton octUp { "oct +" }, octDown { "oct -" }, holdBtn { "hold word" }, vibBtn { "vibrato" }, slideBtn { "slide in" }, splitBtn { "split" };
     void splitNote();                          // the selected note in two (the second keeps singing its word)
     juce::TextButton recBtn { "record melody" };
+    double markerBeat = 0.0;                   // the marker: where "play section" starts (beats into the section)
+    bool draggingMarker = false;
+    juce::Rectangle<float> ruler() const;
+    void setMarker (const juce::MouseEvent&);
     void toggleRecord();                       // sing or hum the melody with the section: it becomes the notes
     bool recordingMelody = false;
     double recStartSec = 0.0;                  // (where in the song the recording started)
