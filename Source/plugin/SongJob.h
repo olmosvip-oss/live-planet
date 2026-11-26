@@ -3609,6 +3609,25 @@ public:
         const auto list = oneShotsFor (words, 1);
         return list.isEmpty() ? juce::String() : list[0];
     }
+    // any sound in your library whose name (or pack) has the words, best first (for Grains: loops, one-shots, anything)
+    juce::StringArray librarySearch (const juce::String& words, int howMany)
+    {
+        refreshUsable();
+        const auto look = searchWords (words);
+        std::vector<std::pair<int, juce::String>> hits;
+        const juce::ScopedLock sl (lock); // (the library can be re-read on the worker thread)
+        for (auto& e : usableLib.all())
+        {
+            const auto name = (juce::File (e.path).getFileNameWithoutExtension() + " " + e.pack).toLowerCase();
+            int score = 0;
+            for (auto& w : look) if (w.length() > 1 && name.contains (w)) ++score;
+            if (score > 0 || look.isEmpty()) hits.push_back ({ score, e.path });
+        }
+        std::stable_sort (hits.begin(), hits.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+        juce::StringArray out;
+        for (auto& h : hits) { if (out.size() >= howMany) break; out.add (h.second); }
+        return out;
+    }
     // the one-shots that fit the words best, best first, and that really play ONE steady note (no arps, chords,
     // riffs or slides: those sound off key when moved to each note). Each is listened to before it's offered.
     juce::StringArray oneShotsFor (const juce::String& words, int howMany)

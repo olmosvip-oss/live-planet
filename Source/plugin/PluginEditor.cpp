@@ -1830,6 +1830,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       studioView (p),
       trackEditor (p, lnf.th),
       voicePage (p, lnf.th),
+      grainsPage (p, lnf.th),
       vocalsHub (p, lnf.th),
       drawSing (p, lnf.th),
       grainView (p),
@@ -1894,6 +1895,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (trackEditor);
     addChildComponent (voicePage);
     addChildComponent (vocalsHub);
+    addChildComponent (grainsPage);
     addChildComponent (drawSing);
     drawSing.statusText = [this] { return autoAdd.status; };
     drawSing.autoAdd = &autoAdd;
@@ -2305,7 +2307,7 @@ void LivePlanetEditor::applyTheme()
 
 Rectangle<int> LivePlanetEditor::tabBounds (int i) const
 {
-    static const int widths[] = { 64, 72, 72, 64 };
+    static const int widths[] = { 64, 72, 72, 72, 64 };
     int x = 300;
     for (int k = 0; k < i; ++k) x += widths[k] + 22;
     return { x, 20, widths[i], 30 };
@@ -2337,6 +2339,8 @@ void LivePlanetEditor::setPage (int p)
     if (! (p == Voice && vocalTab == 1)) drawSing.leave(); // (the guide tone and your live voice: only while you're drawing)
     voicePage.setVisible (p == Voice && vocalTab == 2);
     voicePage.shown (p == Voice && vocalTab == 2);
+    grainsPage.setVisible (p == GrainsTab);
+    grainsPage.shown (p == GrainsTab);
     studioKey.setVisible (studio);
     studioMode.setVisible (studio);
     masterBox.setVisible (studio);
@@ -2666,8 +2670,8 @@ void LivePlanetEditor::paint (Graphics& g)
         g.setColour (th.grassLight);
         g.drawText ("BETA", badge, Justification::centred, false);
 
-        static const char* tabs[] = { "WRITE", "STUDIO", "VOCALS", "SOUND" };
-        for (int i = 0; i < 4; ++i)
+        static const char* tabs[] = { "WRITE", "STUDIO", "VOCALS", "GRAINS", "SOUND" };
+        for (int i = 0; i < 5; ++i)
         {
             auto t = tabBounds (i).toFloat();
             const bool on = tabPage (i) == page;
@@ -2916,7 +2920,7 @@ void LivePlanetEditor::mouseDown (const MouseEvent& e)
         pb.giveAwayKeyboardFocus();
     if (e.eventComponent == this && ! undoChip.isEmpty() && undoChip.contains (e.position)) { proc.songJob.undo(); repaint(); return; }
     if (e.eventComponent == this)
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < 5; ++i)
             if (tabBounds (i).expanded (8, 10).contains (e.getPosition())) { setPage (tabPage (i)); return; }
 }
 
@@ -3019,6 +3023,7 @@ void LivePlanetEditor::resized()
         const int top = voiceOn() ? 124 : 84;
         voicePage.setBounds (M, top, W - 2 * M, B - top);
         vocalsHub.setBounds (M, top, W - 2 * M, B - top);
+        grainsPage.setBounds (M, 84, W - 2 * M, B - 84);
         drawSing.setBounds (M, top, W - 2 * M, B - top);
     }
     if (page == Studio) playButton.setBounds (cardTimeline.getX() + 150, cardTimeline.getY() + 6, 30, 30);

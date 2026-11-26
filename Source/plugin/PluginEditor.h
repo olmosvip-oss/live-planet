@@ -1461,6 +1461,8 @@ private:
     std::function<void()> onChange;
 };
 
+#include "GrainsPage.h"
+
 class LivePlanetEditor : public juce::Component,
                          public juce::FileDragAndDropTarget,
                          public juce::DragAndDropContainer,
@@ -1495,7 +1497,7 @@ private:
     void runSearch();
 public:
     void setPage (int p);
-    enum Page { Write = 0, Studio, Edit, Sound, Voice };
+    enum Page { Write = 0, Studio, Edit, Sound, Voice, GrainsTab };
 private:
     void applyTheme();
     juce::Rectangle<int> tabBounds (int i) const;
@@ -1526,6 +1528,7 @@ public:
 private:
     TrackEditor trackEditor;
     VoicePage voicePage;
+    GrainsPage grainsPage;
     VocalsHub vocalsHub;
     lp::ai::AutoAdd autoAdd;
     std::unique_ptr<lp::ai::LayerPopup> layerPopup;
@@ -1588,13 +1591,17 @@ private:
     bool keyPressed (const juce::KeyPress&) override;
     juce::Rectangle<int> cardTimeline, cardInstrument, cardSky, cardWeather, plateMix, plateTex, plateFx;
     int page = 0;
-    static int tabPage (int tab) { static const int pages[] = { Write, Studio, Voice, Sound }; return pages[juce::jlimit (0, 3, tab)]; }
+    static int tabPage (int tab) { static const int pages[] = { Write, Studio, Voice, GrainsTab, Sound }; return pages[juce::jlimit (0, 4, tab)]; }
     juce::Rectangle<int> cardDock; // the Studio: the open track, under the arrangement
     int dockPageShown = 0;
     bool dockTall = false; // the open track's grid made bigger: the arrangement shrinks to its sections and a few lanes
     // (the dock: 0 the sample, 1 its effects (with its volume, pan and drag), 2 its grains)
     Segmented dockTabs { { "Sample", "Effects", "Grains" }, [this] { return dockPageShown; },
-                         [this] (int i) { dockPageShown = i; if (i != 1) trackEditor.setDockPage (i); showDock(); repaint(); }, lnf.th };
+                         [this] (int i)
+                         {
+                             if (i == 2) { grainsPage.loadTrack (trackEditor.selected()); setPage (GrainsTab); return; } // (its own page: the track loaded there)
+                             dockPageShown = i; if (i != 1) trackEditor.setDockPage (i); showDock(); repaint();
+                         }, lnf.th };
     // effects, like a DAW's: the browser (left of the arrangement) and the open track's devices (the dock's Effects)
     lp::fx::Browser fxBrowser { lnf.th };
     lp::fx::Rack fxRack { proc, lnf.th };

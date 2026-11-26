@@ -155,6 +155,7 @@ void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     const int maxBlock = std::max (samplesPerBlock, 4096);
     sampleFx.prepare (sampleRate, maxBlock);
     samplerFx.prepare (sampleRate, maxBlock);
+    grainSynth.prepare (sampleRate, maxBlock);
     for (auto* v : { &smpL, &smpR, &smpSendL, &smpSendR }) v->assign ((size_t) maxBlock, 0.0f);
     // room for 60 seconds of your voice (made here, so recording never allocates)
     if (recBuf.getNumSamples() < (int) (sampleRate * 60.0)) recBuf.setSize (2, (int) (sampleRate * 60.0));
@@ -403,9 +404,10 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     songPlaying = playSong || preview;
     if (playSong || preview) t.shouldPlay = false; // the weather music steps aside while your song plays
     // your keys play the sample instrument (Play mode), or the built-in instrument
-    const bool toSampler = samplerOn.load() && ! chordMode;
-    t.keys = toSampler ? nullptr : keyEvents.data();
-    t.numKeys = toSampler ? 0 : (int) keyEvents.size();
+    const bool toGrains = grainsActive.load() && ! chordMode;
+    const bool toSampler = samplerOn.load() && ! chordMode && ! toGrains;
+    t.keys = toSampler || toGrains ? nullptr : keyEvents.data();
+    t.numKeys = toSampler || toGrains ? 0 : (int) keyEvents.size();
     static const std::bitset<128> none;
 
     midiOut.clear();
@@ -555,9 +557,21 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         }
     }
 
+    // GRAINS: your keys play it while its page is open; it follows the song's beat when the song (or your DAW) plays
+    {
+        if (toGrains)
+            for (auto& k : keyEvents) k.on ? grainSynth.noteOn (k.note, k.velocity) : grainSynth.noteOff (k.note);
+        lp::grains::Transport gt;
+        const double sbpm = songBpm.load();
+        if (preview) { gt.playing = true; gt.bpm = sbpm > 0.0 ? sbpm : 120.0; gt.ppq = previewPos.load() / StudioPlayer::fileRate * gt.bpm / 60.0; }
+        else if (t.hostPlaying) { gt.playing = true; gt.bpm = t.bpm > 0.0 ? t.bpm : 120.0; gt.ppq = t.ppq; }
+        else gt.bpm = t.bpm > 0.0 ? t.bpm : (sbpm > 0.0 ? sbpm : 120.0);
+        grainSynth.process (L, R, n, gt);
+    }
+
     // the sample instrument, through the Space knobs (warmth, echo, space, shimmer, nostalgia, atmosphere,
     // output), its level on the Melody knob, and the Texture knobs shaping how it plays
-    if (samplerOn.load() && (size_t) n <= smpL.size())
+    if (samplerOn.load() && ! toGrains && (size_t) n <= smpL.size())
     {
         auto v = [this] (const char* id) { return params.getRawParameterValue (id)->load(); };
         sampler.startFrac = juce::jmax (0.0f, v ("position") - 0.3f) / 0.7f;          // (the default, 30%, starts at the start)
@@ -1274,6 +1288,9 @@ void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
     }
     state.setProperty ("theme", themeIndex.load(), nullptr);
     state.setProperty ("preset", currentPreset.load(), nullptr);
+    // grains: its sound and everything set on its page
+    state.setProperty ("grainPath", grainSource != nullptr ? grainSource->path : juce::String(), nullptr);
+    state.setProperty ("grainSettings", juce::JSON::toString (lp::grains::toVar (grainSettings), true), nullptr);
     // the song you made in this project, and each track's mixer, so reopening the project brings it back
     {
         const auto st = songJob.getStatus();
@@ -1327,6 +1344,13 @@ void LivePlanetProcessor::setStateInformation (const void* data, int sizeInBytes
         citySeed = lp::hashString (city);
     }
     weatherService.requestCoordinates (city, lat, lon);
+
+    if (const auto gs = state.getProperty ("grainSettings", "").toString(); gs.isNotEmpty())
+    {
+        grainSettings = lp::grains::fromVar (juce::JSON::parse (gs));
+        sendGrainSettings();
+    }
+    if (const juce::File gp (state.getProperty ("grainPath", "").toString()); gp.existsAsFile()) loadGrainSound (gp);
 
     if (const auto sp = state.getProperty ("samplerPath", "").toString(); sp.startsWith ("chops:"))
     {
@@ -1635,5 +1659,14 @@ bool LivePlanetProcessor::saveGuideTake (const juce::File& dest, double skipSeco
     juce::WavAudioFormat wav;
     std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (dest), recRate, 2, 24, {}, 0));
     if (w == nullptr || ! w->writeFromAudioSampleBuffer (take, 0, n)) { message = "couldn't save your take"; return false; }
+    return true;
+}
+
+bool LivePlanetProcessor::loadGrainSound (const juce::File& f)
+{
+    auto src = lp::grains::load (f);
+    if (src == nullptr) return false;
+    grainSource = src;
+    grainSynth.setSource (src);
     return true;
 }

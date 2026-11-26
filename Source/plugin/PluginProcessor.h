@@ -12,6 +12,7 @@
 #include "../engine/SampleFx.h"
 #include "../engine/Master.h"
 #include "../engine/Sampler.h"
+#include "../engine/GrainSynth.h"
 #include "../engine/Limiter.h"
 #include "../song/LyricMelody.h"
 
@@ -65,6 +66,13 @@ public:
     double recRate = 48000.0;
     void samplerOff();
     lp::Sampler sampler;
+    // GRAINS: the granular instrument (its own page). While that page is open, your keys play it.
+    lp::grains::Synth grainSynth;
+    std::atomic<bool> grainsActive { false };
+    std::shared_ptr<lp::grains::Source> grainSource;  // (message thread) the sound it's playing
+    lp::grains::Settings grainSettings;                // (message thread) everything set on the page
+    bool loadGrainSound (const juce::File& f);          // (message thread)
+    void sendGrainSettings() { grainSynth.setSettings (grainSettings); }
     std::atomic<bool> samplerOn { false };
     juce::SpinLock samplerInfoLock;
     juce::String samplerName, samplerInfo;     // e.g. "CK Keys 01" / "3 velocity layers, recorded at C3"
