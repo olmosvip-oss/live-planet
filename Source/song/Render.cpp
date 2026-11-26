@@ -1222,6 +1222,12 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
     {
         // your (tuned) vocal, from the start of the song, as you recorded it (the whole song long)
         auto v = loadAudio (part.samplePath, sr, 1.0, 900.0);
+        // your pitch (- / +): moved without changing its timing; a voice keeps its own character (formants)
+        if (part.pitchSemis != 0 && v.getNumSamples() > 0)
+        {
+            const bool sung = juce::String (part.name).startsWith ("vocal (") || juce::String (part.name).containsIgnoreCase ("vocal");
+            v = stretchAndPitch (v, v.getNumSamples(), part.pitchSemis, sr, false, sung);
+        }
         const int n = std::min (v.getNumSamples(), total);
         for (int i = 0; i < n; ++i) { L[i] += v.getSample (0, i); R[i] += v.getSample (1, i); }
     }
