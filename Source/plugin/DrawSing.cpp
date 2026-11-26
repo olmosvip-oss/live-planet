@@ -695,28 +695,26 @@ void DrawSing::resized()
         bottom.removeFromLeft (8);
     }
     hear.setBounds (bottom.removeFromRight (100));
+    // the side, in three groups: the voice and the section; your words; while you draw (and sing it)
     auto s = sideCard().reduced (20, 18);
-    s.removeFromTop (34);
-    section.setBounds (s.removeFromTop (34));
+    s.removeFromTop (30);
+    voiceChip.setBounds (s.removeFromTop (58));
+    voice.setBounds (voiceChip.getBounds());
+    addVoiceBtn.setBounds (voiceChip.getBounds()); // (both live in the voice picker now)
+    voice.setVisible (false);
+    addVoiceBtn.setVisible (false);
     s.removeFromTop (10);
-    {
-        auto vr = s.removeFromTop (34);
-        addVoiceBtn.setBounds (vr.removeFromRight (60));
-        vr.removeFromRight (8);
-        voice.setBounds (vr);
-        // (the voice as a card, in place of the list and its "add": both are in the voice picker)
-        voiceChip.setBounds (voice.getBounds().getUnion (addVoiceBtn.getBounds()).withHeight (44).translated (0, -5));
-        voice.setVisible (false);
-        addVoiceBtn.setVisible (false);
-    }
-    s.removeFromTop (16);
-    lyrics.setBounds (s.removeFromTop (150));
-    s.removeFromTop (12);
-    consent.setBounds (s.removeFromTop (40));
+    section.setBounds (s.removeFromTop (36));
+    s.removeFromTop (26);
+    wordsTop = s.getY() - 20;
+    lyrics.setBounds (s.removeFromTop (jlimit (90, 190, s.getHeight() - 250)));
+    s.removeFromTop (26);
+    liveTop = s.getY() - 20;
     autoSing.setBounds (s.removeFromTop (30));
     guide.setBounds (s.removeFromTop (30));
-    s.removeFromTop (8);
-    sing.setBounds (s.removeFromTop (40));
+    consent.setBounds (s.removeFromTop (40));
+    s.removeFromTop (10);
+    sing.setBounds (s.removeFromTop (44));
     statusArea = s.withTrimmedTop (10);
 }
 
@@ -727,8 +725,25 @@ void DrawSing::paint (Graphics& g)
     {
         g.setColour (t.body);
         g.fillRoundedRectangle (r.toFloat(), 14.0f);
+        g.setGradientFill (ColourGradient (Colours::white.withAlpha (0.035f), 0.0f, (float) r.getY(), Colours::transparentWhite, 0.0f, (float) r.getY() + 120.0f, false));
+        g.fillRoundedRectangle (r.toFloat(), 14.0f);
         g.setColour (t.line);
         g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 14.0f, 1.0f);
+    }
+    {
+        // the side's groups, each with its name
+        auto sl = [&] (const String& txt, int y)
+        {
+            g.setFont (lp::ui::mono (9.5f, true, 0.16f));
+            g.setColour (t.grassLight);
+            g.drawText (txt, Rectangle<int> (sideCard().getX() + 20, y, sideCard().getWidth() - 40, 16), Justification::centredLeft, false);
+        };
+        sl ("YOUR WORDS", wordsTop);
+        sl ("WHILE YOU DRAW", liveTop);
+        // (a soft box around the live switches and the sing button)
+        const auto box = Rectangle<int> (sideCard().getX() + 12, liveTop + 18, sideCard().getWidth() - 24, sing.getBottom() + 10 - (liveTop + 18)).toFloat();
+        g.setColour (Colours::white.withAlpha (0.03f));
+        g.fillRoundedRectangle (box, 10.0f);
     }
     auto label = [&] (const String& s, Rectangle<int> r)
     {
@@ -743,7 +758,7 @@ void DrawSing::paint (Graphics& g)
     g.setColour (t.inkDim);
     g.drawText ("Click to draw a note, drag to move it, drag its end to make it longer. Double-click: its word. Alt-click or Delete: gone.",
                 rollCard().reduced (18, 16).removeFromBottom (32).withLeft (redoBtn.getRight() + 12).withRight (hear.getX() - 10), Justification::centredLeft, true);
-    label ("THE SECTION AND THE VOICE", sideCard().reduced (20, 18).removeFromTop (24));
+    label ("YOUR VOICE AND THE SECTION", sideCard().reduced (20, 18).removeFromTop (24));
 
     // ---- the roll
     const auto r = roll();

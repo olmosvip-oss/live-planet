@@ -1068,6 +1068,7 @@ private:
                      prev { "<" }, next { ">" }, hear { "play section" }, sing { "Sing it in my voice" };
     juce::ToggleButton consent { "this is my voice, or I have the singer's permission" };
     juce::Rectangle<int> statusArea;
+    int wordsTop = 0, liveTop = 0; // (where the side's groups start: their names are drawn there)
     double sectionBeats() const, sectionStartSeconds() const;
     juce::Rectangle<float> roll() const;
     juce::Rectangle<int> rollCard() const, sideCard() const;
