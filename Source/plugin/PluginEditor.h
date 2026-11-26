@@ -140,7 +140,8 @@ public:
     explicit PlayButton (LivePlanetProcessor& p) : proc (p) {}
     std::function<bool()> songMode; // in the song tab it plays the song preview
     void paint (juce::Graphics&) override;
-    void mouseUp (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override { toggle(); }
+    void toggle(); // play / stop (the button, or the space bar)
     void mouseEnter (const juce::MouseEvent&) override { repaint(); }
     void mouseExit (const juce::MouseEvent&) override { repaint(); }
 
@@ -651,6 +652,7 @@ private:
     int sectionAt (float x) const;
     void deletePicked();
     double wheelZoomRows = 0.0;
+    double cuedBar = -1.0;                   // clicked in the bar numbers: where play starts
     juce::Rectangle<float> rewriteBounds (int numTracks) const;
     bool hoverRewrite = false;
     void askRemove (int track);
@@ -1322,6 +1324,9 @@ private:
     SongPanel songPanel;
     SongView songView;
     StudioView studioView;
+public:
+    void togglePlay() { playButton.toggle(); }
+private:
     TrackEditor trackEditor;
     VoicePage voicePage;
     VocalsHub vocalsHub;
@@ -1404,6 +1409,9 @@ class LivePlanetWindow : public juce::AudioProcessorEditor
 public:
     explicit LivePlanetWindow (LivePlanetProcessor&);
     void resized() override;
+    // the app on its own: the space bar plays and stops (in a DAW, the space bar stays your DAW's)
+    bool keyPressed (const juce::KeyPress&) override;
+    void mouseDown (const juce::MouseEvent&) override;
     void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff0d0d10)); }
 
 private:

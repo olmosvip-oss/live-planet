@@ -550,12 +550,13 @@ void StudioView::paint (Graphics& g)
         }
     }
 
-    // where the song is playing, down through the lanes
-    if (proc.studio.length() > 0 && proc.songIsPlaying())
+    // where the song is playing, down through the lanes (stopped: where it will start, fainter)
+    if (proc.studio.length() > 0 && (proc.songIsPlaying() || cuedBar >= 0.0) && st.song.bpm > 0.0)
     {
-        const float frac = (float) jlimit (0.0, 1.0, proc.playheadPos.load() / (double) proc.studio.length());
-        g.setColour (Colours::white.withAlpha (0.9f));
-        const float px = xOfBar (frac * (totalBars + 2.0)); // (the stems run two bars past the end, for tails)
+        const bool playing = proc.songIsPlaying();
+        const double atBar = proc.playheadPos.load() / StudioPlayer::fileRate / (240.0 / st.song.bpm);
+        g.setColour (Colours::white.withAlpha (playing ? 0.9f : 0.45f));
+        const float px = xOfBar (atBar);
         if (px >= lx && px <= lx + lw)
         {
             g.drawVerticalLine ((int) px, 8.0f, lanesBottom);
@@ -718,9 +719,19 @@ void StudioView::mouseDown (const MouseEvent& e)
                 repaint();
                 return;
             }
-        // a click on the bar numbers: play from there (and with cmd: zoom to the section)
+        // a click on the bar numbers: the song plays from that bar (double-click: zoom to its section)
         if (e.position.y < rowsTop - 2.0f && e.position.x >= laneLeft() && e.position.x <= laneRight())
         {
+            const double bar = std::floor (view != nullptr ? view->barAt (e.position.x, laneLeft(), laneRight() - laneLeft(), totalBars)
+                                                           : (e.position.x - laneLeft()) / (laneRight() - laneLeft()) * totalBars);
+            if (e.getNumberOfClicks() == 1 && st.song.bpm > 0.0)
+            {
+                const double at = jlimit (0.0, (double) totalBars, bar) * 240.0 / st.song.bpm * StudioPlayer::fileRate;
+                proc.previewPos = at;
+                proc.playheadPos = at;
+                cuedBar = bar;
+                repaint();
+            }
             if (view != nullptr && e.getNumberOfClicks() > 1)
                 if (const int sc = sectionAt (e.position.x); sc >= 0)
                 {

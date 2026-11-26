@@ -611,7 +611,7 @@ void PlayButton::paint (Graphics& g)
     }
 }
 
-void PlayButton::mouseUp (const MouseEvent&)
+void PlayButton::toggle()
 {
     if (songMode && songMode())
     {
@@ -1730,7 +1730,8 @@ void SongView::paint (Graphics& g)
         if (st.haveSong && ! dirty && proc.studio.length() > 0 && proc.songIsPlaying())
         {
             const float frac = (float) jlimit (0.0, 1.0, proc.playheadPos.load() / (double) proc.studio.length());
-            const float x = zoomView ? view->xOf (frac * (st.song.totalBars() + 2.0), ln.getX(), ln.getWidth(), totalBars) : ln.getX() + ln.getWidth() * frac;
+            const double atBar = proc.playheadPos.load() / StudioPlayer::fileRate / (240.0 / std::max (40.0, st.song.bpm));
+            const float x = zoomView ? view->xOf (atBar, ln.getX(), ln.getWidth(), totalBars) : ln.getX() + ln.getWidth() * frac;
             g.setColour (Colours::white);
             g.drawLine (x, ln.getY() - 4.0f, x, ln.getBottom(), 1.5f);
         }
@@ -3093,6 +3094,33 @@ LivePlanetWindow::LivePlanetWindow (LivePlanetProcessor& p) : AudioProcessorEdit
     setResizeLimits ((int) (kW * 0.6), (int) (kH * 0.6), 8000, 5000);
     setSize (jmax ((int) (kW * 0.6), w0), jmax ((int) (kH * 0.6), h0));
     ready = true;
+    if (p.wrapperType == AudioProcessor::wrapperType_Standalone)
+    {
+        // (so the space bar reaches it: the window takes the keys unless a text box or the arrangement has them)
+        setWantsKeyboardFocus (true);
+        addMouseListener (this, true);
+        SafePointer<LivePlanetWindow> sp (this);
+        MessageManager::callAsync ([sp] { if (sp != nullptr && sp->isShowing()) sp->grabKeyboardFocus(); });
+    }
+}
+
+bool LivePlanetWindow::keyPressed (const KeyPress& k)
+{
+    if (k == KeyPress::spaceKey && processor.wrapperType == AudioProcessor::wrapperType_Standalone)
+    {
+        if (dynamic_cast<TextEditor*> (Component::getCurrentlyFocusedComponent()) != nullptr) return false; // (typing)
+        view.togglePlay();
+        return true;
+    }
+    return false;
+}
+
+void LivePlanetWindow::mouseDown (const MouseEvent&)
+{
+    // a click on something that doesn't take the keys: the window keeps them (for the space bar)
+    if (processor.wrapperType != AudioProcessor::wrapperType_Standalone) return;
+    auto* f = Component::getCurrentlyFocusedComponent();
+    if (f == nullptr || (f != this && ! isParentOf (f))) grabKeyboardFocus();
 }
 
 void LivePlanetWindow::resized()
