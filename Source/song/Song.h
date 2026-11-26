@@ -321,7 +321,7 @@ struct ChopSlice { double start = 0.0, len = 0.0, midi = 0.0; };
 
 // Where a track is silent (the parts of clips you deleted or trimmed away), as stretches of ticks:
 // 64 ticks a bar (a 1/64 note), so a clip can be trimmed or cut anywhere, not just on bars.
-constexpr int kTicksPerBar = 64;
+constexpr int kTicksPerBar = 1024; // (fine enough to trim, cut and move anywhere; songs saved with 64 are converted when loaded)
 struct Spans
 {
     std::map<int, int> m; // start -> end (end not included), never overlapping or touching

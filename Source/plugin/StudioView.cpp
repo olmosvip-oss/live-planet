@@ -81,7 +81,7 @@ int StudioView::visibleRows() const
 Rectangle<float> StudioView::zoomBtn (int i) const
 {
     const float r = laneRight();
-    if (i == 3) return { r - 40.0f - 6.0f - 2.0f * 22.0f - 8.0f - 52.0f, 5.0f, 52.0f, 18.0f }; // (snap to the grid: on / off)
+    if (i == 3) return { r - 40.0f - 6.0f - 2.0f * 22.0f - 8.0f - 78.0f, 5.0f, 78.0f, 18.0f }; // (snap to the grid: on / off)
     if (i == 2) return { r - 40.0f, 5.0f, 40.0f, 18.0f };
     return { r - 40.0f - 6.0f - (float) (2 - i) * 22.0f, 5.0f, 20.0f, 18.0f };
 }
@@ -249,6 +249,7 @@ Rectangle<float> StudioView::colBounds (int row, Col c) const
         case Solo:   return { x + 23, y + 2, 18, 18 };
         case Lock:   return { x + 44, y + 2, 18, 18 };
         case Volume: return { laneLeft() - 70.0f, y + 7, 54.0f, 8 };
+        case Pan:    return { laneLeft() - 70.0f - 16.0f - 30.0f, y, 22.0f, 22.0f }; // (a little knob, left of the level meter)
         default:     return {};
     }
 }
@@ -340,7 +341,7 @@ void StudioView::showAddMenu()
 
 StudioView::Col StudioView::colAt (int row, Point<float> p) const
 {
-    for (Col c : { Mute, Solo, Lock, Volume })
+    for (Col c : { Mute, Solo, Lock, Volume, Pan })
         if (colBounds (row, c).expanded (2.0f, 4.0f).contains (p)) return c;
     return None;
 }
@@ -480,7 +481,7 @@ void StudioView::paint (Graphics& g)
             g.fillRoundedRectangle (sb, 4.0f);
             g.setColour (on ? Colours::white : txt.withAlpha (0.6f));
             g.setFont (lp::ui::mono (9.0f, true, 0.1f));
-            g.drawText ("SNAP", sb, Justification::centred, false);
+            g.drawText (on ? "SNAP ON" : "SNAP OFF", sb, Justification::centred, false);
         }
         const char* zl[] = { "-", "+", "FIT" };
         for (int i = 0; i < 3; ++i)
@@ -612,7 +613,7 @@ void StudioView::paint (Graphics& g)
         // its name and where it came from
         const float hy = row.getCentreY() - 11.0f;
         const float ind = i < (int) inGroup.size() && inGroup[(size_t) i] ? 10.0f : 0.0f;
-        auto nameArea = Rectangle<float> (row.getX() + 72.0f + ind, hy, colBounds (i, Volume).getX() - 22.0f - row.getX() - 76.0f, 22.0f);
+        auto nameArea = Rectangle<float> (row.getX() + 72.0f + ind, hy, colBounds (i, Pan).getX() - 6.0f - row.getX() - 76.0f, 22.0f);
         String name = t.name;
         if (t.reversed) name << " (rev)";
         if (t.pitch != 0) name << " " << (t.pitch > 0 ? "+" : "") << t.pitch;
@@ -622,6 +623,43 @@ void StudioView::paint (Graphics& g)
         g.setColour (! t.source.startsWith ("loopwright") ? accent.brighter (0.3f) : dim);
         g.setFont (font (9.0f));
         g.drawText (SongJob::niceSource (t.source), nameArea, Justification::topLeft, true);
+
+        // its pan: a little knob (like a mixer's), the arc from the middle to where it sits
+        {
+            const auto pb = colBounds (i, Pan);
+            const float pan = jlimit (-1.0f, 1.0f, m.pan.load());
+            const auto c = pb.getCentre();
+            const float rr = pb.getWidth() * 0.5f - 1.0f;
+            g.setColour (Colours::white.withAlpha (0.08f));
+            g.fillEllipse (pb.reduced (1.0f));
+            const float a0 = -MathConstants<float>::pi * 0.75f, a1 = MathConstants<float>::pi * 0.75f;
+            Path trackArc;
+            trackArc.addCentredArc (c.x, c.y, rr - 2.0f, rr - 2.0f, 0.0f, a0, a1, true);
+            g.setColour (Colours::white.withAlpha (0.12f));
+            g.strokePath (trackArc, PathStrokeType (2.0f, PathStrokeType::curved, PathStrokeType::rounded));
+            const float at = pan * a1;
+            if (std::abs (pan) > 0.01f)
+            {
+                Path v;
+                v.addCentredArc (c.x, c.y, rr - 2.0f, rr - 2.0f, 0.0f, std::min (0.0f, at), std::max (0.0f, at), true);
+                g.setColour (accent);
+                g.strokePath (v, PathStrokeType (2.0f, PathStrokeType::curved, PathStrokeType::rounded));
+            }
+            g.setColour (Colours::white.withAlpha (0.9f));
+            g.drawLine (c.x, c.y, c.x + (rr - 4.0f) * std::sin (at), c.y - (rr - 4.0f) * std::cos (at), 1.5f);
+            // (its value while you're on it)
+            if (pb.expanded (4.0f).contains (lastMouse) || (dragRow == i && dragCol == Pan))
+            {
+                const int pv = roundToInt (pan * 50.0f);
+                const String txtPan = pv == 0 ? String ("C") : (pv < 0 ? "L " : "R ") + String (std::abs (pv));
+                auto tb = Rectangle<float> (pb.getCentreX() - 22.0f, pb.getY() - 15.0f, 44.0f, 13.0f);
+                g.setColour (Colours::black.withAlpha (0.75f));
+                g.fillRoundedRectangle (tb, 4.0f);
+                g.setColour (Colours::white);
+                g.setFont (lp::ui::mono (9.0f, true, 0.05f));
+                g.drawText (txtPan, tb, Justification::centred, false);
+            }
+        }
 
         // its volume, and its level just left of it
         {
@@ -864,14 +902,14 @@ void StudioView::paint (Graphics& g)
                 auto len = [] (int ticks)
                 {
                     const int bars = ticks / lp::song::kTicksPerBar;
-                    const double beats = (ticks % lp::song::kTicksPerBar) / 16.0;
+                    const double beats = (ticks % lp::song::kTicksPerBar) / (lp::song::kTicksPerBar / 4.0);
                     String o;
                     if (bars > 0) o << bars << (bars == 1 ? " bar" : " bars");
                     if (beats > 0.0) o << (o.isEmpty() ? "" : " ") << String (beats, beats == std::floor (beats) ? 0 : 2) << (beats == 1.0 ? " beat" : " beats");
                     return o.isEmpty() ? String ("0") : o;
                 };
                 const int bar = dropStart / lp::song::kTicksPerBar + 1;
-                const double beat = (dropStart % lp::song::kTicksPerBar) / 16.0 + 1.0;
+                const double beat = (dropStart % lp::song::kTicksPerBar) / (lp::song::kTicksPerBar / 4.0) + 1.0;
                 String what = dragMode != 0 ? len (dropEnd - dropStart)
                                             : String (dragCopy ? "copy to bar " : "move to bar ") + String (bar) + (beat > 1.0 ? " beat " + String (beat, beat == std::floor (beat) ? 0 : 2) : String());
                 g.drawText (what, r.reduced (8.0f, 0.0f), Justification::centredLeft, true);
@@ -1263,7 +1301,7 @@ void StudioView::mouseDown (const MouseEvent& e)
                 m.addItem (1, pickedClips.size() > 1 ? "Delete " + String ((int) pickedClips.size()) + " clips" : String ("Delete this clip"), ! pickedClips.empty());
                 m.addItem (2, "Bring it back (the bars deleted here)", anyGone);
                 m.addItem (6, "Change the track's sound...   (same notes)");
-                m.addItem (4, "Cut here, at bar " + String (cutBar / lp::song::kTicksPerBar + 1) + (cutBar % lp::song::kTicksPerBar != 0 ? " beat " + String ((cutBar % lp::song::kTicksPerBar) / 16.0 + 1.0, 2) : String()) + "   (cmd+E)", canCut);
+                m.addItem (4, "Cut here, at bar " + String (cutBar / lp::song::kTicksPerBar + 1) + (cutBar % lp::song::kTicksPerBar != 0 ? " beat " + String ((cutBar % lp::song::kTicksPerBar) / (lp::song::kTicksPerBar / 4.0) + 1.0, 2) : String()) + "   (cmd+E)", canCut);
                 m.addItem (5, "Join with the next clip", canJoin);
                 {
                     PopupMenu colours;
@@ -1356,6 +1394,7 @@ void StudioView::mouseDown (const MouseEvent& e)
                     if (c == Volume) m.gainDb = 0.0f; else if (c == Pan) m.pan = 0.0f; else m.tone = 0.0f;
                     mixDirty = true;
                 }
+                else if (c == Pan) { dragRow = i; dragCol = c; panFrom = m.pan.load(); } // (a knob: dragged, not clicked to a place)
                 else { dragRow = i; dragCol = c; setFromX (i, c, e.position.x); }
                 break;
             case Swap:      if (st.tracks[(size_t) i].canSwap) proc.songJob.editTrack (i, SongJob::EditOp::Swap); break;
@@ -1434,6 +1473,20 @@ void StudioView::mouseDrag (const MouseEvent& e)
         return;
     }
     if (draggingFeel >= 0) { setFeel (draggingFeel, e.position.x); return; }
+    if (dragRow >= 0 && dragCol == Pan)
+    {
+        // up or right: to the right; down or left: to the left (shift: finer)
+        const float d = (float) (e.getDistanceFromDragStartX() - e.getDistanceFromDragStartY()) / (e.mods.isShiftDown() ? 600.0f : 150.0f);
+        auto& mm = proc.studio.mix[(size_t) dragRow];
+        float v = jlimit (-1.0f, 1.0f, panFrom + d);
+        if (std::abs (v) < 0.02f) v = 0.0f; // (a little catch in the middle)
+        mm.pan = v;
+        mixDirty = true;
+        if (onMixChanged) onMixChanged();
+        lastMouse = e.position;
+        repaint();
+        return;
+    }
     if (dragRow >= 0) { setFromX (dragRow, dragCol, e.position.x); repaint(); }
 }
 

@@ -58,6 +58,7 @@ inline juce::var partToVar (const Part& p)
         juce::Array<juce::var> sp;
         for (auto [a, b] : p.silent.m) { sp.add (a); sp.add (b); }
         o->setProperty ("silentTicks", sp);
+        o->setProperty ("ticksPerBar", lp::song::kTicksPerBar);
     }
     o->setProperty ("splitTicks", ints (p.splitTicks));
     if (! p.moved.empty())
@@ -158,18 +159,21 @@ inline Part partFromVar (const juce::var& v)
     // (older songs kept whole bars)
     for (int x : readInts (v["silent"])) p.silent.add (x * lp::song::kTicksPerBar, (x + 1) * lp::song::kTicksPerBar);
     for (int x : readInts (v["splits"])) p.splitTicks.insert (x * lp::song::kTicksPerBar);
+    // (ticks saved at another resolution, older songs at 64 a bar: converted to today's)
+    const double tk = (double) lp::song::kTicksPerBar / (double) (int) v.getProperty ("ticksPerBar", 64);
+    auto tick = [tk] (double x) { return (int) std::llround (x * tk); };
     {
         const auto sp = readInts (v["silentTicks"]);
-        for (size_t i = 0; i + 1 < sp.size(); i += 2) p.silent.add (sp[i], sp[i + 1]);
+        for (size_t i = 0; i + 1 < sp.size(); i += 2) p.silent.add (tick (sp[i]), tick (sp[i + 1]));
     }
-    for (int x : readInts (v["splitTicks"])) p.splitTicks.insert (x);
+    for (int x : readInts (v["splitTicks"])) p.splitTicks.insert (tick (x));
     if (auto* mv = v["moved"].getArray())
         for (auto& e : *mv)
         {
             lp::song::Part::MovedClip c;
-            c.dst0 = e[0]; c.dst1 = e[1]; c.src0 = e[2];
+            c.dst0 = (double) e[0] * tk; c.dst1 = (double) e[1] * tk; c.src0 = (double) e[2] * tk;
             if (auto* mask = e[3].getArray())
-                for (int i = 0; i + 1 < mask->size(); i += 2) c.mask.push_back ({ (double) (*mask)[i], (double) (*mask)[i + 1] });
+                for (int i = 0; i + 1 < mask->size(); i += 2) c.mask.push_back ({ (double) (*mask)[i] * tk, (double) (*mask)[i + 1] * tk });
             if (c.dst1 > c.dst0) p.moved.push_back (c);
         }
     {
