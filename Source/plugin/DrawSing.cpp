@@ -154,7 +154,7 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
                            T { &holdBtn, "Hold word (H): this note keeps singing the word before it, on its own pitch (\"you\": \"yu\" on one note, \"oo\" on the next)" },
                            T { &vibBtn, "Vibrato (V): the selected note wavers once it's held, like a singer's" },
                            T { &slideBtn, "Slide in (S): the selected note slides up or down into its pitch from the note before" },
-                           T { &splitBtn, "Split (E): the selected note in two, the second half keeps singing its word (drag it to another pitch)" },
+                           T { &splitBtn, "Split (E): cuts a note exactly at the mouse (press E with the mouse over it) or at the marker; the second part keeps singing the word (drag it to another pitch)" },
                            T { &recBtn, "Sing or hum your melody while the section plays (a bar to count in): it becomes the notes, "
                                         "and your words go on them. Click again to stop early." } })
     {
@@ -407,12 +407,25 @@ void DrawSing::toggle (int what)
 
 void DrawSing::splitNote()
 {
-    if (selectedNote < 0 || selectedNote >= (int) notes.size()) return;
+    // where: the mouse, if it's over a note (that note); else the marker, if it's inside the picked note (or any note);
+    // else the picked note's middle. Exactly there: no grid.
+    const auto mouse = getMouseXYRelative().toFloat();
+    double at = -1.0;
+    if (const int under = noteAt (mouse); under >= 0 && roll().contains (mouse)) { selectedNote = under; at = beatAt (mouse.x); }
+    if (at < 0.0)
+    {
+        auto inside = [this] (int i) { const auto& m = notes[(size_t) i]; return markerBeat > m.beat + 1e-6 && markerBeat < m.beat + m.len - 1e-6; };
+        if (selectedNote >= 0 && selectedNote < (int) notes.size() && inside (selectedNote)) at = markerBeat;
+        else for (int i = 0; i < (int) notes.size() && at < 0.0; ++i) if (inside (i)) { selectedNote = i; at = markerBeat; }
+    }
+    if (selectedNote < 0 || selectedNote >= (int) notes.size()) { message = "Pick a note, or put the marker inside one, then press split (E)"; repaint(); return; }
     auto& n = notes[(size_t) selectedNote];
-    const double half = std::round (n.len * 0.5 / snap()) * snap();
-    if (half < snap() - 1e-9 || n.len - half < snap() - 1e-9) { message = "This note is too short to split: zoom in (+) or make it longer"; repaint(); return; }
+    if (at < 0.0) at = n.beat + n.len * 0.5;
+    const double half = at - n.beat, minLen = 1.0 / 64.0;
+    if (half < minLen || n.len - half < minLen) { message = "Too close to the note's edge to split there"; repaint(); return; }
     autoPaused = false;
     Note b = n;
+    const double fraction = half / n.len;
     n.len = half;
     b.beat = n.beat + half;
     b.len -= half;
@@ -420,6 +433,23 @@ void DrawSing::splitNote()
     b.slide = false;
     b.vibrato = 0.0f;
     b.id = nextId++;
+    // already sung: each part keeps its own stretch of the take (no new singing, the word just splits)
+    if (voiced != nullptr)
+    {
+        const std::lock_guard<std::mutex> l (voiced->lock);
+        for (auto& sn : voiced->sungNotes)
+            if (sn.id == n.id)
+            {
+                auto child = sn;
+                const double cut = sn.len * fraction;
+                sn.len = cut;
+                child.beat += cut; child.len -= cut;
+                child.id = b.id; child.slur = true; child.slide = false; child.vibrato = 0.0f;
+                voiced->sungNotes.push_back (child);
+                voiced->cache.erase (n.id);
+                break;
+            }
+    }
     notes.insert (notes.begin() + selectedNote + 1, b);
     selectedNote = selectedNote + 1;
     showTools();
@@ -515,7 +545,7 @@ void DrawSing::showTools()
 {
     const bool has = selectedNote >= 0 && selectedNote < (int) notes.size();
     for (auto* b : { &holdBtn, &vibBtn, &slideBtn }) b->setEnabled (has);
-    splitBtn.setEnabled (has && notes[(size_t) selectedNote].len >= snap() * 2.0 - 1e-9);
+    splitBtn.setEnabled (! notes.empty());
     auto lit = [] (TextButton& b, bool on) { if ((bool) b.getProperties()["primary"] != on) { b.getProperties().set ("primary", on); b.repaint(); } };
     lit (holdBtn, has && notes[(size_t) selectedNote].slur);
     lit (vibBtn, has && notes[(size_t) selectedNote].vibrato > 0.0f);
@@ -583,8 +613,8 @@ void DrawSing::mouseDown (const MouseEvent& e)
 void DrawSing::setMarker (const MouseEvent& e)
 {
     // on the grid (the zoom's step), or anywhere with cmd held
-    double b = beatAt (e.position.x);
-    if (! e.mods.isCommandDown()) b = std::round (b / (snap() * 2.0)) * snap() * 2.0;
+    double b = beatAt (e.position.x); // (anywhere: hold shift to snap it to the grid)
+    if (e.mods.isShiftDown()) b = std::round (b / (snap() * 2.0)) * snap() * 2.0;
     markerBeat = jlimit (0.0, sectionBeats(), b);
     // (while it plays, the song jumps there)
     if (proc.previewPlaying.load())
