@@ -1082,6 +1082,24 @@ private:
 };
 
 // VOCALS, "Your vocals": every vocal in the song (its chain, chop pads, auto-tune) and ways to add one
+// a tile to start something (an icon, a title, a line about it): the Vocals page's "add a vocal"
+class HubTile : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    HubTile (const lp::ui::Theme*& theme, int iconKind, juce::String title, juce::String sub) : th (theme), icon (iconKind), head (std::move (title)), line (std::move (sub)) {}
+    std::function<void()> onClick;
+    bool highlight = false; // (the main ones: a touch of the theme colour)
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent& e) override { if (isEnabled() && getLocalBounds().contains (e.getPosition()) && onClick) onClick(); }
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    static void drawIcon (juce::Graphics&, juce::Rectangle<float>, int kind, juce::Colour);
+private:
+    const lp::ui::Theme*& th;
+    int icon;
+    juce::String head, line;
+};
+
 class VocalsHub : public juce::Component
 {
 public:
@@ -1091,9 +1109,11 @@ public:
     void resized() override;
     void refresh(); // every frame while showing
     std::function<void (int)> onOpenInStudio;
+    std::function<void (int)> onGoTab;      // 1 draw & sing, 2 create with AI
+    std::function<bool()> voiceAvailable;   // the voice helper is set up (draw & sing, create with AI)
 
 private:
-    struct Row { int track = 0; juce::String name, source; juce::Rectangle<int> area;
+    struct Row { int track = 0; juce::String name, source; juce::File stem; juce::Rectangle<int> area;
                  juce::TextButton chain { "Vocal chain" }, chops { "Chop pads" }, tune { "Auto-tune" }, studio { "In Studio" }, stack { "Stack it..." }; };
     void makeStack (int track, int kind); // a double, a harmony or a choir from a vocal, as a new track
     juce::String working;                 // what's being made right now
@@ -1101,14 +1121,19 @@ private:
     std::vector<int> vocalTracks() const;
     void rebuild();
     void open (int which, int track); // 0 chain, 1 chop pads, 2 auto-tune
-    juce::Rectangle<int> listCard() const, addCard() const;
+    juce::Rectangle<int> listCard() const, sideCard() const, voiceCard() const;
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
     std::vector<std::unique_ptr<Row>> rows;
     juce::String shownKey;
-    juce::TextButton addChops { "+ Vocal chops from my samples" }, addMyChops { "+ Chops from my own vocal..." },
-                     addTuned { "+ My vocal, auto-tuned..." }, addTunedHard { "+ My vocal, hard-tuned..." };
-    juce::Rectangle<int> nextNote;
+    juce::OwnedArray<HubTile> tiles;    // draw & sing, create with AI, chops (2), tuned (2)
+    juce::ComboBox voiceList;           // (hidden: the voices, for the chip)
+    juce::StringArray shownVoices;
+    lp::ai::VoiceChip voiceChip { proc, th, voiceList };
+    // each vocal's loudness along the song (read in the background), for its card
+    struct Waves { std::mutex lock; std::map<juce::String, std::vector<float>> done; std::set<juce::String> pending; };
+    std::shared_ptr<Waves> waves = std::make_shared<Waves>();
+    const std::vector<float>* waveOf (const juce::File&);
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::Component> window;
 };

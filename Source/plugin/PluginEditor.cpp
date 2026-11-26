@@ -1899,6 +1899,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     drawSing.autoAdd = &autoAdd;
     addChildComponent (vocalTabs);
     vocalsHub.onOpenInStudio = [this] (int t) { trackEditor.select (t); setPage (Studio); };
+    vocalsHub.onGoTab = [this] (int t) { vocalTab = t; setPage (Voice); };
+    vocalsHub.voiceAvailable = [this] { return voiceOn(); };
     songView.onLayer = [this] (int first, int count)
     {
         Component::SafePointer<LivePlanetEditor> sp (this);
