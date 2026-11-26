@@ -102,6 +102,7 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
     };
     addAndMakeVisible (addVoiceBtn);
     for (auto* c : { &section, &voice }) { c->setWantsKeyboardFocus (false); addAndMakeVisible (*c); }
+    addAndMakeVisible (voiceChip);
     lyrics.setMultiLine (true, true);
     lyrics.setReturnKeyStartsNewLine (true);
     lyrics.setFont (font (14.0f));
@@ -703,6 +704,10 @@ void DrawSing::resized()
         addVoiceBtn.setBounds (vr.removeFromRight (60));
         vr.removeFromRight (8);
         voice.setBounds (vr);
+        // (the voice as a card, in place of the list and its "add": both are in the voice picker)
+        voiceChip.setBounds (voice.getBounds().getUnion (addVoiceBtn.getBounds()).withHeight (44).translated (0, -5));
+        voice.setVisible (false);
+        addVoiceBtn.setVisible (false);
     }
     s.removeFromTop (16);
     lyrics.setBounds (s.removeFromTop (150));

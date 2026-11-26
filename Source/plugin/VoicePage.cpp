@@ -194,6 +194,7 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
         });
     };
     demo = std::getenv ("LP_VOICE_DEMO") != nullptr;
+    addAndMakeVisible (voiceChip);
     startTimerHz (30);
 }
 
@@ -555,6 +556,9 @@ void VoicePage::resized()
         addVoice.setBounds (r1.removeFromRight (64));
         r1.removeFromRight (6);
         voice.setBounds (r1);
+        voiceChip.setBounds (voice.getBounds().getUnion (addVoice.getBounds()).withHeight (44).translated (0, -4));
+        voice.setVisible (false);
+        addVoice.setVisible (false);
         c.removeFromTop (30); // key / tempo / length, written in
         auto r3 = c.removeFromTop (92);
         auto segs = r3.removeFromLeft (r3.getWidth() / 2);

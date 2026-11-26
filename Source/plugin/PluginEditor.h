@@ -903,6 +903,59 @@ struct AutoAdd
 private:
     std::set<juce::String> handled, asked;
 };
+// The voices to sing with, as cards (like a singer library): search, tabs, art, tags; and more voices made
+// from a recording of you (deeper, brighter, airier, raspier, warmer). Opens over the whole window.
+class VoicePicker : public juce::Component
+{
+public:
+    VoicePicker (LivePlanetProcessor&, const lp::ui::Theme*& theme, juce::ComboBox& voices, std::function<void()> closed);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    static void drawArt (juce::Graphics&, juce::Rectangle<float>, const juce::String& voiceName);
+    struct About { juce::String title, tags; bool madeFromYours = false; };
+    static About about (const juce::String& voiceName);
+private:
+    juce::Rectangle<int> card() const;
+    juce::Rectangle<float> gridArea() const;
+    std::vector<juce::String> shownVoices() const;
+    void makeVariants (const juce::File& recording);
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    juce::ComboBox& voices;
+    std::function<void()> onClosed;
+    juce::TextEditor search;
+    juce::TextButton tabAll { "All voices" }, tabMade { "Made from yours" }, tabRec { "Recordings" },
+                     makeBtn { "Make voices from a recording..." }, addBtn { "Add a recording..." }, closeBtn { "Close" };
+    int tab = 0;
+    float scroll = 0.0f;
+    int hover = -1;
+    std::vector<std::pair<juce::Rectangle<float>, juce::String>> cards; // (where each card was drawn)
+    juce::String message;
+    std::unique_ptr<juce::FileChooser> chooser;
+    void showTabs();
+};
+
+// The voice in use, as a card-like chip (its art, name and tags): click it for every voice
+class VoiceChip : public juce::Component, private juce::Timer
+{
+public:
+    VoiceChip (LivePlanetProcessor& p, const lp::ui::Theme*& theme, juce::ComboBox& v) : proc (p), th (theme), voices (v) { startTimerHz (4); }
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+private:
+    void timerCallback() override { if (voices.getText() != shown) { shown = voices.getText(); repaint(); } }
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    juce::ComboBox& voices;
+    juce::String shown;
+    std::unique_ptr<VoicePicker> picker;
+};
+
 // "+ AI layer": an instrument the AI plays over the sections you picked
 class LayerPopup : public juce::Component
 {
@@ -1009,6 +1062,7 @@ private:
     juce::String message;
     juce::StringArray shownVoices;
     juce::ComboBox section, voice;
+    lp::ai::VoiceChip voiceChip { proc, th, voice }; // (the voice, as a card: click it for every voice)
     juce::TextEditor lyrics, wordBox;
     juce::TextButton fromLyrics { "Start from a melody" }, fillWords { "Fill in my words" }, clearAll { "Clear" },
                      prev { "<" }, next { ">" }, hear { "play section" }, sing { "Sing it in my voice" };
@@ -1119,6 +1173,7 @@ private:
     juce::TextEditor lyrics, style;
     juce::OwnedArray<juce::TextButton> tagChips, styleChips;
     juce::ComboBox section, voice;
+    lp::ai::VoiceChip voiceChip { proc, th, voice }; // (the voice, as a card: click it for every voice)
     juce::TextButton addVoice { "add" }, create { "Create vocal" }, stop { "Stop" };
     int takesN = 4, versionsN = 1;
     int minutesEstimate() const; // roughly how long the helper takes, from what's picked
