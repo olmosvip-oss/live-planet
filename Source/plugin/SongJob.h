@@ -9,6 +9,7 @@
 #include "../song/Song.h"
 #include "../song/SongFile.h"
 #include "../song/Chords.h"
+#include "../song/Transcribe.h"
 #include "../song/Hook.h"
 #include "../song/Arrange.h"
 #include "../song/Slice.h"
@@ -24,7 +25,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars, Create }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars, Create, Resound }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -76,6 +77,8 @@ public:
         juce::Array<juce::File> takes;  // the takes written together (empty = just this one)
         int take = -1;                  // which of them is open
         juce::String undoWhat;          // what "undo" takes back (empty: nothing to undo)
+        juce::String notice;            // a short word for the Studio after an edit ("keys now plays on..."), and when
+        juce::uint32 noticeAt = 0;
         int mixInsertAt = -1, mixInsertSerial = 0; // an undone delete: its mixer row comes back here
         int vocalSerial = 0;                   // goes up whenever a vocal chain changes (the studio plays it live)
         juce::File renamedFrom, renamedTo;     // the song's folder before and after its last rename (the same song: the mixer stays)
@@ -199,6 +202,22 @@ public:
         startIfNeeded();
     }
     juce::String pendingWords;
+
+    // "change its sound": the track's notes (read from its audio, if it's a loop) played on a one-shot from your
+    // library that matches what you typed ("a vibrant synth"); in its place, or as a new track next to it
+    void resound (int track, const juce::String& words, bool replace, int firstSection = -1, int sections = 0)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            pendingResound[track] = { words, replace };
+            pendingResoundRange[track] = { firstSection, sections };
+            edits.push_back ({ track, EditOp::Resound });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    std::map<int, std::pair<juce::String, bool>> pendingResound;
+    std::map<int, std::pair<int, int>> pendingResoundRange; // (only these sections; -1: the whole song)
 
     // "flip a sample": a loop of this kind from your library, in the song's key and tempo, chopped into something new,
     // over these sections (amount 1 light .. 3 heavy)
@@ -1049,6 +1068,7 @@ public:
         s.takes = status.takes;
         s.take = status.take;
         s.undoWhat = status.undoWhat;
+        s.notice = status.notice; s.noticeAt = status.noticeAt;
         s.mixInsertAt = status.mixInsertAt;
         s.mixInsertSerial = status.mixInsertSerial;
         s.stage = status.stage;
@@ -2410,6 +2430,142 @@ private:
     // adds a track: a loop of one kind from your library, in tempo and in key, placed where that kind fits
     std::array<int, 3> pendingFlip { 0, 0, 2 };
     // flipSections > 0: a flipped sample over those sections only (else the loop as it is, where a producer would put it)
+    void applyResound (int tr)
+    {
+        std::pair<juce::String, bool> req;
+        std::pair<int, int> range { -1, 0 };
+        lp::song::Song song;
+        std::vector<TrackInfo> tracks;
+        {
+            const juce::ScopedLock sl (lock);
+            req = pendingResound[tr];
+            if (auto r = pendingResoundRange.find (tr); r != pendingResoundRange.end()) range = r->second;
+            song = current;
+            tracks = status.tracks;
+        }
+        if (tr < 0 || tr >= (int) song.parts.size() || tr >= (int) tracks.size()) return;
+        const auto& was = song.parts[(size_t) tr];
+        using PK = lp::song::PartKind;
+        auto say = [this] (const juce::String& m)
+        {
+            const juce::ScopedLock sl (lock);
+            status.message = status.notice = m;
+            status.noticeAt = juce::Time::getMillisecondCounter();
+        };
+        // its notes: the ones it plays (a part Loopwright wrote), or read out of its audio (a loop)
+        std::vector<lp::song::Note> notes;
+        const bool written = ! was.notes.empty() && was.kind != PK::Drums && was.kind != PK::Loop && was.kind != PK::Fx;
+        // (only the sections picked are listened to: much quicker than the whole song)
+        double fromBeat = 0.0, toBeat = song.totalBars() * 4.0;
+        if (range.first >= 0 && range.second > 0 && range.first < (int) song.sections.size())
+        {
+            const auto& a = song.sections[(size_t) range.first];
+            const auto& b = song.sections[(size_t) juce::jlimit (0, (int) song.sections.size() - 1, range.first + range.second - 1)];
+            fromBeat = a.startBar * 4.0; toBeat = (b.startBar + b.bars) * 4.0;
+        }
+        if (written) notes = was.notes;
+        else
+        {
+            say ("listening to the notes in " + juce::String (was.name) + "...");
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (tracks[(size_t) tr].stem));
+            if (rd == nullptr) { say ("couldn't read " + juce::String (was.name)); return; }
+            const double secPerBeat = 60.0 / song.bpm;
+            const juce::int64 start = (juce::int64) (fromBeat * secPerBeat * rd->sampleRate);
+            const int len = (int) juce::jlimit<juce::int64> (0, rd->lengthInSamples - start, (juce::int64) ((toBeat - fromBeat + 1.0) * secPerBeat * rd->sampleRate));
+            juce::AudioBuffer<float> b (2, std::max (1, len));
+            b.clear();
+            rd->read (&b, 0, len, start, true, true);
+            std::vector<float> mono ((size_t) len);
+            for (int i = 0; i < len; ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+            lp::song::transcribe::Options o;
+            o.bpm = song.bpm; o.key = song.key; o.minor = song.minor;
+            const juce::String nm (was.name);
+            if (was.kind == PK::Bass || nm.containsIgnoreCase ("bass") || nm == "808") { o.lowest = 24; o.highest = 64; o.maxVoices = 1; }
+            notes = lp::song::transcribe::notesOf (mono.data(), len, rd->sampleRate, o);
+            for (auto& n : notes) n.beat += fromBeat; // (back to the song's time)
+        }
+        if (range.first >= 0 && range.second > 0 && range.second < (int) song.sections.size() && range.first < (int) song.sections.size())
+        {
+            // only the sections picked
+            const auto& a = song.sections[(size_t) range.first];
+            const auto& b = song.sections[(size_t) juce::jlimit (0, (int) song.sections.size() - 1, range.first + range.second - 1)];
+            const double from = a.startBar * 4.0, to = (b.startBar + b.bars) * 4.0;
+            notes.erase (std::remove_if (notes.begin(), notes.end(), [&] (const lp::song::Note& n) { return n.beat < from - 1e-6 || n.beat >= to - 1e-6; }), notes.end());
+            for (auto& n : notes) n.length = std::min (n.length, to - n.beat);
+        }
+        if (notes.empty()) { say ("couldn't hear any notes in " + juce::String (was.name) + (range.first >= 0 ? " there" : "") + " (drums and noise have none)"); return; }
+        // the sound: the one-shot in your library whose name matches your words best
+        refreshUsable();
+        const auto look = searchWords (req.first);
+        const auto kinds = kindsInWords (req.first);
+        juce::Random rng;
+        std::vector<std::pair<float, juce::String>> pool;
+        for (auto& e : usableLib.all())
+        {
+            if (e.kind != lp::song::SampleKind::OneShot) continue;
+            const auto name = (e.path + " " + e.pack).toLowerCase();
+            float score = rng.nextFloat();
+            for (auto& w : look) if (w.length() > 2 && name.contains (w)) score += 4.0f;
+            for (auto k : kinds) if (e.loop == k) score += 3.0f;
+            pool.push_back ({ score, e.path });
+        }
+        std::sort (pool.begin(), pool.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+        lp::song::Part part;
+        part.kind = PK::Melody;
+        part.notes = notes;
+        const bool fromLibrary = ! pool.empty() && pool.front().first >= 1.0f;
+        if (fromLibrary)
+        {
+            part.resound = true;
+            for (size_t i = 0; i < pool.size() && i < 6; ++i) part.candidates.add (pool[i].second);
+            part.samplePath = part.candidates[0];
+        }
+        else
+        {
+            // nothing in your library fits the words: one of Loopwright's own sounds that does
+            using S = lp::SoundId;
+            const auto& w = req.first;
+            auto has = [&w] (std::initializer_list<const char*> l) { for (auto* x : l) if (w.containsIgnoreCase (x)) return true; return false; };
+            part.sound = has ({ "rhodes", "electric piano", "epiano" }) ? S::Rhodes : has ({ "piano", "keys" }) ? S::FeltPiano
+                       : has ({ "organ" }) ? S::Organ : has ({ "string", "violin" }) ? S::Strings : has ({ "cello" }) ? S::Cello
+                       : has ({ "choir", "vocal", "voice" }) ? S::Choir : has ({ "harp" }) ? S::Harp : has ({ "kalimba" }) ? S::Kalimba
+                       : has ({ "marimba" }) ? S::Marimba : has ({ "vibe", "vibraphone" }) ? S::Vibes : has ({ "bell", "celesta", "music box" }) ? S::Celesta
+                       : has ({ "flute", "ocarina", "woodwind" }) ? S::Ocarina : has ({ "guitar", "nylon" }) ? S::Nylon
+                       : has ({ "melodica", "accordion" }) ? S::Melodica : has ({ "glass", "shimmer", "sparkle", "bright", "vibrant" }) ? S::Glass
+                       : S::Vapor; // (synth, pad, dreamy...)
+        }
+        juce::String nm = req.first.trim();
+        for (auto* lead : { "create ", "make ", "a ", "an " }) if (nm.startsWithIgnoreCase (lead)) nm = nm.substring ((int) strlen (lead)).trim();
+        if (nm.length() > 24) nm = nm.substring (0, 22).trim() + "..";
+        part.name = (nm.isEmpty() ? juce::String ("new sound") : nm).toStdString();
+        part.source = fromLibrary ? sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension()
+                                  : juce::String ("loopwright: ") + lp::profileFor (part.sound).name;
+        part.remix = "the notes of " + juce::String (was.name) + (written ? "" : " (read from its audio)") + ", played on this sound";
+        part.mixDb = was.mixDb;
+        part.silentBars = was.silentBars; part.barFrom = was.barFrom; part.splitBars = was.splitBars;
+        juce::AudioBuffer<float> buf;
+        if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
+        const int at = req.second ? tr : (int) song.parts.size();
+        if (! req.second && (int) song.parts.size() >= StudioPlayer::maxTracks) { say ("the song is full: remove a track first"); return; }
+        const auto stem = currentFolder.getChildFile ("stems").getChildFile (
+            juce::String (at + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (sound " + juce::String (++editCounter) + ").wav");
+        if (! writeStem (stem, buf, currentRs.sampleRate)) return;
+        if (req.second) song.parts[(size_t) tr] = part; else song.parts.push_back (part);
+        const juce::ScopedLock sl (lock);
+        current = song;
+        status.song = song;
+        if (req.second) status.tracks[(size_t) tr] = info (part, stem, song);
+        else status.tracks.push_back (info (part, stem, song));
+        status.message = status.notice = juce::String (was.name) + " now plays on "
+                       + (fromLibrary ? juce::File (part.samplePath).getFileNameWithoutExtension() : juce::String (lp::profileFor (part.sound).name))
+                       + " (" + juce::String ((int) notes.size()) + " notes)";
+        status.noticeAt = juce::Time::getMillisecondCounter();
+        ++status.version;
+        saveSession();
+    }
+
     // the loop kinds a word points to ("synth" -> synth, lead, pluck, pad)
     static std::vector<lp::song::LoopKind> kindsInWords (const juce::String& w)
     {
@@ -2540,6 +2696,8 @@ private:
             const juce::ScopedLock sl (lock);
             status.message = create ? "nothing in your library matches \"" + words + "\" at this tempo: try other words, or flip a sample"
                                     : juce::String ("no ") + part.name + " loops in your library fit this song's key and tempo";
+            status.notice = status.message;
+            status.noticeAt = juce::Time::getMillisecondCounter();
             return;
         }
         part.samplePath = part.candidates[0];
@@ -3253,6 +3411,7 @@ private:
             case EditOp::CopyBars: return on ("clip copy in");
             case EditOp::Flip: return "flip a sample";
             case EditOp::Create: return "create a layer";
+            case EditOp::Resound: return on ("sound of");
             case EditOp::Grains: return on ("grains on");
             case EditOp::Key: return "key change";
             case EditOp::Notes: return on ("notes of");
@@ -3751,6 +3910,7 @@ private:
             addInstrument ((lp::song::LoopKind) tr, f[0], f[1], f[2]);
             return;
         }
+        if (op == EditOp::Resound) { applyResound (tr); return; }
         if (op == EditOp::Create)
         {
             std::array<int, 3> f;
@@ -3991,10 +4151,18 @@ private:
             part.regionStart = r.first;
             part.regionBars = r.second >= part.loopBars ? 0 : r.second;
         }
+        if (op == EditOp::Swap && part.resound && part.candidates.size() > 1)
+        {
+            // another sound for the same notes
+            part.candidate = (part.candidate + 1) % part.candidates.size();
+            part.samplePath = part.candidates[part.candidate];
+            part.source = sourceLabel (part.samplePath) + juce::File (part.samplePath).getFileNameWithoutExtension();
+        }
         if (op == EditOp::Swap && part.flipSeed != 0) part.flipSeed = (part.flipSeed * 1664525u + 1013904223u) | 1u; // (a flip: chopped a new way too)
         if (op == EditOp::PitchUp) part.pitchSemis = std::min (12, part.pitchSemis + 1);
         if (op == EditOp::PitchDown) part.pitchSemis = std::max (-12, part.pitchSemis - 1);
-        if (op == EditOp::Swap && ((part.kind == PK::Melody && part.name == "hook" && part.candidates.size() > 1 && part.variant % 2 == 1)
+        if (op == EditOp::Swap && part.resound) {} // (done above: the same notes on another sound)
+        else if (op == EditOp::Swap && ((part.kind == PK::Melody && part.name == "hook" && part.candidates.size() > 1 && part.variant % 2 == 1)
                                    || (part.kind == PK::Bass && part.name == "808" && part.candidates.size() > 1)))
         {
             // another sound playing the same notes

@@ -1231,6 +1231,35 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
         const int n = std::min (v.getNumSamples(), total);
         for (int i = 0; i < n; ++i) { L[i] += v.getSample (0, i); R[i] += v.getSample (1, i); }
     }
+    else if (part.resound && part.samplePath.isNotEmpty())
+    {
+        // "change its sound": every note (chords too) plays the one-shot, moved from its own pitch to the note's;
+        // held for the note, then let go over a short release
+        auto src = loadAudio (part.samplePath, sr);
+        const int n = src.getNumSamples();
+        if (n > 64)
+        {
+            const double root = rootNoteOf (src, sr, 60.0, part.samplePath);
+            const int rel = (int) (0.09 * sr), atk = (int) (0.003 * sr);
+            for (const auto& note : part.notes)
+            {
+                const long s0 = (long) (note.beat * spb), s1 = (long) ((note.beat + note.length) * spb);
+                const double ratio = std::pow (2.0, (note.pitch - root) / 12.0);
+                const float g = 0.55f * note.velocity;
+                double pos = 0.0;
+                for (long i = std::max (0L, s0); i < s1 + rel && i < total; ++i, pos += ratio)
+                {
+                    const int i0 = (int) pos;
+                    if (i0 + 1 >= n) break;
+                    const float f = (float) (pos - i0);
+                    float env = std::min (1.0f, (float) (i - s0) / (float) std::max (1, atk));
+                    if (i >= s1) env *= 1.0f - (float) (i - s1) / (float) rel;
+                    L[i] += (src.getSample (0, i0) + (src.getSample (0, i0 + 1) - src.getSample (0, i0)) * f) * g * env;
+                    R[i] += (src.getSample (1, i0) + (src.getSample (1, i0 + 1) - src.getSample (1, i0)) * f) * g * env;
+                }
+            }
+        }
+    }
     else if (part.samplePath.isNotEmpty() && (part.kind == PartKind::Bass || (part.kind == PartKind::Melody && part.name == "hook")))
     {
         // a sound from your library played as notes (an 808, a pluck, keys): each note re-pitches it

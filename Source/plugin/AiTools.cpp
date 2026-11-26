@@ -237,6 +237,25 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
         addAndMakeVisible (*b);
     }
     modeCreate.onClick = [this] { setMode (0); };
+    modeAi.setVisible (false); // (AI audio: retired here; generate sound plays real samples)
+    {
+        // whose notes the new sound plays: a part of the song with notes (keys, chords, a lead...), or a new part
+        const auto st = proc.songJob.getStatus();
+        notesFrom.addItem ("a new part that follows your chords", 1);
+        int pick = 1;
+        for (int i = 0; i < (int) st.tracks.size(); ++i)
+        {
+            const String n = st.tracks[(size_t) i].name;
+            if (n.containsIgnoreCase ("drum") || n.containsIgnoreCase ("perc") || n.containsIgnoreCase ("transition") || n.containsIgnoreCase ("fx")
+                || n.containsIgnoreCase ("vocal")) continue;
+            notesFrom.addItem ("the notes of " + n, 100 + i);
+            if (pick == 1 && (n.containsIgnoreCase ("key") || n.containsIgnoreCase ("piano") || n.containsIgnoreCase ("chord") || n.containsIgnoreCase ("rhodes")))
+                pick = 100 + i;
+        }
+        notesFrom.setSelectedId (pick, dontSendNotification);
+        notesFrom.onChange = [this] { repaint(); };
+        addAndMakeVisible (notesFrom);
+    }
     modeFlip.onClick = [this] { setMode (1); };
     modeAi.onClick = [this] { setMode (2); };
     amtLight.onClick = [this] { flipAmount = 1; showType(); };
@@ -261,6 +280,12 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
     describe.onReturnKey = [this] { start(); };
     setMode (0);
     cancel.onClick = [this] { if (onClosed) onClosed(); };
+}
+
+void LayerPopup::useNotesOf (int track)
+{
+    if (notesFrom.indexOfItemId (100 + track) >= 0) notesFrom.setSelectedId (100 + track, dontSendNotification);
+    setMode (0);
 }
 
 void LayerPopup::setMode (int m)
@@ -313,8 +338,10 @@ void LayerPopup::showType()
             }
     }
     for (auto* b : { &amtLight, &amtMed, &amtHeavy }) b->setVisible (mode == 1);
+    notesFrom.setVisible (mode == 0);
+    for (auto* c : chips) c->setVisible (mode != 0); // (generate sound: your words say what it is)
     describe.setVisible (mode != 1);
-    go.setButtonText (mode == 0 ? "Create" : mode == 1 ? "Flip it" : "Generate");
+    go.setButtonText (mode == 0 ? "Generate sound" : mode == 1 ? "Flip it" : "Generate");
 }
 
 void LayerPopup::pickKind (TextButton* b)
@@ -330,14 +357,12 @@ void LayerPopup::start()
     if (! st.haveSong || firstSection < 0 || firstSection + sectionCount > (int) st.song.sections.size()) return;
     if (mode == 0)
     {
-        // what you typed (and the instrument, if you picked one): the best match in your library, following the chords
-        String words = describe.getText().trim();
-        String label;
-        for (auto* c : chips) if (c->getProperties()["id"].toString() == kind) label = c->getProperties().getWithDefault ("label", c->getButtonText()).toString();
-        if (words.isEmpty() && label.isEmpty()) { message = "Type what you want (like \"a vibrant colorful synth\"), or pick an instrument."; repaint(); return; }
-        if (words.isEmpty()) words = label.toLowerCase();
-        const auto hint = kind.isNotEmpty() ? flipKindsFor (kind).front() : lp::song::LoopKind::None;
-        proc.songJob.createLayer (words, hint, firstSection, sectionCount);
+        // what you typed: a sound from your library that fits it, playing a part's notes (or a new part on your chords)
+        const String words = describe.getText().trim();
+        if (words.isEmpty()) { message = "Type what it should sound like, e.g. \"a vibrant colorful synth\"."; repaint(); describe.grabKeyboardFocus(); return; }
+        const int id = notesFrom.getSelectedId();
+        if (id >= 100) proc.songJob.resound (id - 100, words, false, firstSection, sectionCount);
+        else proc.songJob.createLayer (words, lp::song::LoopKind::None, firstSection, sectionCount);
         if (onClosed) onClosed();
         return;
     }
@@ -385,18 +410,23 @@ void LayerPopup::resized()
     c.removeFromTop (54);
     {
         auto t = c.removeFromTop (32);
-        modeCreate.setBounds (t.removeFromLeft (110));
+        modeCreate.setBounds (t.removeFromLeft (150));
         t.removeFromLeft (8);
         modeFlip.setBounds (t.removeFromLeft (140));
-        t.removeFromLeft (8);
-        modeAi.setBounds (t.removeFromLeft (110));
-        c.removeFromTop (12);
+        c.removeFromTop (14);
     }
     if (mode == 0)
     {
-        // what you want, typed (the main thing here); the instruments below are only a hint
-        describe.setBounds (c.removeFromTop (40));
-        c.removeFromTop (14);
+        // what it should sound like (typed), and whose notes it plays
+        describe.setBounds (c.removeFromTop (42));
+        c.removeFromTop (12);
+        notesFrom.setBounds (c.removeFromTop (34));
+        c.removeFromTop (18);
+        auto bt = c.removeFromTop (40);
+        cancel.setBounds (bt.removeFromRight (100));
+        bt.removeFromRight (10);
+        go.setBounds (bt);
+        return;
     }
     else if (mode == 1)
     {
@@ -434,7 +464,7 @@ void LayerPopup::resized()
     go.setBounds (bt);
 }
 
-Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (600, mode == 0 ? 320 : mode == 1 ? 310 : 400); }
+Rectangle<int> LayerPopup::cardBounds() const { return getLocalBounds().withSizeKeepingCentre (600, mode == 0 ? 286 : mode == 1 ? 310 : 400); }
 
 void LayerPopup::setBackdrop (Image img)
 {
@@ -508,7 +538,8 @@ void LayerPopup::paint (Graphics& g)
         where << (where.isEmpty() ? "" : " + ") << String (st.song.sections[(size_t) i].name);
     g.setFont (font (12.0f));
     g.setColour (th->inkDim);
-    g.drawText (mode == 0 ? "A sample from your library that matches your words, over " + where + ", in time and following your chords."
+    g.drawText (mode == 0 ? (notesFrom.getSelectedId() >= 100 ? notesFrom.getText().replace ("the notes of", "The notes of") + " over " + where + ", played on a sound from your library that fits your words."
+                                                             : "A sound from your library that fits your words, over " + where + ", in time and following your chords.")
                 : mode == 1 ? "A loop from your library flipped over " + where + ": in key, in time, chopped so it's yours."
                             : "New audio made by the AI over " + where + ", in key and in time (needs the voice helper).", in.removeFromTop (20.0f), Justification::centredLeft, true);
     if (message.isNotEmpty())

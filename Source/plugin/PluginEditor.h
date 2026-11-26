@@ -664,6 +664,10 @@ private:
     juce::Rectangle<float> rewriteBounds (int numTracks) const;
     bool hoverRewrite = false;
     void askRemove (int track);
+    void askResound (int track) { if (onResound) onResound (track); } // "change its sound": the layer window, with its notes
+public:
+    std::function<void (int)> onResound;
+private:
     juce::Point<float> lastMouse;
     bool hoverRemove = false;
     juce::Rectangle<float> rowBounds (int row) const;
@@ -908,8 +912,10 @@ public:
     void resized() override;
     void mouseDown (const juce::MouseEvent& e) override { if (! cardBounds().contains (e.getPosition()) && onClosed) onClosed(); }
     void setBackdrop (juce::Image img); // what's behind it (blurred, seen through the glass)
+    void useNotesOf (int track);        // "generate sound" with this track's notes (right-click a track: change its sound)
 private:
     juce::Image backdrop;
+    juce::ComboBox notesFrom;           // generate sound: whose notes it plays (or a new part following the chords)
     juce::Rectangle<int> cardBounds() const;
     void pickKind (juce::TextButton*);
     void start();
@@ -925,7 +931,7 @@ private:
     int mode = 0; // 0 create (a sample matching your words, following the chords), 1 flip a sample, 2 AI audio
     int flipAmount = 2;
     void setMode (int m);
-    juce::TextButton modeCreate { "Create" }, modeFlip { "Flip a sample" }, modeAi { "AI audio" }, amtLight { "Light flip" }, amtMed { "Medium" }, amtHeavy { "Heavy" };
+    juce::TextButton modeCreate { "Generate sound" }, modeFlip { "Flip a sample" }, modeAi { "AI audio" }, amtLight { "Light flip" }, amtMed { "Medium" }, amtHeavy { "Heavy" };
     void showType();
     juce::TextEditor describe;
     juce::TextButton go { "Generate" }, cancel { "Cancel" };

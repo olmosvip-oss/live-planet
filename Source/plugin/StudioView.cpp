@@ -910,6 +910,7 @@ void StudioView::mouseDown (const MouseEvent& e)
                 m.addSectionHeader (String (st.tracks[(size_t) i].name).toUpperCase() + (sc >= 0 ? String::fromUTF8 ("  \xc2\xb7  ") + String (st.song.sections[(size_t) sc].name).toUpperCase() : String()));
                 m.addItem (1, pickedClips.size() > 1 ? "Delete " + String ((int) pickedClips.size()) + " clips" : String ("Delete this clip"), ! pickedClips.empty());
                 m.addItem (2, "Bring it back (the bars deleted here)", anyGone);
+                m.addItem (6, "Change the track's sound...   (same notes)");
                 m.addItem (4, "Cut here, at bar " + String (cutBar + 1) + "   (cmd+E)", canCut);
                 m.addItem (5, "Join with the next clip", canJoin);
                 {
@@ -934,6 +935,7 @@ void StudioView::mouseDown (const MouseEvent& e)
                 m.showMenuAsync (PopupMenu::Options(), [sp, i, sc, cutBar, joinAt] (int r)
                 {
                     if (sp == nullptr) return;
+                    if (r == 6) sp->askResound (i);
                     if (r == 4) sp->splitClipAt (i, cutBar);
                     else if (r == 5 && joinAt >= 0) { sp->proc.songJob.setSplit (i, joinAt, false); sp->repaint(); }
                     if (r == 1) sp->deletePicked();
@@ -979,6 +981,7 @@ void StudioView::mouseDown (const MouseEvent& e)
             m.addSectionHeader (String (tr.name).toUpperCase());
             m.addItem (2, "Swap: another sound for this part", tr.canSwap);
             m.addItem (3, tr.reversed ? "Play it forwards again" : "Reverse it", tr.canReverse);
+            m.addItem (6, "Change its sound...   (same notes: \"a vibrant synth\")");
             m.addItem (4, "Pitch up a semitone");
             m.addItem (5, "Pitch down a semitone");
             {
@@ -1003,6 +1006,7 @@ void StudioView::mouseDown (const MouseEvent& e)
             {
                 if (r == 99) proc.songJob.setColour (i, 0);
                 else if (r >= 100 && r < 110) proc.songJob.setColour (i, trackColour (r - 100).getARGB());
+                if (r == 6) askResound (i);
                 if (r == 1) askRemove (i);
                 else if (r == 2) proc.songJob.editTrack (i, SongJob::EditOp::Swap);
                 else if (r == 3) proc.songJob.editTrack (i, SongJob::EditOp::Reverse);

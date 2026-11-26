@@ -65,6 +65,7 @@ inline juce::var partToVar (const Part& p)
         o->setProperty ("slotShift", ss);
     }
     o->setProperty ("colour", (juce::int64) p.colour);
+    o->setProperty ("resound", p.resound);
     o->setProperty ("flipSeed", (int) p.flipSeed); o->setProperty ("flipAmount", p.flipAmount);
     juce::Array<juce::var> fx;
     for (auto& h : p.fxHits) fx.add (juce::Array<juce::var> { h.path, h.beat, h.peakOnBeat, h.gainDb });
@@ -146,6 +147,7 @@ inline Part partFromVar (const juce::var& v)
         for (size_t i = 0; i + 1 < ss.size(); i += 2) p.slotShift[ss[i]] = ss[i + 1];
     }
     p.colour = (juce::uint32) (juce::int64) v["colour"];
+    p.resound = (bool) v["resound"];
     p.flipSeed = (juce::uint32) (int) v["flipSeed"]; p.flipAmount = v.getProperty ("flipAmount", 2);
     if (auto* a = v["fxHits"].getArray()) for (auto& e : *a) p.fxHits.push_back ({ e[0].toString(), (double) e[1], (bool) e[2], (float) e[3] });
     p.mixDb = v["mixDb"]; p.regionStart = v["regionStart"]; p.regionBars = v["regionBars"];

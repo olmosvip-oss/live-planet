@@ -1911,7 +1911,21 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         layerPopup->setBounds (getLocalBounds());
         layerPopup->toFront (true);
     };
-    studioView.statusText = [this] { return autoAdd.status; };
+    // right-click a track, "change its sound": the layer window on "generate sound", playing that track's notes
+    studioView.onResound = [this] (int track)
+    {
+        const int n = (int) proc.songJob.getStatus().song.sections.size();
+        if (n <= 0 || ! songView.onLayer) return;
+        songView.onLayer (0, n);
+        if (layerPopup != nullptr) layerPopup->useNotesOf (track);
+    };
+    studioView.statusText = [this]
+    {
+        if (autoAdd.status.isNotEmpty()) return autoAdd.status;
+        // (a word after an edit, for a few seconds)
+        const auto st = proc.songJob.getStatus();
+        return st.notice.isNotEmpty() && Time::getMillisecondCounter() - st.noticeAt < 7000 ? st.notice : String();
+    };
     studioView.ghosts = [this]
     {
         std::vector<StudioView::Ghost> g;
