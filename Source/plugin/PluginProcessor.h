@@ -59,6 +59,25 @@ public:
     // record your voice straight in (the mic input), then it's chopped like a file
     void startRecording();
     int stopRecording (juce::String& message);
+    // the notes you play (your MIDI keyboard, or Ableton's computer keys) while Draw & sing records a melody:
+    // when (in samples from the start), which note, on / off. Read with takeMidiTake() once it stops.
+    struct TakeNote { juce::int64 pos = 0; int note = 0; float vel = 0.0f; bool on = false; };
+    void startMidiTake() { midiTakeReset = true; midiTaking = true; }
+    std::vector<TakeNote> takeMidiTake()
+    {
+        midiTaking = false;
+        std::vector<TakeNote> out;
+        int s1, n1, s2, n2;
+        midiTakeFifo.prepareToRead (midiTakeFifo.getNumReady(), s1, n1, s2, n2);
+        for (int i = 0; i < n1; ++i) out.push_back (midiTakeBuf[(size_t) (s1 + i)]);
+        for (int i = 0; i < n2; ++i) out.push_back (midiTakeBuf[(size_t) (s2 + i)]);
+        midiTakeFifo.finishedRead (n1 + n2);
+        return out;
+    }
+    std::atomic<bool> midiTaking { false }, midiTakeReset { false };
+    juce::int64 midiTakePos = 0;               // (audio thread)
+    juce::AbstractFifo midiTakeFifo { 4096 };
+    std::array<TakeNote, 4096> midiTakeBuf {};
     std::atomic<bool> recording { false };
     std::atomic<int> recPos { 0 };
     std::atomic<float> inPeak { 0.0f };

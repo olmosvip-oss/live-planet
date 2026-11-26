@@ -1097,7 +1097,7 @@ private:
 }
 
 // VOCALS, "Draw & sing": a piano roll over a section; notes with words, sung in your voice by the voice helper
-class DrawSing : public juce::Component
+class DrawSing : public juce::Component, public juce::FileDragAndDropTarget
 {
 public:
     DrawSing (LivePlanetProcessor&, const lp::ui::Theme*& theme);
@@ -1120,6 +1120,15 @@ private:
     juce::TextButton octUp { "oct +" }, octDown { "oct -" }, holdBtn { "hold word" }, vibBtn { "vibrato" }, slideBtn { "slide in" }, splitBtn { "split" };
     void splitNote();                          // the selected note in two (the second keeps singing its word)
     void showWordEditor (int note);            // double-click a word: its text, its volume, how long it rings on
+    void saveSection();                        // (each section's notes, words and sung take, kept with the song)
+    void useMelody (std::vector<Note> list, const juce::String& how); // (played, sung or dropped: it becomes the notes)
+public:
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int, int) override; // a recording of you humming it: the melody, from the marker
+private:
+    void restoreSection();
+    juce::File stateFile() const;
+    juce::String savedKey;
 public:
     void openSection (const juce::String& sectionName); // (from the Studio: a drawn vocal double-clicked)
 private:

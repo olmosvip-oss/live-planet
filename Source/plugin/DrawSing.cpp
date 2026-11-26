@@ -188,7 +188,7 @@ struct DrawSing::Voiced
 
 DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme)
 {
-    section.onChange = [this] { notes.clear(); viewStart = 0.0; markerBeat = 0.0; selectedNote = -1; voiced = nullptr; leave(); repaint(); };
+    section.onChange = [this] { notes.clear(); viewStart = 0.0; markerBeat = 0.0; lastToken.clear(); loadedToken.clear(); restoreSection(); selectedNote = -1; voiced = nullptr; leave(); repaint(); };
     voice.onChange = [this] { if (voice.getText().isNotEmpty()) lp::setSetting ("voice", voice.getText()); }; // (remembered for every page)
     addVoiceBtn.setTooltip ("Add your voice: 10 to 30 seconds of you singing or rapping, clean, with no music (a WAV). It stays on this computer "
                             "and is picked for you from then on.");
@@ -332,6 +332,7 @@ void DrawSing::refresh()
             section.addItem (n + "   (bars " + String (s.startBar + 1) + " to " + String (s.startBar + s.bars) + ")", i + 1);
         }
         if (section.getNumItems() > 0) section.setSelectedItemIndex (keep >= 0 && keep < section.getNumItems() ? keep : pick, dontSendNotification);
+        if (notes.empty()) restoreSection(); // (opened again: what you drew here last time)
     }
     const auto snap = proc.voiceClient.snapshot();
     if (const auto voices = lp::voice::usableVoices (snap.voices); voices != shownVoices)
@@ -401,8 +402,16 @@ void DrawSing::refresh()
         if (c >= 0 && c < (int) st3.song.sections.size())
             for (int i = 0; i < (int) st3.tracks.size(); ++i)
                 if (String (st3.tracks[(size_t) i].name) == "vocal (drawn, " + String (st3.song.sections[(size_t) c].name) + ")") drawn = i;
+        if (! proc.hasVoicePreview()) drawn = -1; // (until your voice is ready here, the track itself plays: never silence)
         if (proc.liveTrack.load() < 0 && proc.studio.skipTrack.load() != drawn) proc.studio.skipTrack = drawn;
     }
+    // what you drew is kept with the song (each section's notes, words and sung take), a moment after each change
+    if (drag == Drag::None && ! wordBox.isVisible())
+        if (const auto k = noteKey() + "|" + lyrics.getText() + "|" + lastToken; k != savedKey && Time::getMillisecondCounter() - changedAt > 600)
+        {
+            savedKey = k;
+            saveSection();
+        }
     prev.setEnabled (viewStart > 0.0);
     next.setEnabled (viewStart + beatsShown < sectionBeats());
     zoomIn.setEnabled (beatsShown > 2.0);
@@ -549,23 +558,60 @@ void DrawSing::toggleRecord()
         if (! st.haveSong) { message = "Write a song first"; repaint(); return; }
         const double bpm = jmax (40.0, st.song.bpm);
         recStartSec = jmax (0.0, sectionStartSeconds() - 240.0 / bpm); // (a bar to count in)
-        proc.startRecording();
+        if (proc.canRecordMic()) proc.startRecording();
+        proc.startMidiTake(); // (the notes you play on your keys count too)
         proc.previewPos = recStartSec * StudioPlayer::fileRate;
         proc.previewPlaying = true;
         hear.setButtonText ("stop");
         recordingMelody = true;
         recBtn.setButtonText ("stop recording");
-        recBtn.getProperties().set ("warn", true);
-        message = "Recording: sing or hum your melody when the section starts (after a bar)";
+        recBtn.getProperties().set ("primary", true);
+        recBtn.repaint();
+        message = proc.canRecordMic() ? "Recording: sing, hum or play your melody when the section starts (after a bar)"
+                                      : "Recording: play your melody on your keys (your MIDI keyboard, or Ableton's computer keys on an armed track) "
+                                        "when the section starts. To sing it instead: record it in Ableton and drag the clip onto the notes.";
         repaint();
         return;
     }
     recordingMelody = false;
     recBtn.setButtonText ("record melody");
-    recBtn.getProperties().set ("warn", false);
+    recBtn.getProperties().set ("primary", false);
+    recBtn.repaint();
     proc.recording = false;
     proc.previewPlaying = false;
     hear.setButtonText ("play section");
+    // the notes you played on your keys, if you did: they're the melody, as played
+    {
+        const auto played = proc.takeMidiTake();
+        const double rateK = jmax (8000.0, proc.getSampleRate()), bpmK = jmax (40.0, st.song.bpm);
+        const double offset = (recStartSec - sectionStartSeconds()) * bpmK / 60.0;
+        std::vector<Note> list;
+        std::map<int, size_t> open;
+        for (auto& r : played)
+        {
+            const double beat = r.pos / rateK * bpmK / 60.0 + offset;
+            if (r.on)
+            {
+                Note n;
+                n.beat = beat; n.len = 0.25; n.pitch = r.note;
+                list.push_back (n);
+                open[r.note] = list.size() - 1;
+            }
+            else if (auto it = open.find (r.note); it != open.end())
+            {
+                list[it->second].len = jmax (1.0 / 32.0, beat - list[it->second].beat);
+                open.erase (it);
+            }
+        }
+        if (! list.empty()) { useMelody (std::move (list), "you played"); return; }
+    }
+    if (! proc.canRecordMic())
+    {
+        message = "Nothing came in: play the melody on your keys while it records (in Ableton: arm Loopwright's track, or turn on its "
+                  "computer keys with M), or record yourself singing it in Ableton and drag the clip onto the notes.";
+        repaint();
+        return;
+    }
     const int len = proc.recPos.load();
     const double rate = proc.recRate;
     if (len < (int) (rate * 1.0)) { message = "Too short: let it record at least a bar of the section"; repaint(); return; }
@@ -591,35 +637,13 @@ void DrawSing::toggleRecord()
     Thread::launch ([self, mono = std::move (mono), rate, o, offsetBeats, secBeats]
     {
         auto heard = lp::song::transcribe::melodyOf (mono.data(), (int) mono.size(), rate, o);
-        MessageManager::callAsync ([self, heard, offsetBeats, secBeats]
+        ignoreUnused (secBeats);
+        MessageManager::callAsync ([self, heard, offsetBeats]
         {
             if (self == nullptr) return;
-            self->notes.clear();
-            for (auto& h : heard)
-            {
-                Note n;
-                n.beat = h.beat + offsetBeats;
-                n.len = h.length;
-                if (n.beat < 0.0 || n.beat >= secBeats) continue;
-                n.len = jmin (n.len, secBeats - n.beat);
-                n.pitch = h.pitch;
-                while (n.pitch < kMin) n.pitch += 12;
-                while (n.pitch > kMax) n.pitch -= 12;
-                n.word = "la";
-                n.id = self->nextId++;
-                self->notes.push_back (n);
-            }
-            if (self->notes.empty()) { self->message = "Couldn't hear a melody: sing a little louder, closer to the mic"; self->repaint(); return; }
-            const bool words = self->lyricWords().size() > 0;
-            if (words) self->fillFromLyrics();
-            int hi = kMin + kRows - 1;
-            for (auto& n : self->notes) hi = std::max (hi, n.pitch + 4);
-            self->top = jlimit (kMin + kRows - 1, kMax, hi);
-            self->viewStart = 0.0;
-            self->autoPaused = true;
-            if (self->message.isEmpty() || ! words)
-                self->message = String ((int) self->notes.size()) + " notes from your melody" + (words ? ", with your words on them" : ": type your words and press Fill in my words");
-            self->repaint();
+            std::vector<Note> list;
+            for (auto& h : heard) { Note n; n.beat = h.beat + offsetBeats; n.len = h.length; n.pitch = h.pitch; list.push_back (n); }
+            self->useMelody (std::move (list), "you sang");
         });
     });
 }
@@ -1480,6 +1504,7 @@ void DrawSing::previewNote (int index)
 
 void DrawSing::leave()
 {
+    voicedKey.clear(); // (back here: your voice is rendered and heard again straight away)
     proc.setVoicePreview (nullptr);
     if (proc.liveTrack.load() < 0) proc.studio.skipTrack = -1;
     proc.guideOn = false;
@@ -1501,4 +1526,172 @@ void DrawSing::openSection (const String& sectionName)
             repaint();
             return;
         }
+}
+
+// ---- kept with the song: song folder / voice / draw-sing.json, one entry per section
+namespace
+{
+var noteToVar (const lp::song::lyricmelody::Note& n)
+{
+    auto* o = new DynamicObject();
+    o->setProperty ("b", n.beat); o->setProperty ("l", n.len); o->setProperty ("p", n.pitch); o->setProperty ("w", n.word);
+    o->setProperty ("s", n.slur); o->setProperty ("v", n.vibrato); o->setProperty ("sl", n.slide); o->setProperty ("id", n.id);
+    o->setProperty ("g", n.gainDb); o->setProperty ("r", n.ringMs);
+    return var (o);
+}
+lp::song::lyricmelody::Note noteFromVar (const var& v)
+{
+    lp::song::lyricmelody::Note n;
+    n.beat = v["b"]; n.len = v["l"]; n.pitch = v["p"]; n.word = v["w"].toString(); n.slur = v["s"]; n.vibrato = v["v"]; n.slide = v["sl"];
+    n.id = v["id"]; n.gainDb = v.getProperty ("g", 0.0f); n.ringMs = v.getProperty ("r", -1.0f);
+    return n;
+}
+Array<var> notesToVar (const std::vector<lp::song::lyricmelody::Note>& list) { Array<var> a; for (auto& n : list) a.add (noteToVar (n)); return a; }
+std::vector<lp::song::lyricmelody::Note> notesFromVar (const var& v)
+{
+    std::vector<lp::song::lyricmelody::Note> out;
+    if (auto* a = v.getArray()) for (auto& e : *a) out.push_back (noteFromVar (e));
+    return out;
+}
+}
+
+File DrawSing::stateFile() const
+{
+    const auto st = proc.songJob.getStatus();
+    return st.haveSong ? st.files.folder.getChildFile ("voice").getChildFile ("draw-sing.json") : File();
+}
+
+void DrawSing::saveSection()
+{
+    const auto f = stateFile();
+    const auto st = proc.songJob.getStatus();
+    const int c = section.getSelectedItemIndex();
+    if (f == File() || c < 0 || c >= (int) st.song.sections.size()) return;
+    var all = JSON::parse (f);
+    if (! all.isObject()) all = var (new DynamicObject());
+    auto* o = new DynamicObject();
+    o->setProperty ("notes", notesToVar (notes));
+    o->setProperty ("lyrics", lyrics.getText());
+    o->setProperty ("nextId", nextId);
+    if (lastToken.isNotEmpty())
+        if (auto t = proc.drawnFiles.find (lastToken); t != proc.drawnFiles.end())
+            if (auto sn = sentNotes.find (lastToken); sn != sentNotes.end())
+            {
+                o->setProperty ("token", lastToken);
+                o->setProperty ("take", t->second.getFullPathName());
+                o->setProperty ("sung", notesToVar (sn->second));
+            }
+    all.getDynamicObject()->setProperty (String (st.song.sections[(size_t) c].name), var (o));
+    f.getParentDirectory().createDirectory();
+    f.replaceWithText (JSON::toString (all));
+}
+
+void DrawSing::restoreSection()
+{
+    const auto f = stateFile();
+    const auto st = proc.songJob.getStatus();
+    const int c = section.getSelectedItemIndex();
+    if (f == File() || ! f.existsAsFile() || c < 0 || c >= (int) st.song.sections.size()) return;
+    const auto e = JSON::parse (f)[Identifier (String (st.song.sections[(size_t) c].name))];
+    if (! e.isObject()) return;
+    notes = notesFromVar (e["notes"]);
+    nextId = jmax (nextId, (int) e.getProperty ("nextId", 0));
+    for (auto& n : notes) nextId = jmax (nextId, n.id + 1);
+    if (const auto words = e["lyrics"].toString(); words.isNotEmpty() && lyrics.getText().trim().isEmpty()) lyrics.setText (words, false);
+    // its sung take: your voice comes back with it (no singing again)
+    const auto token = e["token"].toString();
+    const File take (e["take"].toString());
+    if (token.isNotEmpty() && take.existsAsFile())
+    {
+        sentNotes[token] = notesFromVar (e["sung"]);
+        proc.drawnFiles[token] = take;
+        lastToken = token;
+        loadedToken.clear(); // (loaded again, for this section)
+        sentKey = bakedKey = noteKey(); // (what's there is what's in the track: nothing to sing or bake)
+    }
+    selectedNote = -1;
+    savedKey = noteKey() + "|" + lyrics.getText() + "|" + lastToken;
+    autoPaused = true; // (opened again: nothing is sung by itself until you change something)
+    int hi = kMin + kRows - 1;
+    for (auto& n : notes) hi = std::max (hi, n.pitch + 4);
+    top = jlimit (kMin + kRows - 1, kMax, hi);
+    repaint();
+}
+
+// a melody you played, sang or dropped in (beats from the section's start): it becomes the notes, your words go on them
+void DrawSing::useMelody (std::vector<Note> list, const String& how)
+{
+    const double secBeats = sectionBeats();
+    notes.clear();
+    for (auto n : list)
+    {
+        if (n.beat < 0.0 || n.beat >= secBeats) continue;
+        n.len = jmin (n.len, secBeats - n.beat);
+        while (n.pitch < kMin) n.pitch += 12;
+        while (n.pitch > kMax) n.pitch -= 12;
+        n.word = "la";
+        n.id = nextId++;
+        notes.push_back (n);
+    }
+    std::sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b) { return a.beat < b.beat; });
+    if (notes.empty()) { message = "Couldn't find a melody in what " + how + " (inside the section): try again, a little louder or closer"; repaint(); return; }
+    message.clear();
+    const bool words = lyricWords().size() > 0;
+    if (words) fillFromLyrics();
+    int hi = kMin + kRows - 1;
+    for (auto& n : notes) hi = std::max (hi, n.pitch + 4);
+    top = jlimit (kMin + kRows - 1, kMax, hi);
+    viewStart = 0.0;
+    autoPaused = true;
+    selectedNote = -1;
+    if (message.isEmpty() || ! words)
+        message = String ((int) notes.size()) + " notes from the melody " + how + (words ? ", with your words on them" : ": type your words and press Fill in my words");
+    repaint();
+}
+
+// a recording of you singing or humming the melody (from Ableton, or anywhere), dropped on the notes: it starts at the marker
+bool DrawSing::isInterestedInFileDrag (const StringArray& files)
+{
+    for (auto& f : files) if (File (f).hasFileExtension ("wav;aif;aiff;flac;mp3;m4a;ogg")) return true;
+    return false;
+}
+
+void DrawSing::filesDropped (const StringArray& files, int, int)
+{
+    File file;
+    for (auto& f : files) if (File (f).hasFileExtension ("wav;aif;aiff;flac;mp3;m4a;ogg")) { file = File (f); break; }
+    const auto st = proc.songJob.getStatus();
+    if (! file.existsAsFile() || ! st.haveSong) return;
+    message = "Listening to the melody in " + file.getFileName() + "...";
+    repaint();
+    lp::song::transcribe::Options o;
+    o.bpm = jmax (40.0, st.song.bpm); o.key = st.song.key; o.minor = st.song.minor; o.lowest = 36; o.highest = 96;
+    const double at = markerBeat;
+    SafePointer<DrawSing> self (this);
+    Thread::launch ([self, file, o, at]
+    {
+        AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<AudioFormatReader> rd (fm.createReaderFor (file));
+        std::vector<lp::song::Note> heard;
+        if (rd != nullptr)
+        {
+            const int n = (int) jmin<int64> (rd->lengthInSamples, (int64) (rd->sampleRate * 120.0));
+            AudioBuffer<float> b ((int) rd->numChannels, n);
+            rd->read (&b, 0, n, 0, true, true);
+            std::vector<float> mono ((size_t) n);
+            for (int i = 0; i < n; ++i) mono[(size_t) i] = b.getNumChannels() > 1 ? 0.5f * (b.getSample (0, i) + b.getSample (1, i)) : b.getSample (0, i);
+            float pk = 0.0f;
+            for (float v : mono) pk = jmax (pk, std::abs (v));
+            if (pk > 1.0e-4f) for (auto& v : mono) v *= 0.9f / pk;
+            heard = lp::song::transcribe::melodyOf (mono.data(), n, rd->sampleRate, o);
+        }
+        MessageManager::callAsync ([self, heard, at, name = file.getFileName()]
+        {
+            if (self == nullptr) return;
+            std::vector<Note> list;
+            for (auto& h : heard) { Note n; n.beat = h.beat + at; n.len = h.length; n.pitch = h.pitch; list.push_back (n); }
+            self->useMelody (std::move (list), "in " + name);
+        });
+    });
 }

@@ -317,9 +317,20 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const bool toPads = padsTrack.load() >= 0;
     const bool toDrums = ! toPads && drumKeysTrack.load() >= 0 && juce::Time::getMillisecondCounter() - drumKeysLease.load() < 800;
     const bool grainsOpen = grainsActive.load();
+    const bool taking = midiTaking.load();
+    if (midiTakeReset.exchange (false)) { midiTakePos = 0; midiTakeFifo.reset(); }
     for (const auto m : midi)
     {
         const auto msg = m.getMessage();
+        if (taking && (msg.isNoteOn() || msg.isNoteOff()))
+        {
+            // (Draw & sing is recording a melody: every note you play, and when)
+            int s1, n1, s2, n2;
+            midiTakeFifo.prepareToWrite (1, s1, n1, s2, n2);
+            const TakeNote r { midiTakePos + m.samplePosition, msg.getNoteNumber(), msg.getFloatVelocity(), msg.isNoteOn() };
+            if (n1 > 0) midiTakeBuf[(size_t) s1] = r; else if (n2 > 0) midiTakeBuf[(size_t) s2] = r;
+            midiTakeFifo.finishedWrite (n1 + n2);
+        }
         // the Grains page is open: every note plays it (your MIDI keyboard, a clip, or Ableton's computer keys)
         if (grainsOpen && (msg.isNoteOn() || msg.isNoteOff() || msg.isAllNotesOff() || msg.isAllSoundOff()))
         {
@@ -368,6 +379,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         }
     }
     midi.clear();
+    if (taking) midiTakePos += n;
 
     // Which sky are we using?
     lp::Weather sky = getManualWeather();
