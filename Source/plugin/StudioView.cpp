@@ -539,8 +539,9 @@ void StudioView::paint (Graphics& g)
                             h = hi[(size_t) k0] + (hi[(size_t) k1] - hi[(size_t) k0]) * f;
                             l = lo[(size_t) k0] + (lo[(size_t) k1] - lo[(size_t) k0]) * f;
                         }
-                        upper.push_back ({ x, mid - std::max (0.4f, std::min (1.0f, h / (top * 0.85f)) * half) });
-                        lower.push_back ({ x, mid - std::min (-0.4f, std::max (-1.0f, l / (top * 0.85f)) * half) });
+                        // (slim: the loudest moment fills about 60% of the clip)
+                        upper.push_back ({ x, mid - std::max (0.3f, std::min (1.0f, h / top) * half * 0.6f) });
+                        lower.push_back ({ x, mid - std::min (-0.3f, std::max (-1.0f, l / top) * half * 0.6f) });
                     }
                     if (upper.size() > 1)
                     {
@@ -549,7 +550,7 @@ void StudioView::paint (Graphics& g)
                         for (size_t k = 1; k < upper.size(); ++k) wave.lineTo (upper[k]);
                         for (size_t k = lower.size(); k-- > 0;) wave.lineTo (lower[k]);
                         wave.closeSubPath();
-                        g.setColour (Colour (0xff121216).withAlpha (muted ? 0.35f : 0.82f));
+                        g.setColour (Colour (0xff121216).withAlpha (muted ? 0.3f : 0.7f));
                         g.fillPath (wave);
                     }
                 }
