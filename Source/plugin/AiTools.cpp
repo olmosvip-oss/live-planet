@@ -247,8 +247,10 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
         {
             const String n = st.tracks[(size_t) i].name;
             if (n.containsIgnoreCase ("drum") || n.containsIgnoreCase ("perc") || n.containsIgnoreCase ("transition") || n.containsIgnoreCase ("fx")
-                || n.containsIgnoreCase ("vocal")) continue;
-            notesFrom.addItem ("the notes of " + n, 100 + i);
+                || n == "vocal chops") continue;
+            // (a vocal: the melody you sang, read from it note by note)
+            const bool sung = st.tracks[(size_t) i].vocal || n.startsWithIgnoreCase ("vocal");
+            notesFrom.addItem (sung ? "the melody you sang in " + n : "the notes of " + n, 100 + i);
             if (pick == 1 && (n.containsIgnoreCase ("key") || n.containsIgnoreCase ("piano") || n.containsIgnoreCase ("chord") || n.containsIgnoreCase ("rhodes")))
                 pick = 100 + i;
         }
@@ -284,6 +286,12 @@ LayerPopup::LayerPopup (LivePlanetProcessor& p, const lp::ui::Theme*& theme, int
 
 void LayerPopup::useNotesOf (int track)
 {
+    // (any track you right-clicked is offered, even one the list leaves out)
+    if (notesFrom.indexOfItemId (100 + track) < 0)
+    {
+        const auto st = proc.songJob.getStatus();
+        if (track >= 0 && track < (int) st.tracks.size()) notesFrom.addItem ("the notes of " + String (st.tracks[(size_t) track].name), 100 + track);
+    }
     if (notesFrom.indexOfItemId (100 + track) >= 0) notesFrom.setSelectedId (100 + track, dontSendNotification);
     setMode (0);
 }
@@ -537,7 +545,7 @@ void LayerPopup::paint (Graphics& g)
         where << (where.isEmpty() ? "" : " + ") << String (st.song.sections[(size_t) i].name);
     g.setFont (font (12.0f));
     g.setColour (th->inkDim);
-    g.drawText (mode == 0 ? (notesFrom.getSelectedId() >= 100 ? notesFrom.getText().replace ("the notes of", "The notes of") + " over " + where + ", played on a sound from your library that fits your words."
+    g.drawText (mode == 0 ? (notesFrom.getSelectedId() >= 100 ? notesFrom.getText().replace ("the notes of", "The notes of").replace ("the melody you sang", "The melody you sang") + " over " + where + ", played on a sound from your library that fits your words."
                                                              : "A sound from your library that fits your words, over " + where + ", in time and following your chords.")
                 : mode == 1 ? "A loop from your library flipped over " + where + ": in key, in time, chopped so it's yours."
                             : "New audio made by the AI over " + where + ", in key and in time (needs the voice helper).", in.removeFromTop (20.0f), Justification::centredLeft, true);

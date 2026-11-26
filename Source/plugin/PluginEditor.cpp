@@ -2933,6 +2933,8 @@ bool LivePlanetEditor::keyPressed (const KeyPress& k)
         repaint();
         return true;
     }
+    // the Grains page: your letters play it, wherever the keyboard focus landed on the page
+    if (page == GrainsTab && grainsPage.isVisible() && grainsPage.keyPressed (k)) return true;
     return false;
 }
 
@@ -3196,6 +3198,7 @@ bool LivePlanetWindow::keyPressed (const KeyPress& k)
         view.togglePlay();
         return true;
     }
+    if (static_cast<juce::Component&> (view).keyPressed (k)) return true; // (the keys reached the window itself: the page still gets them)
     return false;
 }
 

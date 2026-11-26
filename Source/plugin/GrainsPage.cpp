@@ -558,7 +558,7 @@ void GrainsPage::paint (Graphics& g)
             g.drawText (info.toUpperCase(), head, Justification::centredLeft, true);
             const int live = proc.grainSynth.activeGrains.load();
             g.setColour (live > 0 ? t.grassLight : t.inkDim);
-            g.drawText (live > 0 ? String (live) + " GRAINS" : (s.mode == G::Step ? "HOLD A NOTE (PLAY THE SONG TO STEP)" : "HOLD A NOTE"),
+            g.drawText (live > 0 ? String (live) + " GRAINS" : (s.mode == G::Step ? "PLAY: KEYS A-K, MIDI OR HOLD NOTE  (PLAY THE SONG TO STEP)" : "PLAY: KEYS A-K, MIDI OR HOLD NOTE"),
                         sc.reduced (18.0f, 14.0f).removeFromTop (16.0f), Justification::centredRight, false);
 
             const auto wa = waveArea();
@@ -808,6 +808,24 @@ void GrainsPage::paint (Graphics& g)
 void GrainsPage::timerCallback()
 {
     if (! isShown) return;
+    // your computer keys reach this page: it takes the keyboard back after a click on a knob or a button
+    // (never from a text box, or while a window like the library search is open)
+    if (isShowing() && ! hasKeyboardFocus (true) && Component::getCurrentlyModalComponent() == nullptr)
+    {
+        auto* f = Component::getCurrentlyFocusedComponent();
+        if (f == nullptr || (dynamic_cast<TextEditor*> (f) == nullptr && getTopLevelComponent()->isParentOf (f)))
+            grabKeyboardFocus();
+    }
+    // keys let go (some hosts don't tell the page): checked here too
+    for (auto it = keysDown.begin(); it != keysDown.end();)
+    {
+        bool down = false;
+        for (const char* c = keyChars; *c != 0; ++c)
+            if (noteForKey ((juce_wchar) *c) == *it)
+                down = down || KeyPress::isKeyCurrentlyDown ((int) *c) || KeyPress::isKeyCurrentlyDown ((int) CharacterFunctions::toUpperCase ((juce_wchar) *c));
+        if (! down) { proc.grainSynth.uiNote (*it, 0.0f, false); it = keysDown.erase (it); }
+        else ++it;
+    }
     repaint (screenArea().toNearestInt());
     repaint (cellsArea().expanded (2.0f).toNearestInt());
     repaint (output.getBounds().expanded (40, 0));
@@ -969,8 +987,14 @@ void GrainsPage::showCellMenu (int cell)
 // ---- your computer keys
 bool GrainsPage::keyPressed (const KeyPress& k)
 {
-    if (k.getModifiers().isCommandDown()) return false;
-    return noteForKey (k.getTextCharacter()) >= 0;
+    if (k.getModifiers().isCommandDown() || k.getModifiers().isCtrlDown()) return false;
+    juce_wchar c = k.getTextCharacter();
+    if (c == 0) c = (juce_wchar) k.getKeyCode();
+    const int note = noteForKey (c);
+    if (note < 0) return false;
+    // (the press plays it at once; letting go is heard by keyStateChanged, or the timer if the host keeps it)
+    if (keysDown.insert (note).second) proc.grainSynth.uiNote (note, 0.85f, true);
+    return true;
 }
 
 bool GrainsPage::keyStateChanged (bool)
