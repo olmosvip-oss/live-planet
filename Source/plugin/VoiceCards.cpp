@@ -17,8 +17,49 @@ VoicePicker::About VoicePicker::about (const String& name)
 }
 
 // each voice its own art: a soft gradient in two colours picked from its name, and a figure in profile
+// a voice's own picture (set by right-clicking its card): Loopwright/voice pictures/<voice>.jpg or .png.
+// A voice made from another ("Jordan_Sing - Deep") shows its recording's picture.
+static File pictureFolder() { return lp::appFolder().getChildFile ("voice pictures"); }
+static File pictureFileFor (const String& name)
+{
+    for (auto n : { name, name.upToFirstOccurrenceOf (" - ", false, false).trim() })
+        for (auto* ext : { ".jpg", ".png", ".jpeg" })
+            if (auto f = pictureFolder().getChildFile (File::createLegalFileName (n) + ext); f.existsAsFile()) return f;
+    return {};
+}
+static Image pictureFor (const String& name)
+{
+    const auto f = pictureFileFor (name);
+    if (! f.existsAsFile()) return {};
+    const auto key = (int64) f.getFullPathName().hashCode64() ^ f.getLastModificationTime().toMilliseconds();
+    if (auto img = ImageCache::getFromHashCode (key); img.isValid()) return img;
+    auto img = ImageFileFormat::loadFrom (f);
+    if (img.isValid())
+    {
+        // (kept small: cards are small)
+        const int side = jmin (img.getWidth(), img.getHeight(), 600);
+        if (img.getWidth() > 600 || img.getHeight() > 600)
+            img = img.rescaled (img.getWidth() * side / jmin (img.getWidth(), img.getHeight()), img.getHeight() * side / jmin (img.getWidth(), img.getHeight()), Graphics::highResamplingQuality);
+        ImageCache::addImageToCache (img, key);
+    }
+    return img;
+}
+
 void VoicePicker::drawArt (Graphics& g, Rectangle<float> r, const String& name)
 {
+    if (auto pic = pictureFor (name); pic.isValid())
+    {
+        // the picture, filling the square (centred, a little toward the top, where faces are)
+        Graphics::ScopedSaveState ss (g);
+        Path clip;
+        clip.addRoundedRectangle (r, r.getWidth() * 0.18f);
+        g.reduceClipRegion (clip);
+        const float sc = jmax (r.getWidth() / (float) pic.getWidth(), r.getHeight() / (float) pic.getHeight());
+        const float w = pic.getWidth() * sc, h = pic.getHeight() * sc;
+        g.setOpacity (1.0f); // (not the see-through colour set before it)
+        g.drawImage (pic, Rectangle<float> (r.getCentreX() - w * 0.5f, r.getY() - (h - r.getHeight()) * 0.25f, w, h), RectanglePlacement::stretchToFit);
+        return;
+    }
     static const uint32 hues[] = { 0xff7c5cff, 0xffff6b8b, 0xff3fc1c9, 0xfff2a33a, 0xff8fd16a, 0xffe57ad1, 0xff5aa9ff, 0xffff8a5c };
     const auto h = (uint32) name.hashCode();
     const Colour a (hues[h % 8]), b (hues[(h / 8 + 3) % 8]);
@@ -280,6 +321,9 @@ void VoicePicker::mouseDown (const MouseEvent& e)
             const int nHidden = hidden.getArray() != nullptr ? hidden.getArray()->size() : 0;
             PopupMenu m;
             m.addSectionHeader (name);
+            m.addItem (3, "Set a picture...");
+            m.addItem (4, "Remove its picture", pictureFileFor (name).existsAsFile() && ! name.contains (" - "));
+            m.addSeparator();
             m.addItem (1, "Remove this voice");
             m.addItem (2, "Bring back removed voices (" + String (nHidden) + ")", nHidden > 0);
             SafePointer<VoicePicker> self (this);
@@ -287,6 +331,27 @@ void VoicePicker::mouseDown (const MouseEvent& e)
             m.showMenuAsync (PopupMenu::Options(), [self, nm] (int r)
             {
                 if (self == nullptr || r <= 0) return;
+                if (r == 3)
+                {
+                    self->chooser = std::make_unique<FileChooser> ("A picture for " + nm, File::getSpecialLocation (File::userPicturesDirectory), "*.jpg;*.jpeg;*.png");
+                    self->chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [self, nm] (const FileChooser& fc)
+                    {
+                        const auto src = fc.getResult();
+                        if (self == nullptr || ! src.existsAsFile() || ! ImageFileFormat::loadFrom (src).isValid()) return;
+                        pictureFolder().createDirectory();
+                        for (auto* ext : { ".jpg", ".png", ".jpeg" }) pictureFolder().getChildFile (File::createLegalFileName (nm) + ext).deleteFile();
+                        src.copyFileTo (pictureFolder().getChildFile (File::createLegalFileName (nm) + src.getFileExtension().toLowerCase()));
+                        self->message = nm + " has its picture (and so do the voices made from it)";
+                        self->repaint();
+                    });
+                    return;
+                }
+                if (r == 4)
+                {
+                    for (auto* ext : { ".jpg", ".png", ".jpeg" }) pictureFolder().getChildFile (File::createLegalFileName (nm) + ext).deleteFile();
+                    self->repaint();
+                    return;
+                }
                 Array<var> list;
                 if (r == 1)
                 {
