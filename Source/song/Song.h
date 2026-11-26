@@ -352,7 +352,8 @@ struct Part
     juce::uint32 flipSeed = 0;       // a flipped sample: its slices re-ordered, reversed, stuttered (0 = played as it is)
     int flipAmount = 2;              // 1 light, 2 medium, 3 heavy
     std::set<int> silentBars;
-    std::map<int, int> barFrom;      // clips you copied (option-drag) or moved: this bar plays that bar's sound        // bars you deleted from this track in the arrangement (it's silent there)
+    std::map<int, int> barFrom;
+    std::set<int> splitBars;         // where you cut its clips (a clip starts at each of these bars)      // clips you copied (option-drag) or moved: this bar plays that bar's sound        // bars you deleted from this track in the arrangement (it's silent there)
     std::vector<FxHit> fxHits;       // Fx parts: the transition sounds and where they land
     float mixDb = 0.0f;              // where it sits in the mix vs. its kind's usual level (lead up, background down)
     int regionStart = 0, regionBars = 0; // loops: play only this part of the sample (in the song's bars; 0 = all of it)

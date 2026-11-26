@@ -104,7 +104,7 @@ inline Song rebuild (const Song& old, const std::vector<Item>& plan)
             }
         }
         part.barFilter.clear();
-        part.chopBars.clear(); part.stutterBars.clear(); part.silentBars.clear(); part.barFrom.clear();
+        part.chopBars.clear(); part.stutterBars.clear(); part.silentBars.clear(); part.barFrom.clear(); part.splitBars.clear();
         std::map<int, int> firstNew; // old bar -> the first new bar that plays it
         for (int nb = 0; nb < newBars; ++nb) firstNew.emplace (fromBar[(size_t) nb], nb); part.gapBars.clear(); part.swellBars.clear();
         std::vector<int> starts;
@@ -115,6 +115,7 @@ inline Song rebuild (const Song& old, const std::vector<Item>& plan)
             if (was.chopBars.count (ob)) part.chopBars.insert (nb);
             if (was.stutterBars.count (ob)) part.stutterBars.insert (nb);
             if (was.silentBars.count (ob)) part.silentBars.insert (nb);
+            if (was.splitBars.count (ob)) part.splitBars.insert (nb);
             if (auto bf = was.barFrom.find (ob); bf != was.barFrom.end())
                 if (auto fn = firstNew.find (bf->second); fn != firstNew.end() && fn->second != nb) part.barFrom[nb] = fn->second;
             // drop-outs and swells lead into the next section: only where a section still ends

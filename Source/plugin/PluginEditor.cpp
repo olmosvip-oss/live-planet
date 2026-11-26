@@ -1975,7 +1975,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         if (dockCollapsed) { dockCollapsed = false; setPage (Studio); resized(); } // (a track clicked: the panel opens again)
         repaint();
     };
-    studioSplit = jlimit (200, 560, (int) lp::setting ("studioSplit", 358));
+    studioSplit = jlimit (200, 4000, (int) lp::setting ("studioSplit", 358));
     // the arrangement's zoom, shared by the sections ruler and the lanes; and how tall the lanes are
     songView.view = &arrView;
     studioView.view = &arrView;
@@ -2807,8 +2807,11 @@ void LivePlanetEditor::mouseMove (const MouseEvent& e)
 void LivePlanetEditor::mouseDrag (const MouseEvent& e)
 {
     if (! draggingSplit) return;
-    dockCollapsed = false;
-    studioSplit = jlimit (200, getHeight() - 32 - 84 - 120, splitDragFrom + e.getDistanceFromDragStartY());
+    // as far down as you like: past the bottom, the open track folds away and the arrangement has the whole page
+    const int want = splitDragFrom + e.getDistanceFromDragStartY(), most = getHeight() - 32 - 84 - 120;
+    dockCollapsed = want > most + 50;
+    splitByHand = true;
+    studioSplit = jlimit (200, most, want);
     resized();
     repaint();
 }
@@ -2891,7 +2894,7 @@ void LivePlanetEditor::resized()
     // ---- write: the hero + settings (song panel), the song, the drag buttons
     songPanel.setBounds (M, 84, W - 2 * M, 342);
     // the studio: the arrangement (sections over every track's lane), and the open track docked under it
-    cardTimeline = page == Studio ? Rectangle<int> (M, 84, W - 2 * M, dockCollapsed ? B - 84 - 10 - 40 : dockTall ? jmin (232, studioSplit) : studioSplit)
+    cardTimeline = page == Studio ? Rectangle<int> (M, 84, W - 2 * M, dockCollapsed ? B - 84 - 10 - 40 : dockTall && ! splitByHand ? jmin (232, studioSplit) : studioSplit)
                                   : Rectangle<int> (M, 442, W - 2 * M, B - 442);
     cardDock = { M, cardTimeline.getBottom() + 10, W - 2 * M, B - cardTimeline.getBottom() - 10 };
     if (page == Studio)

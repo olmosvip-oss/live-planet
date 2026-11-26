@@ -48,6 +48,7 @@ public:
         bool vocal = false;   // a vocal track (it has the Vocal chain)
         bool tunable = false; // a vocal with its untouched recording kept (it has Auto-tune)
         std::set<int> silentBars; // the bars you deleted in the arrangement
+        std::set<int> splitBars;  // where you cut its clips
         juce::uint32 colour = 0;  // the colour you picked for it (0: its place in the palette)
     };
 
@@ -2349,6 +2350,7 @@ private:
         t.name = p.name;
         t.locked = p.locked;
         t.silentBars = p.silentBars;
+        t.splitBars = p.splitBars;
         t.colour = p.colour;
         t.source = p.source;
         t.remix = p.remix;
@@ -3200,6 +3202,17 @@ public:
         if (track < 0 || track >= (int) current.parts.size() || track >= (int) status.tracks.size()) return;
         current.parts[(size_t) track].colour = argb;
         status.tracks[(size_t) track].colour = argb;
+        status.song = current;
+        saveSession();
+    }
+    // a cut in a track's clip at the start of this bar (on = false: joined again); nothing is re-recorded
+    void setSplit (int track, int bar, bool on)
+    {
+        const juce::ScopedLock sl (lock);
+        if (track < 0 || track >= (int) current.parts.size() || track >= (int) status.tracks.size()) return;
+        auto& s = current.parts[(size_t) track].splitBars;
+        if (on) s.insert (bar); else s.erase (bar);
+        status.tracks[(size_t) track].splitBars = s;
         status.song = current;
         saveSession();
     }

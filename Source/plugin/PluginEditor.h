@@ -644,9 +644,12 @@ public:
 private:
     enum Col { None, Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
     static constexpr float rowsTop = 30.0f;  // (the bar numbers above)
-    struct ClipHit { int track, section; juce::Rectangle<float> r; };
+    struct ClipHit { int track, section, b0, b1; juce::Rectangle<float> r; }; // a clip: bars b0 .. b1-1 of a track
     std::vector<ClipHit> clipHits;           // where each clip was drawn (for clicks)
-    std::set<std::pair<int, int>> pickedClips; // (track, section): Delete silences them
+    std::set<std::tuple<int, int, int>> pickedClips; // (track, first bar, end bar): Delete silences them
+    const ClipHit* clipAt (int track, juce::Point<float> p) const;
+    double barAtX (float x) const;
+    void splitClipAt (int track, int bar);
     bool trackPicked = false;                // a track's name was clicked: Delete removes the track
     juce::Rectangle<float> zoomBtn (int i) const;   // 0 out, 1 in, 2 the whole song
     juce::Rectangle<float> heightBtn (int i) const; // lane height: small, medium, large
@@ -655,7 +658,8 @@ private:
     double wheelZoomRows = 0.0;
     double cuedBar = -1.0;
     // a clip being dragged to another section of its track (option: a copy)
-    int dragClipTrack = -1, dragClipSection = -1, dropSection = -1;
+    int dragClipTrack = -1, dragB0 = 0, dragB1 = 0, dragMode = 0, grabBar = 0; // mode 0 move, 1 its start, 2 its end
+    int dropStart = -1, dropEnd = -1;
     bool clipDragging = false, dragCopy = false;                   // clicked in the bar numbers: where play starts
     juce::Rectangle<float> rewriteBounds (int numTracks) const;
     bool hoverRewrite = false;
@@ -1288,6 +1292,7 @@ public:
     void resized() override;
     // the Studio's divider between the arrangement and the open track: drag it, double-click to hide the track
     int studioSplit = 358;
+    bool splitByHand = false; // you dragged the divider: it stays where you put it (even with the drum grid open)
     bool dockCollapsed = false, draggingSplit = false;
     int splitDragFrom = 0;
     juce::Rectangle<int> splitBounds() const;

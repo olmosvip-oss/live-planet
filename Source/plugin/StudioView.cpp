@@ -49,14 +49,41 @@ int StudioView::sectionAt (float x) const
     return -1;
 }
 
+double StudioView::barAtX (float x) const
+{
+    const int total = std::max (1, proc.songJob.getStatus().song.totalBars());
+    return view != nullptr ? view->barAt (x, laneLeft(), laneRight() - laneLeft(), total)
+                           : (double) ((x - laneLeft()) / std::max (1.0f, laneRight() - laneLeft())) * total;
+}
+
+const StudioView::ClipHit* StudioView::clipAt (int track, Point<float> p) const
+{
+    for (auto& h : clipHits) if (h.track == track && h.r.contains (p)) return &h;
+    return nullptr;
+}
+
+// a cut: the clip becomes two at the start of this bar (cmd+E, or right-click "cut here")
+void StudioView::splitClipAt (int track, int bar)
+{
+    for (auto& h : clipHits)
+        if (h.track == track && bar > h.b0 && bar < h.b1)
+        {
+            proc.songJob.setSplit (track, bar, true);
+            pickedClips.clear();
+            pickedClips.insert ({ track, h.b0, bar });
+            repaint();
+            return;
+        }
+}
+
 void StudioView::deletePicked()
 {
     // each picked clip's bars go silent on its track (undo brings them back)
     const auto st = proc.songJob.getStatus();
     std::map<int, std::set<int>> byTrack;
-    for (auto [tr, sc] : pickedClips)
-        if (tr >= 0 && tr < (int) st.tracks.size() && sc >= 0 && sc < (int) st.song.sections.size())
-            for (int b = 0; b < st.song.sections[(size_t) sc].bars; ++b) byTrack[tr].insert (st.song.sections[(size_t) sc].startBar + b);
+    for (auto [tr, b0, b1] : pickedClips)
+        if (tr >= 0 && tr < (int) st.tracks.size())
+            for (int b = b0; b < b1; ++b) byTrack[tr].insert (b);
     pickedClips.clear();
     for (auto& [tr, bars] : byTrack) proc.songJob.silenceBars (tr, bars);
     repaint();
@@ -68,6 +95,13 @@ bool StudioView::keyPressed (const KeyPress& k)
     {
         if (! pickedClips.empty()) { deletePicked(); return true; }
         if (trackPicked && selectedTrack) { askRemove (selectedTrack()); return true; }
+    }
+    if (k.getModifiers().isCommandDown() && (k.getKeyCode() == 'E' || k.getKeyCode() == 'e') && ! pickedClips.empty())
+    {
+        // cmd+E: cut the picked clip where the mouse is (like Ableton)
+        const auto [tr, b0, b1] = *pickedClips.begin();
+        splitClipAt (tr, (int) std::round (barAtX (lastMouse.x)));
+        return true;
     }
     if (k == KeyPress::escapeKey && (! pickedClips.empty() || trackPicked)) { pickedClips.clear(); trackPicked = false; repaint(); return true; }
     if (view != nullptr && (k.getTextCharacter() == '=' || k.getTextCharacter() == '+' || k.getTextCharacter() == '-'))
@@ -441,18 +475,19 @@ void StudioView::paint (Graphics& g)
         {
             const auto& sc = st.song.sections[si];
             if (avg[si] < loudest * 0.12f) continue; // (only a tail or silence here)
-            const bool isPicked = pickedClips.count ({ i, (int) si }) > 0;
-            // the section's bars, less any you deleted: one clip per stretch that still plays
+            // the section's bars, less any you deleted, cut where you cut them: one clip per stretch that plays
             for (int bar = sc.startBar; bar < sc.startBar + sc.bars;)
             {
                 if (silent.count (bar)) { ++bar; continue; }
-                int end = bar;
-                while (end < sc.startBar + sc.bars && ! silent.count (end)) ++end;
+                int end = bar + 1;
+                while (end < sc.startBar + sc.bars && ! silent.count (end) && ! t.splitBars.count (end)) ++end;
                 const float x0 = xOfBar (bar) + 1.0f, x1 = xOfBar (end) - 1.0f;
+                const int c0 = bar;
                 bar = end;
                 if (x1 < lx || x0 > lx + lw || x1 - x0 < 1.0f) continue;
+                const bool isPicked = pickedClips.count ({ i, c0, end }) > 0;
                 auto clip = Rectangle<float> (x0, row.getY(), x1 - x0, row.getHeight());
-                clipHits.push_back ({ i, (int) si, clip });
+                clipHits.push_back ({ i, (int) si, c0, end, clip });
                 g.setColour (tc.withAlpha (muted ? 0.10f : isPicked ? 0.55f : 0.26f));
                 g.fillRoundedRectangle (clip, 3.0f);
                 g.setColour (tc.withAlpha (muted ? 0.2f : 0.6f));
@@ -487,6 +522,10 @@ void StudioView::paint (Graphics& g)
                 {
                     g.setColour (Colours::white);
                     g.drawRoundedRectangle (clip.reduced (0.75f), 3.0f, 1.5f);
+                    // its edges: drag them to make it shorter or longer
+                    if (clip.getWidth() > 24.0f)
+                        for (float ex : { clip.getX() + 2.0f, clip.getRight() - 5.0f })
+                            g.fillRoundedRectangle (Rectangle<float> (ex, clip.getCentreY() - 7.0f, 3.0f, 14.0f), 1.5f);
                 }
             }
         }
@@ -535,16 +574,15 @@ void StudioView::paint (Graphics& g)
         }
     }
 
-    // a clip being dragged: where it lands
-    if (clipDragging && dragClipTrack >= 0 && dropSection >= 0 && dropSection < (int) st.song.sections.size() && rowShown (dragClipTrack))
+    // a clip being dragged, or its edge: where it lands
+    if (clipDragging && dragClipTrack >= 0 && dropStart >= 0 && dropEnd > dropStart && rowShown (dragClipTrack))
     {
-        const auto& sc = st.song.sections[(size_t) dropSection];
         const auto rb = rowBounds (dragClipTrack);
-        auto r = Rectangle<float> (xOfBar (sc.startBar) + 1.0f, rb.getY(), xOfBar (sc.startBar + sc.bars) - xOfBar (sc.startBar) - 2.0f, rb.getHeight())
+        auto r = Rectangle<float> (xOfBar (dropStart) + 1.0f, rb.getY(), xOfBar (dropEnd) - xOfBar (dropStart) - 2.0f, rb.getHeight())
                      .getIntersection (Rectangle<float> (lx, rb.getY(), lw, rb.getHeight()));
         if (! r.isEmpty())
         {
-            const bool same = dropSection == dragClipSection;
+            const bool same = dropStart == dragB0 && dropEnd == dragB1;
             g.setColour (Colours::white.withAlpha (same ? 0.05f : 0.16f));
             g.fillRoundedRectangle (r, 3.0f);
             Path outline;
@@ -557,7 +595,9 @@ void StudioView::paint (Graphics& g)
             if (! same)
             {
                 g.setFont (font (11.0f, lp::ui::Medium));
-                g.drawText (String (dragCopy ? "copy to " : "move to ") + String (sc.name), r.reduced (8.0f, 0.0f), Justification::centredLeft, true);
+                String what = dragMode != 0 ? String (dropEnd - dropStart) + (dropEnd - dropStart == 1 ? " bar" : " bars")
+                                            : String (dragCopy ? "copy to bar " : "move to bar ") + String (dropStart + 1);
+                g.drawText (what, r.reduced (8.0f, 0.0f), Justification::centredLeft, true);
             }
         }
     }
@@ -817,13 +857,15 @@ void StudioView::mouseDown (const MouseEvent& e)
         if (e.position.x >= laneLeft())
         {
             // the lane: pick a clip (shift / cmd for more); Delete takes it out
-            const ClipHit* hit = nullptr;
-            for (auto& h : clipHits) if (h.track == i && h.r.contains (e.position)) hit = &h;
+            const ClipHit* hit = clipAt (i, e.position);
             const int sc = hit != nullptr ? hit->section : sectionAt (e.position.x);
             trackPicked = false;
             if (e.mods.isPopupMenu())
             {
-                if (hit != nullptr && pickedClips.count ({ i, sc }) == 0) { pickedClips.clear(); pickedClips.insert ({ i, sc }); }
+                if (hit != nullptr && pickedClips.count ({ i, hit->b0, hit->b1 }) == 0) { pickedClips.clear(); pickedClips.insert ({ i, hit->b0, hit->b1 }); }
+                const int cutBar = (int) std::round (barAtX (e.position.x));
+                const bool canCut = hit != nullptr && cutBar > hit->b0 && cutBar < hit->b1;
+                const bool canJoin = hit != nullptr && st.tracks[(size_t) i].splitBars.count (hit->b1) > 0;
                 bool anyGone = false;
                 if (sc >= 0)
                     for (int b = 0; b < st.song.sections[(size_t) sc].bars; ++b)
@@ -832,6 +874,8 @@ void StudioView::mouseDown (const MouseEvent& e)
                 m.addSectionHeader (String (st.tracks[(size_t) i].name).toUpperCase() + (sc >= 0 ? String::fromUTF8 ("  \xc2\xb7  ") + String (st.song.sections[(size_t) sc].name).toUpperCase() : String()));
                 m.addItem (1, pickedClips.size() > 1 ? "Delete " + String ((int) pickedClips.size()) + " clips" : String ("Delete this clip"), ! pickedClips.empty());
                 m.addItem (2, "Bring it back (the bars deleted here)", anyGone);
+                m.addItem (4, "Cut here, at bar " + String (cutBar + 1) + "   (cmd+E)", canCut);
+                m.addItem (5, "Join with the next clip", canJoin);
                 {
                     PopupMenu colours;
                     const char* names[] = { "Orange", "Yellow", "Green", "Teal", "Blue", "Violet", "Pink", "Red", "Tan", "Sky" };
@@ -850,9 +894,12 @@ void StudioView::mouseDown (const MouseEvent& e)
                 m.addSeparator();
                 m.addItem (3, "Remove the whole track \"" + st.tracks[(size_t) i].name + "\"", st.tracks.size() > 1);
                 SafePointer<StudioView> sp (this);
-                m.showMenuAsync (PopupMenu::Options(), [sp, i, sc] (int r)
+                const int joinAt = hit != nullptr ? hit->b1 : -1;
+                m.showMenuAsync (PopupMenu::Options(), [sp, i, sc, cutBar, joinAt] (int r)
                 {
                     if (sp == nullptr) return;
+                    if (r == 4) sp->splitClipAt (i, cutBar);
+                    else if (r == 5 && joinAt >= 0) { sp->proc.songJob.setSplit (i, joinAt, false); sp->repaint(); }
                     if (r == 1) sp->deletePicked();
                     else if (r == 2 && sc >= 0)
                     {
@@ -871,8 +918,12 @@ void StudioView::mouseDown (const MouseEvent& e)
             }
             if (hit != nullptr)
             {
-                dragClipTrack = i; dragClipSection = sc; clipDragging = false; dropSection = -1; // (it may be dragged)
-                const std::pair<int, int> key { i, sc };
+                // it may be dragged: by its middle (moves it; option: a copy), or by an edge (shorter, longer)
+                dragClipTrack = i; dragB0 = hit->b0; dragB1 = hit->b1; clipDragging = false; dropStart = dropEnd = -1;
+                dragMode = hit->r.getWidth() > 18.0f && e.position.x - hit->r.getX() < 6.0f ? 1
+                         : hit->r.getWidth() > 18.0f && hit->r.getRight() - e.position.x < 6.0f ? 2 : 0;
+                grabBar = jlimit (0, hit->b1 - hit->b0 - 1, (int) std::floor (barAtX (e.position.x)) - hit->b0);
+                const std::tuple<int, int, int> key { i, hit->b0, hit->b1 };
                 if (e.mods.isShiftDown() || e.mods.isCommandDown())
                 {
                     if (pickedClips.count (key)) pickedClips.erase (key); else pickedClips.insert (key);
@@ -965,11 +1016,19 @@ void StudioView::mouseDrag (const MouseEvent& e)
     if (dragClipTrack >= 0)
     {
         // a clip dragged along its lane: where it would land (a whole section), a copy with option held
-        if (! clipDragging && e.getDistanceFromDragStart() < 6) return;
+        if (! clipDragging && e.getDistanceFromDragStart() < 4) return;
         clipDragging = true;
         dragCopy = e.mods.isAltDown();
-        dropSection = sectionAt (e.position.x);
-        setMouseCursor (dragCopy ? MouseCursor::CopyingCursor : MouseCursor::DraggingHandCursor);
+        const int total = std::max (1, proc.songJob.getStatus().song.totalBars()), len = dragB1 - dragB0;
+        const int at = (int) std::round (barAtX (e.position.x));
+        if (dragMode == 1) { dropStart = jlimit (0, dragB1 - 1, at); dropEnd = dragB1; }
+        else if (dragMode == 2) { dropStart = dragB0; dropEnd = jlimit (dragB0 + 1, total, at); }
+        else
+        {
+            dropStart = jlimit (0, std::max (0, total - len), (int) std::floor (barAtX (e.position.x)) - grabBar);
+            dropEnd = dropStart + len;
+        }
+        setMouseCursor (dragMode != 0 ? MouseCursor::LeftRightResizeCursor : dragCopy ? MouseCursor::CopyingCursor : MouseCursor::DraggingHandCursor);
         repaint();
         return;
     }
@@ -979,21 +1038,41 @@ void StudioView::mouseDrag (const MouseEvent& e)
 
 void StudioView::mouseUp (const MouseEvent& e)
 {
-    if (dragClipTrack >= 0 && clipDragging)
+    if (dragClipTrack >= 0 && clipDragging && dropStart >= 0 && dropEnd > dropStart)
     {
-        const auto st = proc.songJob.getStatus();
-        const int n = (int) st.song.sections.size();
-        if (dropSection >= 0 && dropSection < n && dragClipSection >= 0 && dragClipSection < n && dropSection != dragClipSection)
+        const int tr = dragClipTrack, len = dragB1 - dragB0;
+        if (dragMode == 0 && dropStart != dragB0)
         {
-            const auto& a = st.song.sections[(size_t) dragClipSection];
-            const auto& b = st.song.sections[(size_t) dropSection];
-            proc.songJob.copyBars (dragClipTrack, a.startBar, a.bars, b.startBar, b.bars, ! e.mods.isAltDown());
+            // moved (or copied, with option): its own clip where it lands
+            proc.songJob.copyBars (tr, dragB0, len, dropStart, len, ! e.mods.isAltDown());
+            proc.songJob.setSplit (tr, dropStart, true);
+            proc.songJob.setSplit (tr, dropStart + len, true);
             pickedClips.clear();
-            pickedClips.insert ({ dragClipTrack, dropSection });
+            pickedClips.insert ({ tr, dropStart, dropStart + len });
         }
-        setMouseCursor (MouseCursor::NormalCursor);
+        else if (dragMode == 1 && dropStart != dragB0)
+        {
+            std::set<int> gone;
+            if (dropStart > dragB0) { for (int b = dragB0; b < dropStart; ++b) gone.insert (b); proc.songJob.silenceBars (tr, gone); }
+            else proc.songJob.copyBars (tr, dragB0, len, dropStart, dragB0 - dropStart, false); // (longer: it plays from its start)
+            proc.songJob.setSplit (tr, dragB0, false);
+            proc.songJob.setSplit (tr, dropStart, true);
+            pickedClips.clear();
+            pickedClips.insert ({ tr, dropStart, dragB1 });
+        }
+        else if (dragMode == 2 && dropEnd != dragB1)
+        {
+            std::set<int> gone;
+            if (dropEnd < dragB1) { for (int b = dropEnd; b < dragB1; ++b) gone.insert (b); proc.songJob.silenceBars (tr, gone); }
+            else proc.songJob.copyBars (tr, dragB0, len, dragB1, dropEnd - dragB1, false); // (longer: it loops on)
+            proc.songJob.setSplit (tr, dragB1, false);
+            proc.songJob.setSplit (tr, dropEnd, true);
+            pickedClips.clear();
+            pickedClips.insert ({ tr, dragB0, dropEnd });
+        }
     }
-    dragClipTrack = dragClipSection = dropSection = -1;
+    if (clipDragging) setMouseCursor (MouseCursor::NormalCursor);
+    dragClipTrack = dropStart = dropEnd = -1;
     clipDragging = false;
     repaint();
 }
@@ -1022,6 +1101,14 @@ void StudioView::askRemove (int track)
 void StudioView::mouseMove (const MouseEvent& e)
 {
     lastMouse = e.position;
+    {
+        // over a clip's edge: it can be dragged shorter or longer
+        bool edge = false;
+        for (auto& h : clipHits)
+            if (h.r.getWidth() > 18.0f && h.r.expanded (0.0f, 0.0f).contains (e.position)
+                && (e.position.x - h.r.getX() < 6.0f || h.r.getRight() - e.position.x < 6.0f)) edge = true;
+        setMouseCursor (edge ? MouseCursor::LeftRightResizeCursor : MouseCursor::NormalCursor);
+    }
     int h = -1;
     for (int i = 0; i < StudioPlayer::maxTracks; ++i)
         if (rowShown (i) && rowBounds (i).contains (e.position)) h = i;

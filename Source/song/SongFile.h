@@ -55,6 +55,7 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("chop", ints (p.chopBars)); o->setProperty ("stutter", ints (p.stutterBars));
     o->setProperty ("gap", ints (p.gapBars)); o->setProperty ("swell", ints (p.swellBars));
     o->setProperty ("silent", ints (p.silentBars));
+    o->setProperty ("splits", ints (p.splitBars));
     {
         juce::Array<juce::var> bf;
         for (auto [to, from] : p.barFrom) { bf.add (to); bf.add (from); }
@@ -134,6 +135,7 @@ inline Part partFromVar (const juce::var& v)
     for (int x : readInts (v["gap"])) p.gapBars.insert (x);
     for (int x : readInts (v["swell"])) p.swellBars.insert (x);
     for (int x : readInts (v["silent"])) p.silentBars.insert (x);
+    for (int x : readInts (v["splits"])) p.splitBars.insert (x);
     {
         const auto bf = readInts (v["barFrom"]);
         for (size_t i = 0; i + 1 < bf.size(); i += 2) p.barFrom[bf[i]] = bf[i + 1];
