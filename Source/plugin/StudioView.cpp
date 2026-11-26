@@ -260,6 +260,15 @@ void StudioView::showAddMenu()
         const int n = (size_t) k < st.kindCounts.size() ? st.kindCounts[(size_t) k] : 0;
         m.addItem ((int) k, String (lp::song::loopKindName (k)) + "   (" + String (n) + ")", n > 0);
     }
+    {
+        // a MIDI track: empty, on a sound; you write its notes below
+        PopupMenu midi;
+        midi.addItem (2999, "A sound from my library... (type what it should sound like)");
+        midi.addSeparator();
+        for (int s = 0; s < lp::kNumBuiltIns; ++s) midi.addItem (3000 + s, lp::profileFor ((lp::SoundId) s).name);
+        m.addSeparator();
+        m.addSubMenu ("MIDI track (write your own notes)", midi);
+    }
     m.addSectionHeader ("write something new over your chords");
     m.addItem (1001, "Hook: a melody (original, written for this song)");
     m.addItem (1002, "Hook: vocal chops (vocals from your sample folders, sung to a new melody)");
@@ -270,6 +279,21 @@ void StudioView::showAddMenu()
     m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (addBounds ((int) st.tracks.size()).toNearestInt())),
                      [this] (int r)
                      {
+                         if (r >= 3000 && r < 3000 + lp::kNumBuiltIns) { proc.songJob.addMidiTrack (r - 3000, {}); return; }
+                         if (r == 2999)
+                         {
+                             auto* w = new AlertWindow ("A MIDI track", "On the one-shot in your library that fits what you type.", MessageBoxIconType::NoIcon, this);
+                             w->addTextEditor ("words", "", "what it should sound like, e.g. a vibrant synth pluck");
+                             w->addButton ("Add it", 1, KeyPress (KeyPress::returnKey));
+                             w->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+                             SafePointer<StudioView> sp (this);
+                             w->enterModalState (true, ModalCallbackFunction::create ([sp, w] (int ok)
+                             {
+                                 const auto words = w->getTextEditorContents ("words").trim();
+                                 if (sp != nullptr && ok == 1 && words.isNotEmpty()) sp->proc.songJob.addMidiTrack (-1, words);
+                             }), true);
+                             return;
+                         }
                          if (r == 1001) proc.songJob.editTrack (0, SongJob::EditOp::AddHook);
                          else if (r == 1002) proc.songJob.editTrack (0, SongJob::EditOp::AddChops);
                          else if (r == 1004) proc.songJob.editTrack (0, SongJob::EditOp::Add808);
@@ -582,6 +606,56 @@ void StudioView::paint (Graphics& g)
             lp::ui::drawStereoMeter (g, Rectangle<float> (r.getX() - 16.0f, hy + 2.0f, 9.0f, 18.0f), meterL[(size_t) i], meterR[(size_t) i]);
         }
 
+        // a MIDI track: its clips are where its notes are, each showing its notes (like a DAW's MIDI clip)
+        if (t.midi)
+        {
+            const auto pv = proc.songJob.partView (i);
+            Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (Rectangle<float> (lx, row.getY(), lw, row.getHeight()).toNearestInt());
+            if (pv.notes.empty())
+            {
+                g.setColour (Colours::white.withAlpha (0.35f));
+                g.setFont (font (11.0f));
+                g.drawText ("an empty MIDI track: double-click its lane to write notes", Rectangle<float> (lx + 10.0f, row.getY(), lw - 20.0f, row.getHeight()), Justification::centredLeft, true);
+                continue;
+            }
+            int lo = 127, hi = 0;
+            std::set<int> bars;
+            for (auto& nt : pv.notes) { lo = std::min (lo, nt.pitch); hi = std::max (hi, nt.pitch); for (int b = (int) (nt.beat / 4.0); b <= (int) ((nt.beat + nt.length - 1e-6) / 4.0); ++b) bars.insert (b); }
+            hi = std::max (hi, lo + 6);
+            for (auto it = bars.begin(); it != bars.end();)
+            {
+                const int b0 = *it;
+                int b1 = b0 + 1;
+                ++it;
+                while (it != bars.end() && *it == b1) { ++b1; ++it; }
+                auto clip = Rectangle<float> (xOfBar (b0) + 1.0f, row.getY(), xOfBar (b1) - xOfBar (b0) - 2.0f, row.getHeight());
+                g.setColour (tc.brighter (0.25f).withAlpha (m.mute.load() ? 0.14f : 0.9f));
+                g.fillRoundedRectangle (clip, 3.0f);
+                auto body = clip;
+                if (row.getHeight() >= 32.0f && clip.getWidth() > 30.0f)
+                {
+                    auto strip = body.removeFromTop (12.0f);
+                    g.setColour (tc.withAlpha (0.75f));
+                    g.fillRoundedRectangle (strip, 3.0f);
+                    g.fillRect (strip.withTrimmedTop (6.0f));
+                    g.setColour (Colour (0xff101014).withAlpha (0.9f));
+                    g.setFont (font (9.5f, lp::ui::Medium));
+                    g.drawText (t.name, strip.reduced (5.0f, 0.0f), Justification::centredLeft, true);
+                }
+                // its notes: small bars, higher notes higher up
+                g.setColour (Colour (0xff121216).withAlpha (0.78f));
+                const float nh = std::max (1.5f, (body.getHeight() - 4.0f) / (float) (hi - lo + 1));
+                for (auto& nt : pv.notes)
+                {
+                    if (nt.beat / 4.0 >= b1 || (nt.beat + nt.length) / 4.0 <= b0) continue;
+                    const float x0 = xOfBar (nt.beat / 4.0), x1 = xOfBar ((nt.beat + nt.length) / 4.0);
+                    const float y = body.getBottom() - 2.0f - (float) (nt.pitch - lo + 1) * nh;
+                    g.fillRect (Rectangle<float> (x0, y, std::max (1.5f, x1 - x0 - 0.5f), std::max (1.2f, nh - 0.6f)));
+                }
+            }
+            continue;
+        }
         // its lane: a clip in each section it plays in (in the track's colour), with its real waveform as a thin line
         const auto* env = envelopeOf (t.stem);
         const bool muted = m.mute.load();
@@ -1083,6 +1157,12 @@ void StudioView::mouseDown (const MouseEvent& e)
     for (int i = 0; i < (int) st.tracks.size() && i < StudioPlayer::maxTracks; ++i)
     {
         if (! rowShown (i) || ! rowBounds (i).expanded (0.0f, 1.0f).contains (e.position)) continue;
+        if (e.position.x >= laneLeft() && st.tracks[(size_t) i].midi && e.getNumberOfClicks() > 1 && ! e.mods.isPopupMenu())
+        {
+            // a MIDI track's lane, double-clicked: its notes open below, to write
+            if (onEditNotes) onEditNotes (i);
+            return;
+        }
         if (e.position.x >= laneLeft())
         {
             // the lane: pick a clip (shift / cmd for more); Delete takes it out

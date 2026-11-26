@@ -615,6 +615,7 @@ public:
     void itemDragMove (const SourceDetails& d) override;
     void itemDragExit (const SourceDetails&) override { fxDropRow = -1; repaint(); }
     std::function<void (int, juce::String)> onDropFx;
+    std::function<void (int)> onEditNotes; // a MIDI track's lane double-clicked: its notes, below
     int fxDropRow = -1;
 public:
     explicit StudioView (LivePlanetProcessor& p) : proc (p) { for (auto* h : { &hFeel, &hTracks }) addAndMakeVisible (*h); }

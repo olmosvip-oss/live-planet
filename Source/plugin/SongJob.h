@@ -25,7 +25,7 @@ class SongJob : private juce::Thread
 public:
     enum class Stage { Idle, Listening, Writing, Rendering, Done, Failed };
 
-    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars, Create, Resound, Duplicate }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
+    enum class EditOp { Swap, Reverse, PitchUp, PitchDown, Add, Region, Grains, Key, Like, Dislike, Notes, SwapDrum, Feel, AddHook, AddChops, FromTake, Arrange, Add808, SliceDrums, AddTuned, Remove, Undo, Section, Rewrite, VoiceFx, VocalChain, VocalAnalyze, Chops, Tune, Tempo, AddSung, Silence, Flip, CopyBars, Create, Resound, Duplicate, AddMidi }; // Add: the "track" is the LoopKind to add; Key: track = key + 12 * minor
     struct GrainSettings { float amount = 0, sizeMs = 120, chaos = 0, position = 0; int rate = 2; };
 
     struct TrackInfo
@@ -52,6 +52,7 @@ public:
         std::set<int> splitBars;  // where you cut its clips
         juce::uint32 colour = 0;  // the colour you picked for it (0: its place in the palette)
         juce::String folder;      // the group (folder) it's in (empty: none)
+        bool midi = false;        // a MIDI track (its clips show its notes)
     };
 
     struct Status
@@ -536,6 +537,7 @@ public:
         juce::String name, samplePath;
         int key = 0;
         bool minor = false;
+        bool midi = false; // a MIDI track (its notes are yours, even none yet)
     };
     PartView partView (int track) const
     {
@@ -548,6 +550,7 @@ public:
         v.title = current.title; v.totalBars = current.totalBars();
         v.kitKey << p.variant << "|" << p.pitchSemis;
         v.name = juce::String (p.name); v.samplePath = p.samplePath; v.key = current.key; v.minor = current.minor;
+        v.midi = p.midi;
         for (auto& [n, f] : p.kitIn (current)) v.kitKey << "|" << n << f;
         for (auto& [n, f] : p.voiceFx) // a drum's own effects: the editor's sounds load again
             v.kitKey << "|fx" << n << ":" << f.gainDb << "," << f.pan << "," << f.tone << "," << f.space << "," << f.echo
@@ -2389,6 +2392,7 @@ private:
         t.splitBars = p.splitBars;
         t.colour = p.colour;
         t.folder = p.group;
+        t.midi = p.midi;
         t.source = p.source;
         t.remix = p.remix;
         t.stem = stem;
@@ -3487,6 +3491,7 @@ private:
             case EditOp::Create: return "create a layer";
             case EditOp::Resound: return on ("sound of");
             case EditOp::Duplicate: return on ("duplicate of");
+            case EditOp::AddMidi: return "add a MIDI track";
             case EditOp::Grains: return on ("grains on");
             case EditOp::Key: return "key change";
             case EditOp::Notes: return on ("notes of");
@@ -3588,6 +3593,40 @@ public:
         status.song = current;
         ++status.version;
         saveSession();
+    }
+    // a new MIDI track, empty, on a sound: one of Loopwright's own (sound >= 0), or the one-shot in your library that
+    // fits the words; you write its notes in the note editor
+    void addMidiTrack (int builtInSound, const juce::String& words)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            if (current.parts.empty() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
+            pendingMidi = { builtInSound, words };
+            edits.push_back ({ 0, EditOp::AddMidi });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    std::pair<int, juce::String> pendingMidi;
+    // the one-shot in your library whose name fits the words best (empty: none fits)
+    juce::String oneShotFor (const juce::String& words)
+    {
+        refreshUsable();
+        const auto look = searchWords (words);
+        const auto kinds = kindsInWords (words);
+        juce::Random rng;
+        float best = 0.99f;
+        juce::String pick;
+        for (auto& e : usableLib.all())
+        {
+            if (e.kind != lp::song::SampleKind::OneShot) continue;
+            const auto name = (e.path + " " + e.pack).toLowerCase();
+            float score = rng.nextFloat();
+            for (auto& w : look) if (w.length() > 2 && name.contains (w)) score += 4.0f;
+            for (auto k : kinds) if (e.loop == k) score += 3.0f;
+            if (score > best) { best = score; pick = e.path; }
+        }
+        return pick;
     }
     // a copy of a track, under the last one (the same sound, its own file: change either on its own after)
     void duplicateTrack (int track)
@@ -4030,6 +4069,40 @@ private:
             return;
         }
         if (op == EditOp::Resound) { applyResound (tr); return; }
+        if (op == EditOp::AddMidi)
+        {
+            std::pair<int, juce::String> req;
+            lp::song::Song song;
+            { const juce::ScopedLock sl (lock); req = pendingMidi; song = current; }
+            lp::song::Part part;
+            part.kind = lp::song::PartKind::Melody;
+            part.midi = true;
+            int n = 1;
+            for (auto& p : song.parts) if (juce::String (p.name).startsWith ("MIDI ")) ++n;
+            part.name = ("MIDI " + juce::String (n)).toStdString();
+            if (req.first >= 0) { part.sound = (lp::SoundId) juce::jlimit (0, lp::kNumBuiltIns - 1, req.first); part.source = juce::String ("loopwright: ") + lp::profileFor (part.sound).name; }
+            else
+            {
+                const auto shot = oneShotFor (req.second);
+                if (shot.isNotEmpty()) { part.resound = true; part.samplePath = shot; part.source = sourceLabel (shot) + juce::File (shot).getFileNameWithoutExtension(); }
+                else { part.sound = lp::SoundId::Glass; part.source = "loopwright: " + juce::String (lp::profileFor (part.sound).name) + " (nothing in your library fit \"" + req.second + "\")"; }
+            }
+            part.remix = "a MIDI track: write its notes below";
+            juce::AudioBuffer<float> buf;
+            if (! lp::song::renderPart (song, part, currentRs, buf, [this] { return threadShouldExit(); })) return;
+            const int at = (int) song.parts.size();
+            const auto stem = currentFolder.getChildFile ("stems").getChildFile (
+                juce::String (at + 1).paddedLeft ('0', 2) + " " + juce::String (part.name) + " (midi " + juce::String (++editCounter) + ").wav");
+            if (! writeStem (stem, buf, currentRs.sampleRate)) return;
+            song.parts.push_back (part);
+            const juce::ScopedLock sl (lock);
+            current = song;
+            status.song = song;
+            status.tracks.push_back (info (part, stem, song));
+            ++status.version;
+            saveSession();
+            return;
+        }
         if (op == EditOp::Duplicate)
         {
             lp::song::Song song;

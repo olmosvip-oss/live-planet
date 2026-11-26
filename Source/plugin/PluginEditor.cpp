@@ -2008,6 +2008,18 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     fxBtn.onClick = [this] { browserOpen = ! browserOpen; fxBtn.getProperties().set ("primary", browserOpen); resized(); repaint(); };
     fxBrowser.onAdd = [this] (const String& id) { addFx (trackEditor.selected(), id); };
     studioView.onDropFx = [this] (int t, String id) { addFx (t, id); };
+    studioView.onEditNotes = [this] (int t)
+    {
+        trackEditor.select (t);
+        dockCollapsed = false;
+        dockPageShown = 0;
+        trackEditor.setDockPage (0);
+        // (room for the note editor: the arrangement gives up some height if it has to)
+        if (getHeight() - 32 - 84 - studioSplit - 10 < 430) { studioSplit = jmax (200, getHeight() - 32 - 84 - 10 - 430); splitByHand = true; }
+        showDock();
+        resized();
+        repaint();
+    };
     fxRack.onOpenChain = [this] (int t)
     {
         Component::SafePointer<LivePlanetEditor> sp (this);

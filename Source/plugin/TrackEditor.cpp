@@ -268,7 +268,7 @@ void TrackEditor::select (int t)
     {
         const auto pv = proc.songJob.partView (track);
         using PK = lp::song::PartKind;
-        notesTrack = pv.valid && (pv.kind == PK::Bass || pv.kind == PK::Melody) && ! pv.notes.empty() && ! pv.name.startsWith ("vocal (") && ! pv.name.startsWith ("layer (");
+        notesTrack = pv.valid && (pv.midi || ((pv.kind == PK::Bass || pv.kind == PK::Melody) && ! pv.notes.empty() && ! pv.name.startsWith ("vocal (") && ! pv.name.startsWith ("layer (")));
     }
     // (the two editors share the live player: only the one showing loads its sounds)
     if (showingDrums()) drumGrid.load (track);
