@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "../song/LyricMelody.h"
+#include "../song/Transcribe.h"
 
 using namespace juce;
 using lp::ui::font;
@@ -130,7 +131,10 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
     for (auto [b, tip] : { T { &octUp, "Show higher notes (or scroll)" }, T { &octDown, "Show lower notes (or scroll)" },
                            T { &holdBtn, "Hold word (H): this note keeps singing the word before it, on its own pitch (\"you\": \"yu\" on one note, \"oo\" on the next)" },
                            T { &vibBtn, "Vibrato (V): the selected note wavers once it's held, like a singer's" },
-                           T { &slideBtn, "Slide in (S): the selected note slides up or down into its pitch from the note before" } })
+                           T { &slideBtn, "Slide in (S): the selected note slides up or down into its pitch from the note before" },
+                           T { &splitBtn, "Split (E): the selected note in two, the second half keeps singing its word (drag it to another pitch)" },
+                           T { &recBtn, "Sing or hum your melody while the section plays (a bar to count in): it becomes the notes, "
+                                        "and your words go on them. Click again to stop early." } })
     {
         b->setTooltip (tip);
         b->setWantsKeyboardFocus (false);
@@ -141,6 +145,8 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
     holdBtn.onClick = [this] { toggle (0); };
     vibBtn.onClick = [this] { toggle (1); };
     slideBtn.onClick = [this] { toggle (2); };
+    splitBtn.onClick = [this] { splitNote(); };
+    recBtn.onClick = [this] { toggleRecord(); };
     autoSing.setToggleState (true, dontSendNotification);
     autoSing.setTooltip ("On: a couple of seconds after you stop changing the notes, they're sung by themselves, and the section's drawn track "
                          "gets the new take. Off: only when you press the button.");
@@ -202,6 +208,9 @@ double DrawSing::sectionStartSeconds() const
 
 void DrawSing::refresh()
 {
+    if (recordingMelody && (! proc.previewPlaying.load()
+                            || proc.previewPos.load() / StudioPlayer::fileRate >= sectionStartSeconds() + sectionBeats() * 60.0 / jmax (40.0, proc.songJob.getStatus().song.bpm)))
+        toggleRecord(); // (the section's over: what you sang becomes the notes)
     const auto st = proc.songJob.getStatus();
     if (st.version != songVersion)
     {
@@ -250,10 +259,10 @@ void DrawSing::refresh()
     undoBtn.setEnabled (! undoStack.empty());
     redoBtn.setEnabled (! redoStack.empty());
     // only moved since the take: the edit goes into the track by itself, no singing (once it's rendered)
-    if (autoSing.getToggleState() && ! notes.empty() && shownKey != sentKey && drag == Drag::None && ! wordBox.isVisible()
+    if (autoSing.getToggleState() && ! autoPaused && ! notes.empty() && shownKey != sentKey && drag == Drag::None && ! wordBox.isVisible()
         && ! needsSinging() && voiced != nullptr && voiced->renderedKey == shownKey && Time::getMillisecondCounter() - changedAt > 2500)
         bake();
-    if (autoSing.getToggleState() && consent.getToggleState() && connected && ! notes.empty() && shownKey != sentKey && drag == Drag::None
+    if (autoSing.getToggleState() && ! autoPaused && consent.getToggleState() && connected && ! notes.empty() && shownKey != sentKey && drag == Drag::None
         && ! wordBox.isVisible() && ! snap.sending && Time::getMillisecondCounter() - changedAt > 2500 && voice.getText().isNotEmpty()
         && needsSinging() && (voiced == nullptr || voiced->renderedKey == shownKey))
     {
@@ -372,10 +381,117 @@ void DrawSing::toggle (int what)
     repaint();
 }
 
+void DrawSing::splitNote()
+{
+    if (selectedNote < 0 || selectedNote >= (int) notes.size()) return;
+    auto& n = notes[(size_t) selectedNote];
+    const double half = std::round (n.len * 0.5 / snap()) * snap();
+    if (half < snap() - 1e-9 || n.len - half < snap() - 1e-9) { message = "This note is too short to split: zoom in (+) or make it longer"; repaint(); return; }
+    autoPaused = false;
+    Note b = n;
+    n.len = half;
+    b.beat = n.beat + half;
+    b.len -= half;
+    b.slur = true;          // (the same word, carried on: drag it up or down for a run)
+    b.slide = false;
+    b.vibrato = 0.0f;
+    b.id = nextId++;
+    notes.insert (notes.begin() + selectedNote + 1, b);
+    selectedNote = selectedNote + 1;
+    showTools();
+    repaint();
+}
+
+// sing or hum the melody: the section plays (a bar early, to count in) while your mic records; when it's over
+// (or you stop) the pitch is followed note by note, snapped to the key, and your words go on the notes
+void DrawSing::toggleRecord()
+{
+    const auto st = proc.songJob.getStatus();
+    if (! recordingMelody)
+    {
+        if (! st.haveSong) { message = "Write a song first"; repaint(); return; }
+        const double bpm = jmax (40.0, st.song.bpm);
+        recStartSec = jmax (0.0, sectionStartSeconds() - 240.0 / bpm); // (a bar to count in)
+        proc.startRecording();
+        proc.previewPos = recStartSec * StudioPlayer::fileRate;
+        proc.previewPlaying = true;
+        hear.setButtonText ("stop");
+        recordingMelody = true;
+        recBtn.setButtonText ("stop recording");
+        recBtn.getProperties().set ("warn", true);
+        message = "Recording: sing or hum your melody when the section starts (after a bar)";
+        repaint();
+        return;
+    }
+    recordingMelody = false;
+    recBtn.setButtonText ("record melody");
+    recBtn.getProperties().set ("warn", false);
+    proc.recording = false;
+    proc.previewPlaying = false;
+    hear.setButtonText ("play section");
+    const int len = proc.recPos.load();
+    const double rate = proc.recRate;
+    if (len < (int) (rate * 1.0)) { message = "Too short: let it record at least a bar of the section"; repaint(); return; }
+    std::vector<float> mono ((size_t) len);
+    for (int i = 0; i < len; ++i) mono[(size_t) i] = 0.5f * (proc.recBuf.getSample (0, i) + proc.recBuf.getSample (1, i));
+    float pk = 0.0f;
+    for (float v : mono) pk = jmax (pk, std::abs (v));
+    if (pk < 0.003f)
+    {
+        message = proc.wrapperType == AudioProcessor::wrapperType_Standalone ? "No sound came in: Options > Audio settings, pick your mic and untick Mute audio input"
+                                                                             : "No sound came in: set Loopwright's sidechain (audio from) to your mic's track";
+        repaint();
+        return;
+    }
+    for (auto& v : mono) v *= 0.9f / pk;
+    message = "Listening to your melody...";
+    repaint();
+    lp::song::transcribe::Options o;
+    o.bpm = jmax (40.0, st.song.bpm); o.key = st.song.key; o.minor = st.song.minor; o.lowest = 36; o.highest = 96;
+    const double offsetBeats = (recStartSec - sectionStartSeconds()) * o.bpm / 60.0; // (the count-in: before the section)
+    const double secBeats = sectionBeats();
+    SafePointer<DrawSing> self (this);
+    Thread::launch ([self, mono = std::move (mono), rate, o, offsetBeats, secBeats]
+    {
+        auto heard = lp::song::transcribe::melodyOf (mono.data(), (int) mono.size(), rate, o);
+        MessageManager::callAsync ([self, heard, offsetBeats, secBeats]
+        {
+            if (self == nullptr) return;
+            self->notes.clear();
+            for (auto& h : heard)
+            {
+                Note n;
+                n.beat = h.beat + offsetBeats;
+                n.len = h.length;
+                if (n.beat < 0.0 || n.beat >= secBeats) continue;
+                n.len = jmin (n.len, secBeats - n.beat);
+                n.pitch = h.pitch;
+                while (n.pitch < kMin) n.pitch += 12;
+                while (n.pitch > kMax) n.pitch -= 12;
+                n.word = "la";
+                n.id = self->nextId++;
+                self->notes.push_back (n);
+            }
+            if (self->notes.empty()) { self->message = "Couldn't hear a melody: sing a little louder, closer to the mic"; self->repaint(); return; }
+            const bool words = self->lyricWords().size() > 0;
+            if (words) self->fillFromLyrics();
+            int hi = kMin + kRows - 1;
+            for (auto& n : self->notes) hi = std::max (hi, n.pitch + 4);
+            self->top = jlimit (kMin + kRows - 1, kMax, hi);
+            self->viewStart = 0.0;
+            self->autoPaused = true;
+            if (self->message.isEmpty() || ! words)
+                self->message = String ((int) self->notes.size()) + " notes from your melody" + (words ? ", with your words on them" : ": type your words and press Fill in my words");
+            self->repaint();
+        });
+    });
+}
+
 void DrawSing::showTools()
 {
     const bool has = selectedNote >= 0 && selectedNote < (int) notes.size();
     for (auto* b : { &holdBtn, &vibBtn, &slideBtn }) b->setEnabled (has);
+    splitBtn.setEnabled (has && notes[(size_t) selectedNote].len >= snap() * 2.0 - 1e-9);
     auto lit = [] (TextButton& b, bool on) { if ((bool) b.getProperties()["primary"] != on) { b.getProperties().set ("primary", on); b.repaint(); } };
     lit (holdBtn, has && notes[(size_t) selectedNote].slur);
     lit (vibBtn, has && notes[(size_t) selectedNote].vibrato > 0.0f);
@@ -398,6 +514,7 @@ void DrawSing::mouseDown (const MouseEvent& e)
     grabKeyboardFocus();
     if (wordBox.isVisible()) commitWord();
     if (! roll().withTrimmedLeft (44.0f).contains (e.position)) return;
+    autoPaused = false; // (you're changing the notes: "sing as I draw" works again)
     const int i = noteAt (e.position);
     if (i >= 0 && (e.mods.isPopupMenu() || e.mods.isAltDown()))
     {
@@ -479,6 +596,7 @@ bool DrawSing::keyPressed (const KeyPress& k)
     if (k.getTextCharacter() == 'h' || k.getTextCharacter() == 'H') { toggle (0); return true; }
     if (k.getTextCharacter() == 'v' || k.getTextCharacter() == 'V') { toggle (1); return true; }
     if (k.getTextCharacter() == 's' || k.getTextCharacter() == 'S') { toggle (2); return true; }
+    if (k.getTextCharacter() == 'e' || k.getTextCharacter() == 'E') { splitNote(); return true; }
     return false;
 }
 
@@ -531,7 +649,17 @@ void DrawSing::fillFromLyrics()
     const auto words = lyricWords();
     if (words.isEmpty()) return;
     std::sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b) { return a.beat < b.beat; });
-    for (size_t i = 0; i < notes.size(); ++i) notes[i].word = (int) i < words.size() ? words[(int) i] : String ("la");
+    // one word per note, left to right; a held note ("hold word") keeps singing the word before it
+    int w = 0;
+    String last = "la";
+    for (auto& n : notes)
+    {
+        if (n.slur) { n.word = last; continue; }
+        n.word = last = w < words.size() ? words[w] : String ("la");
+        ++w;
+    }
+    message = w < words.size() ? String (words.size() - w) + " of your words have no note yet: draw more notes, or split some (E)"
+                               : w > words.size() ? String ("more notes than words: the extra notes sing \"la\"") : String();
     repaint();
 }
 
@@ -567,7 +695,9 @@ void DrawSing::writeFromLyrics()
             int hi = kMin + kRows - 1;
             for (auto& n : self->notes) hi = std::max (hi, n.pitch + 4);
             self->top = jlimit (kMin + kRows - 1, kMax, hi);
-            self->message = self->notes.empty() ? String ("Couldn't write a melody here") : String();
+            self->message = self->notes.empty() ? String ("Couldn't write a melody here")
+                                                : String ("Here's a melody: change any note, or press Sing to hear it in your voice");
+            self->autoPaused = true; // (not sung by itself: you choose when)
             self->viewStart = 0.0;
             self->repaint();
         });
@@ -594,6 +724,7 @@ void DrawSing::hearIt()
 // the notes, as the helper reads them (a phrase where there's a gap of a beat or more)
 void DrawSing::singIt()
 {
+    autoPaused = false;
     const auto st = proc.songJob.getStatus();
     const int c = section.getSelectedItemIndex();
     if (notes.empty() || ! st.haveSong || c < 0 || c >= (int) st.song.sections.size()) return;
@@ -682,16 +813,16 @@ void DrawSing::resized()
     row.removeFromRight (6);
     octDown.setBounds (row.removeFromRight (56));
     row.removeFromRight (14);
-    for (auto* b : { &slideBtn, &vibBtn, &holdBtn })
+    for (auto* b : { &splitBtn, &slideBtn, &vibBtn, &holdBtn })
     {
-        b->setBounds (row.removeFromRight (b == &holdBtn ? 92 : 80));
+        b->setBounds (row.removeFromRight (b == &holdBtn ? 92 : b == &splitBtn ? 60 : 80));
         row.removeFromRight (6);
     }
     showTools();
     auto bottom = rollCard().reduced (18, 16).removeFromBottom (32);
-    for (auto* b : { &fromLyrics, &fillWords, &clearAll, &undoBtn, &redoBtn })
+    for (auto* b : { &fromLyrics, &recBtn, &fillWords, &clearAll, &undoBtn, &redoBtn })
     {
-        b->setBounds (bottom.removeFromLeft (b == &fromLyrics ? 160 : b == &undoBtn || b == &redoBtn ? 64 : 110));
+        b->setBounds (bottom.removeFromLeft (b == &fromLyrics ? 150 : b == &recBtn ? 128 : b == &undoBtn || b == &redoBtn ? 60 : b == &clearAll ? 70 : 120));
         bottom.removeFromLeft (8);
     }
     hear.setBounds (bottom.removeFromRight (100));

@@ -1110,7 +1110,13 @@ public:
 private:
     using Note = lp::song::lyricmelody::Note;
     int top = 79;                              // the highest note shown (32 notes at a time; scroll for more)
-    juce::TextButton octUp { "oct +" }, octDown { "oct -" }, holdBtn { "hold word" }, vibBtn { "vibrato" }, slideBtn { "slide in" };
+    juce::TextButton octUp { "oct +" }, octDown { "oct -" }, holdBtn { "hold word" }, vibBtn { "vibrato" }, slideBtn { "slide in" }, splitBtn { "split" };
+    void splitNote();                          // the selected note in two (the second keeps singing its word)
+    juce::TextButton recBtn { "record melody" };
+    void toggleRecord();                       // sing or hum the melody with the section: it becomes the notes
+    bool recordingMelody = false;
+    double recStartSec = 0.0;                  // (where in the song the recording started)
+    bool autoPaused = false;                   // (a melody just written or recorded: not sung until you change it or press sing)
     void toggle (int what);                    // 0 hold, 1 vibrato, 2 slide, on the selected note
     void showTools();
     LivePlanetProcessor& proc;
