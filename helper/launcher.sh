@@ -15,9 +15,14 @@ export UV_NO_CONFIG=1
 alert() { # title, message
   /usr/bin/osascript -e 'on run argv' -e 'display alert (item 1 of argv) message (item 2 of argv) as critical buttons {"OK"} default button "OK"' -e 'end run' "$1" "$2" >/dev/null 2>&1
 }
-ask() { # title, message, other button -> prints the button chosen
-  /usr/bin/osascript -e 'on run argv' -e 'button returned of (display dialog (item 2 of argv) with title (item 1 of argv) buttons {(item 3 of argv), "OK"} default button "OK")' -e 'end run' "$1" "$2" "$3" 2>/dev/null
+ask() { # title, message, other button, another button -> prints the button chosen
+  /usr/bin/osascript -e 'on run argv' -e 'button returned of (display dialog (item 2 of argv) with title (item 1 of argv) buttons {(item 3 of argv), (item 4 of argv), "OK"} default button "OK")' -e 'end run' "$1" "$2" "$3" "$4" 2>/dev/null
 }
+ask_code() { # message -> prints the code typed, or nothing when cancelled
+  /usr/bin/osascript -e 'on run argv' -e 'text returned of (display dialog (item 1 of argv) with title "Loopwright Voice" default answer "" buttons {"Cancel", "Activate"} default button "Activate")' -e 'end run' "$1" 2>/dev/null
+}
+PY() { "$UV" run --no-project --quiet --python 3.11 "$@"; }
+LICENSE="$APP_RES/payload/src/app/license.py"
 
 # ---- this Mac: Apple Silicon only (also true when this runs under Rosetta), macOS 14+, 16 GB
 if [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null)" != "1" ]; then
@@ -39,23 +44,46 @@ fi
 if [ -f "$CONN" ]; then
   PID=$(/usr/bin/plutil -extract pid raw -o - "$CONN" 2>/dev/null || true)
   if [ -n "$PID" ] && /bin/kill -0 "$PID" 2>/dev/null && /bin/ps -p "$PID" -o command= | grep -q "app/server.py"; then
-    if [ "$(ask "Loopwright Voice" "Loopwright Voice is running. Loopwright's Vocals tab can use it now." "Stop it")" = "Stop it" ]; then
+    CHOICE=$(ask "Loopwright Voice" "Loopwright Voice is running. Loopwright's Vocals tab can use it now." "Deactivate this Mac" "Stop it")
+    if [ "$CHOICE" = "Stop it" ] || [ "$CHOICE" = "Deactivate this Mac" ]; then
       /bin/kill "$PID" 2>/dev/null
       rm -f "$CONN"
+    fi
+    if [ "$CHOICE" = "Deactivate this Mac" ]; then
+      if MSG=$(PY "$LICENSE" deactivate); then
+        alert "This Mac is deactivated" "Your Loopwright Voice code is free for another Mac. Open Loopwright Voice again to use it here."
+      else
+        alert "Couldn't deactivate" "$MSG"
+      fi
     fi
     exit 0
   fi
 fi
 
-# ---- set up (first time, after an update, or to finish a stopped download)
+# ---- Python (for the license check and the setup)
 mkdir -p "$ROOT" "$LOGDIR"
+# (--no-bin: never touch ~/.local/bin, where the person may have their own python3.11)
+"$UV" python install 3.11 --no-bin >>"$LOGDIR/Loopwright Voice setup.log" 2>&1 || {
+  alert "Loopwright Voice couldn't set up" "It couldn't download Python. Check your internet connection, then open Loopwright Voice again. (Details: ~/Library/Logs/Loopwright Voice setup.log)"
+  exit 1
+}
+
+# ---- the license: a code from loop-wright.com, activated on 2 Macs at most
+if ! PY "$LICENSE" check >/dev/null 2>&1; then
+  PROMPT="Paste your Loopwright Voice code (it's in your purchase email and starts with LW1-). It works on 2 Macs. Don't have one? Get it at loop-wright.com/voices"
+  while true; do
+    CODE=$(ask_code "$PROMPT") || exit 0
+    [ -z "$CODE" ] && exit 0
+    if MSG=$(PY "$LICENSE" activate "$CODE"); then
+      break
+    fi
+    PROMPT="$MSG"
+  done
+fi
+
+# ---- set up (first time, after an update, or to finish a stopped download)
 VERSION=$(cat "$APP_RES/payload/VERSION")
 if [ "$(cat "$ROOT/.ready" 2>/dev/null)" != "$VERSION" ]; then
-  # (--no-bin: never touch ~/.local/bin, where the person may have their own python3.11)
-  "$UV" python install 3.11 --no-bin >>"$LOGDIR/Loopwright Voice setup.log" 2>&1 || {
-    alert "Loopwright Voice couldn't set up" "It couldn't download Python. Check your internet connection, then open Loopwright Voice again. (Details: ~/Library/Logs/Loopwright Voice setup.log)"
-    exit 1
-  }
   "$UV" run --no-project --python 3.11 "$APP_RES/setup.py" --root "$ROOT" --payload "$APP_RES/payload" --uv "$UV" \
       >>"$LOGDIR/Loopwright Voice setup.log" 2>&1 || {
     alert "Loopwright Voice setup stopped" "Open Loopwright Voice again to carry on where it stopped. (Details: ~/Library/Logs/Loopwright Voice setup.log)"

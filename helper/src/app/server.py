@@ -355,6 +355,9 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    import license  # (app/license.py: this Mac must be activated with a Loopwright Voice code)
+    if not license.licensed_to():
+        raise SystemExit("Loopwright Voice isn't activated on this Mac: open the Loopwright Voice app and paste your code.")
     cf = Path.home() / "Library/Application Support/Loopwright/voice-helper.json"  # how the plugin finds the helper (owner-only)
     cf.parent.mkdir(parents=True, exist_ok=True)
     for p in (JOBS, INST, VOICES, GUIDES):
