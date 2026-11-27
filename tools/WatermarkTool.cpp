@@ -4,6 +4,7 @@
 //   Watermark --embed in.wav out.wav "buyer@email.com"   (for testing)
 #include "../Source/song/Watermark.h"
 #include "../Source/song/VocalLevel.h"
+#include "../Source/song/Stack.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <cstdio>
 
@@ -93,6 +94,62 @@ int main (int argc, char** argv)
         juce::WavAudioFormat wav;
         std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (out), rd->sampleRate, (unsigned) b.getNumChannels(), 24, {}, 0));
         return w != nullptr && w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples()) ? 0 : 2;
+    }
+    if (cmd == "--express" && argc > 4) // (testing) --express in.wav out.wav "t0,t1,slide;..."
+    {
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        auto cwd = juce::File::getCurrentWorkingDirectory();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (cwd.getChildFile (argv[2])));
+        if (rd == nullptr) return 2;
+        juce::AudioBuffer<float> b (2, (int) rd->lengthInSamples);
+        b.clear();
+        rd->read (&b, 0, b.getNumSamples(), 0, true, rd->numChannels > 1);
+        if (rd->numChannels == 1) b.copyFrom (1, 0, b, 0, 0, b.getNumSamples());
+        std::vector<lp::song::stack::Bend> bends;
+        for (auto& e : juce::StringArray::fromTokens (argv[4], ";", ""))
+        {
+            auto v = juce::StringArray::fromTokens (e, ",", "");
+            if (v.size() >= 3) bends.push_back ({ v[0].getDoubleValue(), v[1].getDoubleValue(), v.size() > 3 ? v[3].getFloatValue() : 0.0f, v[2].getFloatValue() });
+        }
+        lp::song::stack::express (b, rd->sampleRate, bends);
+        const auto out = cwd.getChildFile (argv[3]);
+        out.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (out), rd->sampleRate, 2, 24, {}, 0));
+        return w != nullptr && w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples()) ? 0 : 2;
+    }
+    if (cmd == "--piece" && argc > 6) // (testing Draw & sing's piece) --piece in.wav out.wav a0sec a1sec semis ratio
+    {
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        auto cwd = juce::File::getCurrentWorkingDirectory();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (cwd.getChildFile (argv[2])));
+        if (rd == nullptr) return 2;
+        const double sr = rd->sampleRate;
+        juce::AudioBuffer<float> take (2, (int) rd->lengthInSamples);
+        take.clear();
+        rd->read (&take, 0, take.getNumSamples(), 0, true, false);
+        take.copyFrom (1, 0, take, 0, 0, take.getNumSamples());
+        const int N = take.getNumSamples();
+        const int a0 = (int) (juce::String (argv[4]).getDoubleValue() * sr), a1 = (int) (juce::String (argv[5]).getDoubleValue() * sr);
+        const float semis = juce::String (argv[6]).getFloatValue();
+        const double ratio = argc > 7 ? juce::String (argv[7]).getDoubleValue() : 1.0, ctx = 0.2, fadeIn = 0.006, tail = 0.006;
+        const int cs = juce::jmax (0, a0 - (int) ((fadeIn + ctx) * sr)), ce = juce::jmin (N, a1 + (int) ((tail + ctx) * sr));
+        const int inLen = ce - cs, outLen = juce::jmax (1, (int) std::round (inLen * ratio));
+        juce::AudioBuffer<float> in (2, inLen), out (2, outLen);
+        for (int ch = 0; ch < 2; ++ch) in.copyFrom (ch, 0, take, ch, cs, inLen);
+        signalsmith::stretch::SignalsmithStretch<float> st;
+        st.presetDefault (2, (float) sr);
+        st.setTransposeSemitones (semis, (float) (8000.0 / sr));
+        st.setFormantFactor (1.0f, true);
+        const bool done = st.exact (in.getArrayOfReadPointers(), inLen, out.getArrayOfWritePointers(), outLen);
+        std::printf ("exact: %d, in %d out %d\n", (int) done, inLen, outLen);
+        const auto o = cwd.getChildFile (argv[3]);
+        o.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (o), sr, 2, 24, {}, 0));
+        return w != nullptr && w->writeFromAudioSampleBuffer (out, 0, out.getNumSamples()) ? 0 : 2;
     }
     std::printf ("Watermark --check song.wav | --id email | --embed in.wav out.wav email\n");
     return 1;
