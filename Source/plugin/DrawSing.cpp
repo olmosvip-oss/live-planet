@@ -1331,9 +1331,11 @@ void DrawSing::paint (Graphics& g)
     // ---- what's happening
     String s = message;
     if (statusText) if (const auto a = statusText(); a.isNotEmpty()) s = a;
-    if (! connected) s = "The voice helper isn't running: you can draw and hear notes; start it to have them sung.";
+    if (! connected) s = lp::voice::helperCanRunHere()
+        ? String ("The voice helper isn't running: you can draw and hear notes; open Loopwright Voice to have them sung.")
+        : "You can draw and hear notes, but not have them sung: " + lp::voice::helperMissingShort ({});
     g.setFont (font (12.0f));
-    g.setColour (s.contains ("didn't work") || s.contains ("isn't running") ? Colour (0xffff8f8f) : t.inkDim);
+    g.setColour (s.contains ("didn't work") || s.contains ("isn't running") || s.contains ("Apple Silicon") ? Colour (0xffff8f8f) : t.inkDim);
     g.drawFittedText (s, statusArea, Justification::topLeft, 4);
 }
 

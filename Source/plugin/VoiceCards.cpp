@@ -334,7 +334,9 @@ void VoicePicker::paint (Graphics& g)
     {
         g.setColour (th->inkDim);
         g.setFont (font (14.0f));
-        g.drawFittedText (voices.getNumItems() == 0 ? "No voices yet. Start the voice helper, then add a recording of you, or make voices from one."
+        g.drawFittedText (voices.getNumItems() == 0 ? (lp::voice::helperCanRunHere()
+                              ? String ("No voices yet. Open Loopwright Voice (the voice helper), then add a recording of you, or make voices from one.")
+                              : "No voices here. " + lp::voice::helperMissingShort ({}))
                           : tab == 1 ? "No voices made from yours yet: \"Make voices from a recording\" makes five from one clip of you."
                                      : "Nothing matches.", area.reduced (30.0f).toNearestInt(), Justification::centred, 3);
     }

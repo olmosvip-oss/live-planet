@@ -1282,7 +1282,8 @@ void SongPanel::mouseUp (const MouseEvent& e)
         m.addSeparator();
         m.addItem (1, "Storage & cleanup...");
         m.addSeparator();
-        m.addItem (PopupMenu::Item ("Voice page (experimental)").setID (4).setTicked ((bool) lp::setting ("voiceLab", false)));
+        m.addItem (PopupMenu::Item (lp::voice::helperCanRunHere() ? "Voice page (experimental)"
+                                                                   : "Voice page (experimental, Apple Silicon Macs only)").setID (4).setTicked ((bool) lp::setting ("voiceLab", false)));
         SafePointer<SongPanel> self (this);
         m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (songsLink.toNearestInt())), [self, recent] (int id)
         {

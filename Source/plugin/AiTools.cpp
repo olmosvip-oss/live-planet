@@ -385,7 +385,7 @@ void LayerPopup::start()
         return;
     }
     const auto snap = proc.voiceClient.snapshot();
-    if (! snap.connected) { message = "The voice helper isn't running: start it, then try again."; repaint(); return; }
+    if (! snap.connected) { message = lp::voice::helperMissingShort ("The voice helper isn't running: open Loopwright Voice, then try again."); repaint(); return; }
     lp::voice::Client::Request r;
     const auto& a = st.song.sections[(size_t) firstSection];
     String label = String (chips[0]->getButtonText());

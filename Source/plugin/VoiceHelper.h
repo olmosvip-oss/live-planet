@@ -18,8 +18,56 @@
 // The helper writes where it listens (port, a per-run token) to a small file only you can read:
 //   macOS:  ~/Library/Application Support/Loopwright/voice-helper.json
 //   other:  <app data>/Loopwright/voice-helper.json      (LP_VOICE_HELPER_FILE overrides, for tests)
+#if JUCE_MAC
+// (declared here, not via <sys/sysctl.h>: that header brings in a `struct label` that clashes with the editor's own)
+extern "C" int sysctlbyname (const char*, void*, size_t*, void*, size_t);
+#endif
+
 namespace lp::voice
 {
+// Loopwright Voice (the helper) runs on Macs with Apple Silicon (M1 or later) only: not Intel Macs, not Windows.
+enum class HelperSupport { appleSilicon, intelMac, windows, other };
+inline HelperSupport helperSupport()
+{
+   #if JUCE_MAC
+    int arm = 0;
+    size_t len = sizeof (arm);
+    // (true on Apple Silicon even when the host runs under Rosetta)
+    if (sysctlbyname ("hw.optional.arm64", &arm, &len, nullptr, 0) == 0 && arm == 1) return HelperSupport::appleSilicon;
+    return HelperSupport::intelMac;
+   #elif JUCE_WINDOWS
+    return HelperSupport::windows;
+   #else
+    return HelperSupport::other;
+   #endif
+}
+inline bool helperCanRunHere() { return helperSupport() == HelperSupport::appleSilicon; }
+// what to say when the helper isn't there: how to get it, or why this computer can't run it
+inline juce::String helperMissingText()
+{
+    switch (helperSupport())
+    {
+        case HelperSupport::appleSilicon:
+            return "Voice needs Loopwright Voice, the voice helper, running on this Mac (it does the singing; the plugin never does). "
+                   "Get it at loop-wright.com/voices, open it, and this page finds it by itself. Everything else in Loopwright works without it.";
+        case HelperSupport::intelMac:
+            return "Loopwright Voice, the voice helper, needs a Mac with Apple Silicon (M1 or later). This Mac has an Intel chip, so it can't "
+                   "run it. Everything else in Loopwright works as usual.";
+        case HelperSupport::windows:
+            return "Loopwright Voice, the voice helper, is for Macs with Apple Silicon (M1 or later) only. It isn't available for Windows. "
+                   "Everything else in Loopwright works as usual.";
+        case HelperSupport::other: break;
+    }
+    return "Loopwright Voice, the voice helper, is for Macs with Apple Silicon (M1 or later) only. Everything else in Loopwright works as usual.";
+}
+// one line, for the smaller spots (Draw & sing, + AI layer)
+inline juce::String helperMissingShort (const juce::String& whenRunning)
+{
+    if (helperCanRunHere()) return whenRunning;
+    return helperSupport() == HelperSupport::windows ? "The voice helper is for Macs with Apple Silicon only (not Windows)."
+                                                     : "The voice helper needs a Mac with Apple Silicon (M1 or later).";
+}
+
 struct Result { int n = 0; juce::String vocal, mix, heard; int words = 0, key = 0; };
 // the voices to offer (the helper's own working files left out), and the one to pick: the one you used last
 inline juce::StringArray usableVoices (const juce::StringArray& all)

@@ -465,7 +465,7 @@ void VoicePage::refreshButtons()
     create.setEnabled (ready);
     // (greyed out: say what's missing, so it never just sits there)
     notReady = ready || working || snap.sending ? String()
-             : ! snap.connected ? String ("Start the voice helper on this computer to create")
+             : ! snap.connected ? lp::voice::helperMissingShort ("Open Loopwright Voice (the voice helper) on this Mac to create")
              : mine && ! haveTake ? String ("Record your take in the app, or drop / pick a recording of you over this section")
              : ! mine && lyrics.getText().trim().isEmpty() ? String ("Type your words first")
              : voice.getText().isEmpty() ? String ("Pick a voice")
@@ -778,9 +778,7 @@ void VoicePage::paint (Graphics& g)
         {
             g.setFont (font (13.5f, lp::ui::Light));
             g.setColour (t.ink.withAlpha (0.8f));
-            g.drawFittedText ("Voice needs the Loopwright Voice helper running on this computer (it does the singing; the plugin never "
-                              "does). Start it, and this page finds it by itself. Everything else in Loopwright works without it.",
-                              in.withHeight (80.0f).toNearestInt(), Justification::topLeft, 4, 1.0f);
+            g.drawFittedText (lp::voice::helperMissingText(), in.withHeight (80.0f).toNearestInt(), Justification::topLeft, 4, 1.0f);
             if (snap.problem.isNotEmpty())
             {
                 g.setFont (lp::ui::mono (9.5f, false, 0.08f));
