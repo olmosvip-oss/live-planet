@@ -35,8 +35,8 @@ static int ownVoiceCount (const ComboBox& voices)
 
 VoicePicker::About VoicePicker::about (const String& name)
 {
-    const auto tier = lp::license::jordanTier();
-    const String lic = tier == "pro" ? " (Pro license)" : tier == "standard" ? " (Standard license)" : " (license from $150)";
+    const auto tier = lp::license::required() ? lp::license::jordanTier() : String ("none needed");
+    const String lic = tier == "pro" ? " (Pro license)" : tier == "standard" ? " (Standard license)" : tier.isEmpty() ? " (license from $150)" : String();
     if (name.equalsIgnoreCase ("Jordan_Sing")) return { name, "Loopwright voice: singing" + lic, false };
     if (name.equalsIgnoreCase ("Jordan_Rap")) return { name, "Loopwright voice: rap" + lic, false };
     for (auto& v : lp::song::variants::all())

@@ -12,7 +12,7 @@ VocalsHub::VocalsHub (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
     struct T { int icon; const char* head; const char* sub; const char* tip; bool main; };
     for (auto [icon, head, sub, tip, main] : {
              T { 0, "Draw & sing", "draw notes, type words, hear it in your voice", "A piano roll over a section: each note a word, sung in your voice (the voice helper)", true },
-             T { 1, "Create with AI", "write a melody and sing it, or freestyle", "Lyrics in, a sung vocal out, over your song (the voice helper)", true },
+             T { 1, "Create with AI", "sing it yourself, hear it in another voice", "Record or drop in your own take, and the voice helper sings it again in the voice you picked", true },
              T { 2, "Vocal chops", "from the vocals in your samples", "Vocal chops from the vocals in your sample folders, sung to a new melody over your chords", false },
              T { 3, "Chops from my vocal", "your recording, chopped into a hook", "Your own vocal (a WAV or AIFF) chopped into a catchy hook for this song", false },
              T { 4, "Auto-tune my vocal", "natural: keeps your slides", "Your vocal, auto-tuned to the song's key: natural (keeps your slides)", false },
