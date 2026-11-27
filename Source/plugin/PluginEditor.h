@@ -683,6 +683,8 @@ public:
 
 private:
     enum Col { None, Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
+    bool isAudioTrack (int track) const;  // a vocal or a layer: it has a record button
+    void addAudioTrack();
     static constexpr float rowsTop = 30.0f;  // (the bar numbers above)
     struct ClipHit { int track, section, b0, b1; juce::Rectangle<float> r; }; // a clip: bars b0 .. b1-1 of a track
     std::vector<ClipHit> clipHits;           // where each clip was drawn (for clicks)
@@ -1640,6 +1642,7 @@ private:
     SourcesPanel sourcesPanel;
     FilePill pillMidi, pillChords, pillStems, pillMix, pillHelper, pillFolder, pillExport;
     std::unique_ptr<ExportPanel> exportPanel;
+    juce::String recNote; juce::uint32 recNoteAt = 0; // (a word about recording into a track)
     // help: the tour (the first time, and from the "?" by the logo) and the "?"s by the drag buttons
     HelpDot tourBtn { "", "" },
             hMidi { "Drag MIDI", "Every MIDI part of the song in one drag: the drums, the 808, the hook, every played part, and the chords and bass your loops play (read from them). Drop it in your DAW and each part lands on its own MIDI track, with the song's sections as markers." },

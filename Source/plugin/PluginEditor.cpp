@@ -1960,9 +1960,12 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         songView.onLayer (0, n);
         if (layerPopup != nullptr) layerPopup->useNotesOf (track);
     };
+    proc.onRecordMessage = [this] (const String& m) { recNote = m; recNoteAt = Time::getMillisecondCounter(); studioView.repaint(); };
     studioView.statusText = [this]
     {
         if (autoAdd.status.isNotEmpty()) return autoAdd.status;
+        if (proc.trackRecording.load()) return String ("RECORDING");
+        if (recNote.isNotEmpty() && Time::getMillisecondCounter() - recNoteAt < 8000) return recNote;
         // (a word after an edit, for a few seconds)
         const auto st = proc.songJob.getStatus();
         return st.notice.isNotEmpty() && Time::getMillisecondCounter() - st.noticeAt < 7000 ? st.notice : String();
@@ -2604,6 +2607,7 @@ void LivePlanetEditor::showOneShotMenu()
 
 void LivePlanetEditor::timerCallback()
 {
+    if (proc.trackTakeReady.load()) proc.finishTrackTake(); // (a take just ended: into its track)
     if (proc.songJob.getStatus().undoWhat != undoShown) repaint (0, 0, getWidth(), 76); // the undo button in the top bar
     if (page == Sound)
     {

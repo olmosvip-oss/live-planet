@@ -315,6 +315,21 @@ public:
     bool wasFollowing = false;
     double lastHostPpq = -1.0, lastBlockBeats = 0.0, ppqCarry = 0.0;
     bool canRecordMic() const; // only the standalone app has a mic input
+    // ---- recording into a track: arm an audio track (its R button), press play, and what comes in is recorded
+    // from where the song is; when it stops, the take goes into the track there (replacing what was in that stretch)
+    bool armRecord (int track, juce::String& why);  // message thread
+    void disarmRecord();                              // message thread
+    void finishTrackTake();                           // message thread, once a take has ended (trackTakeReady)
+    std::atomic<int> armTrack { -1 };
+    std::atomic<bool> trackRecording { false }, trackTakeReady { false };
+    std::atomic<double> trackRecStart { 0.0 };        // where the take starts (song file samples)
+    std::function<void (const juce::String&)> onRecordMessage; // (a short note for the screen)
+    juce::TimeSliceThread trackWriterThread { "Loopwright record" };
+    juce::SpinLock trackWriterLock;
+    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> trackWriter;
+    juce::File trackTakeFile;
+    double trackTakeRate = 48000.0;
+    std::vector<float> recInL, recInR;
     static BusesProperties lpBuses();
     juce::String getSampleInfo() const { return sampleInfo; }
 

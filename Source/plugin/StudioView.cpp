@@ -288,6 +288,7 @@ void StudioView::showAddMenu()
         for (int s = 0; s < lp::kNumBuiltIns; ++s) midi.addItem (3000 + s, lp::profileFor ((lp::SoundId) s).name);
         m.addSeparator();
         m.addSubMenu ("MIDI track (write your own notes)", midi);
+        m.addItem (2990, "Audio track (record into it)");
     }
     m.addSectionHeader ("write something new over your chords");
     m.addItem (1001, "Hook: a melody (original, written for this song)");
@@ -300,6 +301,7 @@ void StudioView::showAddMenu()
                      [this] (int r)
                      {
                          if (r >= 3000 && r < 3000 + lp::kNumBuiltIns) { proc.songJob.addMidiTrack (r - 3000, {}); return; }
+                         if (r == 2990) { addAudioTrack(); return; }
                          if (r == 2999)
                          {
                              auto* w = new AlertWindow ("A MIDI track", "On the one-shot in your library that fits what you type.", MessageBoxIconType::NoIcon, this);
@@ -597,6 +599,18 @@ void StudioView::paint (Graphics& g)
         };
         pill (colBounds (i, Mute), "M", m.mute.load(), Colour (0xfff2a33a));
         pill (colBounds (i, Solo), "S", m.solo.load(), th.grassLight);
+        if (isAudioTrack (i))
+        {
+            // an audio track: its record button (arm it, press play, sing)
+            const auto lb = colBounds (i, Lock);
+            const bool armed = proc.armTrack.load() == i, rec = armed && proc.trackRecording.load();
+            const float blink = rec ? 0.55f + 0.45f * std::sin ((float) Time::getMillisecondCounter() * 0.008f) : 1.0f;
+            g.setColour (armed ? Colour (0xffe5484d).withAlpha (0.25f * blink) : Colours::white.withAlpha (0.08f));
+            g.fillRoundedRectangle (lb, 4.0f);
+            g.setColour (armed ? Colour (0xffff5c61).withAlpha (blink) : Colours::white.withAlpha (0.55f));
+            g.fillEllipse (lb.withSizeKeepingCentre (8.0f, 8.0f));
+        }
+        else
         {
             // the lock: a track you love stays when the rest is written again
             const auto lb = colBounds (i, Lock);
@@ -1387,7 +1401,22 @@ void StudioView::mouseDown (const MouseEvent& e)
         {
             case Mute: m.mute = ! m.mute.load(); mixDirty = true; break;
             case Solo: m.solo = ! m.solo.load(); mixDirty = true; break;
-            case Lock: proc.songJob.setLocked (i, ! st.tracks[(size_t) i].locked); break;
+            case Lock:
+                if (isAudioTrack (i))
+                {
+                    // arm (or disarm) it for recording
+                    if (proc.armTrack.load() == i) proc.disarmRecord();
+                    else
+                    {
+                        if (proc.armTrack.load() >= 0) proc.disarmRecord();
+                        String why;
+                        if (! proc.armRecord (i, why) && why.isNotEmpty())
+                            AlertWindow::showMessageBoxAsync (MessageBoxIconType::NoIcon, "Recording", why);
+                    }
+                    repaint();
+                    break;
+                }
+                proc.songJob.setLocked (i, ! st.tracks[(size_t) i].locked); break;
             case Volume: case Pan: case Tone:
                 if (e.getNumberOfClicks() > 1) // double-click resets
                 {
@@ -1815,4 +1844,32 @@ void StudioView::resized()
 {
     hFeel.setTopLeftPosition (18 + (int) GlyphArrangement::getStringWidth (lp::ui::mono (10.0f, true, 0.14f), "FEEL") + 8, getHeight() - 24);
     hTracks.setTopLeftPosition (88, 4);
+}
+
+// an audio track: a vocal or a layer (a file played from bar 1), not a loop, a MIDI track or a generated part
+bool StudioView::isAudioTrack (int i) const
+{
+    const auto st = proc.songJob.getStatus();
+    if (i < 0 || i >= (int) st.song.parts.size()) return false;
+    const juce::String n (st.song.parts[(size_t) i].name);
+    return n.startsWith ("vocal (") || n.startsWith ("layer (");
+}
+
+// a new, empty audio track (a moment of silence until you record into it)
+void StudioView::addAudioTrack()
+{
+    const auto st = proc.songJob.getStatus();
+    if (! st.haveSong) return;
+    int k = 1;
+    for (auto& t : st.tracks) if (t.name.startsWithIgnoreCase ("vocal (Audio ")) ++k;
+    const String name = "Audio " + String (k).paddedLeft ('0', 2);
+    const auto folder = st.files.folder.getChildFile ("voice");
+    folder.createDirectory();
+    const auto file = folder.getChildFile (name + " (empty).wav").getNonexistentSibling (false);
+    WavAudioFormat wav;
+    AudioBuffer<float> silence (2, (int) (StudioPlayer::fileRate * 0.5));
+    silence.clear();
+    if (std::unique_ptr<AudioFormatWriter> w (wav.createWriterFor (new FileOutputStream (file), StudioPlayer::fileRate, 2, 24, {}, 0)); w != nullptr)
+        w->writeFromAudioSampleBuffer (silence, 0, silence.getNumSamples());
+    proc.songJob.addSungVocal (file, name, "an audio track: press its red dot, then play, to record", true, "audio track", false);
 }

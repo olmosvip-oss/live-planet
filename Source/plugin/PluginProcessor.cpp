@@ -166,7 +166,7 @@ void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         const auto* presets = lp::masterPresets (count);
         for (int i = 0; i < count && i < (int) liveMasters.size(); ++i) liveMasters[(size_t) i].prepare (sampleRate, presets[i].ceilingDb);
     }
-    for (auto* v : { &fxL, &fxR, &sendL, &sendR, &liveL, &liveR }) v->assign ((size_t) maxBlock, 0.0f);
+    for (auto* v : { &fxL, &fxR, &sendL, &sendR, &liveL, &liveR, &recInL, &recInR }) v->assign ((size_t) maxBlock, 0.0f);
 }
 
 lp::Weather LivePlanetProcessor::getManualWeather() const
@@ -297,6 +297,13 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         float pk = 0.0f;
         for (int ch = 0; ch < ins; ++ch) pk = std::max (pk, buffer.getMagnitude (ch, 0, n));
         lp::ui::notePeak (inPeak, pk);
+        // (an armed track: this block's input, kept for when the song's position is known below)
+        if (armTrack.load() >= 0 && ins > 0 && (size_t) n <= recInL.size())
+        {
+            std::copy (buffer.getReadPointer (0), buffer.getReadPointer (0) + n, recInL.begin());
+            const float* r = buffer.getReadPointer (std::min (1, ins - 1));
+            std::copy (r, r + n, recInR.begin());
+        }
         if (recording.load() && ins > 0)
         {
             const int at = recPos.load(), room = recBuf.getNumSamples() - at, k = std::min (n, room);
@@ -423,6 +430,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const bool playSong = haveSong && ! preview && t.hostPlaying && params.getRawParameterValue ("songplay")->load() > 0.5f;
     if (! playSong) { wasFollowing = false; ppqCarry = 0.0; lastHostPpq = -1.0; } // stopped: the next play follows your DAW from where it starts
     songPlaying = playSong || preview;
+    if (! (playSong || preview) && trackRecording.load()) { trackRecording = false; trackTakeReady = true; } // (stopped: the take is done)
     if (playSong || preview) t.shouldPlay = false; // the weather music steps aside while your song plays
     // your keys play the sample instrument (Play mode), or the built-in instrument
     const bool toGrains = grainsActive.load() && ! chordMode;
@@ -504,6 +512,13 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             liveDrums.process (liveL.data(), liveR.data(), n, getSampleRate(), true, pos * toBeats, (pos + n * inc) * toBeats, 1.0f);
             studio.liveInL = liveL.data();
             studio.liveInR = liveR.data();
+        }
+        // an armed track records what comes in, from where the song is
+        if (armTrack.load() >= 0 && getTotalNumInputChannels() > 0 && (size_t) n <= recInL.size())
+        {
+            if (! trackRecording.load()) { trackRecStart = pos; trackRecording = true; }
+            const juce::SpinLock::ScopedTryLockType wl (trackWriterLock);
+            if (wl.isLocked() && trackWriter != nullptr) { const float* ch[] = { recInL.data(), recInR.data() }; trackWriter->write (ch, n); }
         }
         studio.render (L, R, n, pos, inc, getSampleRate(),
                        fx ? fxL.data() : nullptr, fx ? fxR.data() : nullptr, fx ? sendL.data() : nullptr, fx ? sendR.data() : nullptr,
@@ -616,7 +631,33 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     playAudition (L, R, n); // (a note being drawn in Draw & sing)
     // a drum you clicked in the editor (when the loop isn't playing it already)
-    if (! auditioned) liveDrums.process (L, R, n, getSampleRate(), false, 0.0, 0.0, 1.0f);
+    if (! auditioned)
+    {
+        // notes played into an open track (its drum grid or note editor, from your keyboard or a click): heard
+        // through that track, so its meter moves and its volume, pan and mute count
+        const int dk = drumKeysTrack.load();
+        if (dk >= 0 && dk < StudioPlayer::maxTracks && (size_t) n <= liveL.size())
+        {
+            std::fill (liveL.begin(), liveL.begin() + n, 0.0f);
+            std::fill (liveR.begin(), liveR.begin() + n, 0.0f);
+            liveDrums.process (liveL.data(), liveR.data(), n, getSampleRate(), false, 0.0, 0.0, 1.0f);
+            const auto& m = studio.mix[(size_t) dk];
+            const float g = m.mute.load() ? 0.0f : juce::Decibels::decibelsToGain (m.gainDb.load());
+            const float p = m.pan.load();
+            const float gl = g * std::min (1.0f, 1.0f - p), gr = g * std::min (1.0f, 1.0f + p);
+            float pkL = 0.0f, pkR = 0.0f;
+            for (int i = 0; i < n; ++i)
+            {
+                const float l = liveL[(size_t) i] * gl, r = liveR[(size_t) i] * gr;
+                L[i] += l; R[i] += r;
+                pkL = std::max (pkL, std::abs (l)); pkR = std::max (pkR, std::abs (r));
+            }
+            const float mg = studio.meterGain.load();
+            lp::ui::notePeak (studio.peakL[(size_t) dk], pkL * mg);
+            lp::ui::notePeak (studio.peakR[(size_t) dk], pkR * mg);
+        }
+        else liveDrums.process (L, R, n, getSampleRate(), false, 0.0, 0.0, 1.0f);
+    }
     // the chop pads you play
     if (const int pt = padsTrack.load(); pt >= 0)
     {
@@ -1690,4 +1731,127 @@ bool LivePlanetProcessor::loadGrainSound (const juce::File& f)
     grainSource = src;
     grainSynth.setSource (src);
     return true;
+}
+
+// ---- recording into a track
+bool LivePlanetProcessor::armRecord (int track, juce::String& why)
+{
+    if (! canRecordMic())
+    {
+        why = "Plug-ins get no mic in a DAW: record in your DAW and drop the file on the track, or record in the Loopwright app";
+        return false;
+    }
+    const auto st = songJob.getStatus();
+    if (! st.haveSong || track < 0 || track >= (int) st.tracks.size()) return false;
+    const auto folder = st.files.folder.getChildFile ("voice");
+    folder.createDirectory();
+    trackTakeFile = folder.getChildFile ("take " + juce::Time::getCurrentTime().formatted ("%H.%M.%S") + ".wav").getNonexistentSibling (false);
+    trackTakeRate = getSampleRate() > 0 ? getSampleRate() : 48000.0;
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (trackTakeFile), trackTakeRate, 2, 24, {}, 0));
+    if (w == nullptr) { why = "Couldn't make a file to record into"; return false; }
+    trackWriterThread.startThread();
+    auto tw = std::make_unique<juce::AudioFormatWriter::ThreadedWriter> (w.release(), trackWriterThread, 1 << 17);
+    {
+        const juce::SpinLock::ScopedLockType sl (trackWriterLock);
+        std::swap (trackWriter, tw);
+    }
+    tw.reset();
+    trackRecording = false;
+    trackTakeReady = false;
+    armTrack = track;
+    return true;
+}
+
+void LivePlanetProcessor::disarmRecord()
+{
+    armTrack = -1;
+    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> tw;
+    { const juce::SpinLock::ScopedLockType sl (trackWriterLock); std::swap (trackWriter, tw); }
+    tw.reset();
+    if (! trackRecording.load() && ! trackTakeReady.load()) trackTakeFile.deleteFile(); // (nothing was recorded)
+    trackRecording = false;
+}
+
+void LivePlanetProcessor::finishTrackTake()
+{
+    if (! trackTakeReady.exchange (false)) return;
+    const int track = armTrack.load();
+    // close the take's file (everything written so far is flushed)
+    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> tw;
+    { const juce::SpinLock::ScopedLockType sl (trackWriterLock); std::swap (trackWriter, tw); }
+    tw.reset();
+    const auto take = trackTakeFile;
+    const double start = trackRecStart.load();
+    const auto st = songJob.getStatus();
+    juce::String why;
+    if (track >= 0) armRecord (track, why); // (still armed: the next play records again, into a new file)
+    if (! st.haveSong || track < 0 || track >= (int) st.song.parts.size()) return;
+    const auto& part = st.song.parts[(size_t) track];
+    const juce::String partName (part.name);
+    const bool isVocal = partName.startsWith ("vocal (");
+    const auto name = partName.fromFirstOccurrenceOf ("(", false, false).upToLastOccurrenceOf (")", false, false);
+    const juce::File current (part.samplePath);
+    auto* self = this;
+    juce::Thread::launch ([self, take, start, current, name, isVocal, folder = st.files.folder.getChildFile ("voice")]
+    {
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        juce::AudioBuffer<float> rec;
+        double recRate = 48000.0;
+        if (std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (take)); rd != nullptr && rd->lengthInSamples > 0)
+        {
+            recRate = rd->sampleRate;
+            rec.setSize (2, (int) rd->lengthInSamples);
+            rd->read (&rec, 0, rec.getNumSamples(), 0, true, true);
+        }
+        auto say = [self] (const juce::String& m) { juce::MessageManager::callAsync ([self, m] { if (self->onRecordMessage) self->onRecordMessage (m); }); };
+        if (rec.getNumSamples() < (int) (recRate * 0.2)) { take.deleteFile(); return; }
+        if (rec.getMagnitude (0, rec.getNumSamples()) < 0.002f)
+        {
+            take.deleteFile();
+            say (self->wrapperType == wrapperType_Standalone ? "Nothing came in: Options > Audio/MIDI Settings, pick your mic and turn off Mute audio input"
+                                                              : "Nothing came in");
+            return;
+        }
+        // the take at the song's rate
+        if (std::abs (recRate - StudioPlayer::fileRate) > 0.5)
+        {
+            const double ratio = recRate / StudioPlayer::fileRate;
+            juce::AudioBuffer<float> rs (2, (int) (rec.getNumSamples() / ratio));
+            for (int c = 0; c < 2; ++c) { juce::WindowedSincInterpolator ip; ip.process (ratio, rec.getReadPointer (c), rs.getWritePointer (c), rs.getNumSamples()); }
+            rec = std::move (rs);
+        }
+        // the track as it was, with the take put in where it was recorded (short fades at its edges)
+        juce::AudioBuffer<float> old;
+        if (std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (current)); rd != nullptr)
+        {
+            old.setSize (2, (int) rd->lengthInSamples);
+            rd->read (&old, 0, old.getNumSamples(), 0, true, true);
+        }
+        const int at = std::max (0, (int) std::llround (start)), len = rec.getNumSamples();
+        juce::AudioBuffer<float> out (2, std::max (old.getNumSamples(), at + len));
+        out.clear();
+        for (int c = 0; c < 2; ++c) if (old.getNumSamples() > 0) out.copyFrom (c, 0, old, c, 0, old.getNumSamples());
+        const int xf = std::min (len / 4, (int) (0.005 * StudioPlayer::fileRate));
+        for (int c = 0; c < 2; ++c)
+            for (int i = 0; i < len; ++i)
+            {
+                const float w = xf > 0 ? std::min (1.0f, std::min ((float) i / xf, (float) (len - 1 - i) / xf)) : 1.0f;
+                const float o = out.getSample (c, at + i);
+                out.setSample (c, at + i, o * (1.0f - w) + rec.getSample (c, i) * w);
+            }
+        const auto file = folder.getChildFile (juce::File::createLegalFileName (name) + " rec.wav").getNonexistentSibling (false);
+        juce::WavAudioFormat wav;
+        bool ok = false;
+        if (std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), StudioPlayer::fileRate, 2, 24, {}, 0)); w != nullptr)
+            ok = w->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
+        take.deleteFile();
+        if (! ok) { say ("Couldn't save the recording"); return; }
+        juce::MessageManager::callAsync ([self, file, name, isVocal]
+        {
+            self->songJob.addSungVocal (file, name, "recorded in Loopwright", isVocal, "recorded", true);
+            if (self->onRecordMessage) self->onRecordMessage ("Recorded into " + name);
+        });
+    });
 }
