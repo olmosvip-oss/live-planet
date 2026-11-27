@@ -1693,7 +1693,8 @@ private:
     lp::fx::Browser fxBrowser { lnf.th };
     lp::fx::Rack fxRack { proc, lnf.th };
     bool browserOpen = false;
-    juce::TextButton fxBtn { "Effects" };
+    juce::TextButton fxBtn { "Effects" }, exportBtn { "Export" };
+    void openExport();
     std::unique_ptr<juce::Component> chainWindow;
     void showDock();          // the dock: the track editor, or the open track's effects
     void addFx (int track, const juce::String& id);

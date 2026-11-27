@@ -2047,6 +2047,12 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     fxBtn.getProperties().set ("glass", true);
     fxBtn.setWantsKeyboardFocus (false);
     fxBtn.setTooltip ("Audio effects: drag one onto a track (or double-click it for the open track)");
+    // export, on the Studio page too (and Cmd + E anywhere)
+    addChildComponent (exportBtn);
+    exportBtn.getProperties().set ("glass", true);
+    exportBtn.setWantsKeyboardFocus (false);
+    exportBtn.setTooltip ("Save the mix, the stems or the MIDI as WAV, AIFF, FLAC or M4A (Cmd + E)");
+    exportBtn.onClick = [this] { openExport(); };
     fxBtn.onClick = [this] { browserOpen = ! browserOpen; fxBtn.getProperties().set ("primary", browserOpen); resized(); repaint(); };
     fxBrowser.onAdd = [this] (const String& id) { addFx (trackEditor.selected(), id); };
     studioView.onDropFx = [this] (int t, String id) { addFx (t, id); };
@@ -2092,16 +2098,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     pillMidi.filesToDrag = [&p] { const auto f = p.songJob.allMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
     // export: the song's files in the type you choose (WAV, AIFF, FLAC, M4A), wherever you want them
     pillExport.setTooltip ("Save the mix, the stems or the MIDI as WAV, AIFF, FLAC or M4A, in a folder you choose");
-    pillExport.onClick = [this]
-    {
-        auto* top = lp::ui::overlayHost (this);
-        if (top == nullptr || ! proc.songJob.getStatus().haveSong) return;
-        SafePointer<LivePlanetEditor> self (this);
-        exportPanel = std::make_unique<ExportPanel> (proc, [self] { MessageManager::callAsync ([self] { if (self != nullptr) self->exportPanel.reset(); }); });
-        top->addAndMakeVisible (*exportPanel);
-        exportPanel->setBounds (top->getLocalBounds());
-        exportPanel->toFront (true);
-    };
+    pillExport.onClick = [this] { openExport(); };
     pillMidi.setTooltip ("Every MIDI part in one drag: drums, 808, hook, bass lines, and the chords + bass your loops play. Each lands on its own MIDI track, sections as markers.");
     if (PluginHostType::getPluginLoadedAs() == AudioProcessor::wrapperType_Standalone)
         pillHelper.setTooltip ("Your song's tempo and sections as markers, in a MIDI file. Pro Tools: File > Import > MIDI and keep its markers and tempo. "
@@ -2466,6 +2463,7 @@ void LivePlanetEditor::setPage (int p)
     trackEditor.setVisible (studio && haveSong0 && dockPageShown != 1);
     dockTabs.setVisible (studio && haveSong0);
     fxBtn.setVisible (studio && haveSong0);
+    exportBtn.setVisible (studio && haveSong0);
     fxBrowser.setVisible (studio && haveSong0 && browserOpen);
     if (! studio) fxRack.setVisible (false);
     // vocals: your vocals, or (with the voice helper switched on) a new one made with AI
@@ -3062,8 +3060,21 @@ void LivePlanetEditor::mouseDown (const MouseEvent& e)
             if (tabBounds (i).expanded (8, 10).contains (e.getPosition())) { setPage (tabPage (i)); return; }
 }
 
+// the Export window (from the EXPORT pill, the Studio's Export button, or Cmd + E)
+void LivePlanetEditor::openExport()
+{
+    auto* top = lp::ui::overlayHost (this);
+    if (top == nullptr || exportPanel != nullptr || ! proc.songJob.getStatus().haveSong) return;
+    SafePointer<LivePlanetEditor> self (this);
+    exportPanel = std::make_unique<ExportPanel> (proc, [self] { MessageManager::callAsync ([self] { if (self != nullptr) self->exportPanel.reset(); }); });
+    top->addAndMakeVisible (*exportPanel);
+    exportPanel->setBounds (top->getLocalBounds());
+    exportPanel->toFront (true);
+}
+
 bool LivePlanetEditor::keyPressed (const KeyPress& k)
 {
+    if (k.getModifiers().isCommandDown() && k.getKeyCode() == 'E') { openExport(); return true; }
     // Cmd + Z: undo the last change to the song (the note and drum editors keep their own undo while you edit there)
     if (k.getModifiers().isCommandDown() && k.getKeyCode() == 'Z' && proc.songJob.getStatus().undoWhat.isNotEmpty())
     {
@@ -3127,6 +3138,7 @@ void LivePlanetEditor::resized()
         dockTabs.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
         dockTabs.setBounds (cardDock.getRight() - 18 - 340, cardDock.getY() + 8, 340, 24);
         fxBtn.setBounds (cardTimeline.getX() + 196, cardTimeline.getY() + 9, 96, 30);
+        exportBtn.setBounds (fxBtn.getRight() + 8, fxBtn.getY(), 90, 30);
     }
     else
         songView.setBounds (cardTimeline.getX() + 12, cardTimeline.getY() + 46, cardTimeline.getWidth() - 24, cardTimeline.getHeight() - 104);
