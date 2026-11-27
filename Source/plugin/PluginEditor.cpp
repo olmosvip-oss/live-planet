@@ -1872,6 +1872,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
           return st.abletonSet.existsAsFile() ? StringArray (st.abletonSet.getFullPathName()) : StringArray();
       }),
       pillFolder ("folder", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.folder.getFullPathName()) : StringArray(); }),
+      pillExport ("export", [] { return StringArray(); }),
       themeDots (p, [this] { applyTheme(); })
 {
     setLookAndFeel (&lnf);
@@ -2057,6 +2058,18 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     pillChords.filesToDrag = [&p] { const auto f = p.songJob.chordsMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
     // one drag: every MIDI part (drums, 808, hook, bass lines, and the chords + bass your loops play)
     pillMidi.filesToDrag = [&p] { const auto f = p.songJob.allMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
+    // export: the song's files in the type you choose (WAV, AIFF, FLAC, M4A), wherever you want them
+    pillExport.setTooltip ("Save the mix, the stems or the MIDI as WAV, AIFF, FLAC or M4A, in a folder you choose");
+    pillExport.onClick = [this]
+    {
+        auto* top = lp::ui::overlayHost (this);
+        if (top == nullptr || ! proc.songJob.getStatus().haveSong) return;
+        SafePointer<LivePlanetEditor> self (this);
+        exportPanel = std::make_unique<ExportPanel> (proc, [self] { MessageManager::callAsync ([self] { if (self != nullptr) self->exportPanel.reset(); }); });
+        top->addAndMakeVisible (*exportPanel);
+        exportPanel->setBounds (top->getLocalBounds());
+        exportPanel->toFront (true);
+    };
     pillMidi.setTooltip ("Every MIDI part in one drag: drums, 808, hook, bass lines, and the chords + bass your loops play. Each lands on its own MIDI track, sections as markers.");
     if (PluginHostType::getPluginLoadedAs() == AudioProcessor::wrapperType_Standalone)
         pillHelper.setTooltip ("Your song's tempo and sections as markers, in a MIDI file. Pro Tools: File > Import > MIDI and keep its markers and tempo. "
@@ -2093,7 +2106,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     else
         pillHelper.setTooltip ("Your song's tempo and sections as markers, in a MIDI file. Drag it into your DAW at bar 1 (say yes if it asks to import the tempo). "
                                "Logic: if the markers don't show, use File > Import > MIDI File with this file (it's in the song's folder).");
-    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder, &pillExport })
         addChildComponent (pill);
     addAndMakeVisible (themeDots);
 
@@ -2444,7 +2457,7 @@ void LivePlanetEditor::setPage (int p)
     songPanel.setVisible (write);
     songView.setVisible (write || studio);
     studioView.setVisible (studio && haveSong);
-    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder, &pillExport })
         pill->setVisible (write);
     for (auto* h : { &hMidi, &hStems, &hLocators }) h->setVisible (write);
     songView.setRuler (studio);
@@ -2659,7 +2672,7 @@ void LivePlanetEditor::timerCallback()
         if (haveSong && page == Studio) studioView.repaint();
         songPanel.refresh();
         songView.refresh();
-        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder, &pillExport })
             pill->repaint();
     }
     if (page == Sound)
@@ -3088,8 +3101,8 @@ void LivePlanetEditor::resized()
         const int y = cardTimeline.getBottom() - 54;
         playButton.setBounds (cardTimeline.getX() + 18, y + 2, 40, 40);
         int px = cardTimeline.getX() + 74;
-        const int pw = (cardTimeline.getRight() - 18 - px) / 5;
-        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        const int pw = (cardTimeline.getRight() - 18 - px) / 6;
+        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder, &pillExport })
         {
             pill->setBounds (px, y + 4, pw - 8, 36);
             px += pw;

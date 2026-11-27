@@ -466,6 +466,34 @@ private:
     juce::Rectangle<int> closeX;
 };
 
+// EXPORT: the song's mix, stems or MIDI, in the file type you choose, wherever you want them (Export.cpp)
+class ExportPanel : public juce::Component
+{
+public:
+    ExportPanel (LivePlanetProcessor& p, std::function<void()> closed);
+    ~ExportPanel() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseUp (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+
+private:
+    void choose();
+    void run (const juce::File& where);
+    juce::Rectangle<int> card() const;
+    LivePlanetProcessor& proc;
+    std::function<void()> onClosed;
+    const lp::ui::Theme* th = &lp::ui::theme (0);
+    int whatN = 0, typeN = 0, rateN = 0;
+    Segmented what, type, rate;
+    juce::TextButton goBtn { "Choose a folder and export" }, cancelBtn { "Cancel" };
+    juce::String message;
+    bool busy = false;
+    std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);
+    std::unique_ptr<juce::FileChooser> chooser;
+    juce::Rectangle<int> closeX;
+};
+
 class SongPanel : public juce::Component
 {
 public:
@@ -1608,7 +1636,8 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> studioKeyAtt, studioModeAtt;
     GrainView grainView;
     SourcesPanel sourcesPanel;
-    FilePill pillMidi, pillChords, pillStems, pillMix, pillHelper, pillFolder;
+    FilePill pillMidi, pillChords, pillStems, pillMix, pillHelper, pillFolder, pillExport;
+    std::unique_ptr<ExportPanel> exportPanel;
     // help: the tour (the first time, and from the "?" by the logo) and the "?"s by the drag buttons
     HelpDot tourBtn { "", "" },
             hMidi { "Drag MIDI", "Every MIDI part of the song in one drag: the drums, the 808, the hook, every played part, and the chords and bass your loops play (read from them). Drop it in your DAW and each part lands on its own MIDI track, with the song's sections as markers." },
