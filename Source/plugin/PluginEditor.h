@@ -151,6 +151,23 @@ private:
     LivePlanetProcessor& proc;
 };
 
+// The Studio's Record button (next to Play): records your keyboard into the armed MIDI track (and, in the
+// Loopwright app, your mic into the armed audio track) while the song plays. Click again (or stop) to finish.
+class RecordButton : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit RecordButton (LivePlanetProcessor& p) : proc (p) { setTooltip ("Record into the armed track (arm one first: I on a MIDI track)"); }
+    std::function<void (const juce::String&)> onProblem; // (why it couldn't start)
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override { toggle(); }
+    void toggle();
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+
+private:
+    LivePlanetProcessor& proc;
+};
+
 // "<  rainy window  >": step through presets, or click the name for the full list
 class PresetBrowser : public juce::Component
 {
@@ -1600,6 +1617,7 @@ private:
     Segmented liveSwitch, keySwitch;
     SoundKeys keys;
     PlayButton playButton;
+    RecordButton recordButton;
     PresetBrowser presetBrowser;
     SampleView sampleView;
     DragNotes dragNotes;

@@ -372,6 +372,9 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         if (const int arm = midiArmTrack.load(); arm >= 0 && ! toPads && ! toDrums && (msg.isNoteOn() || msg.isNoteOff()))
         {
             if (msg.isNoteOn()) liveDrums.audition (msg.getNoteNumber(), msg.getFloatVelocity());
+            // (recording: kept with its place in this block; its song position is worked out below)
+            if (recordOn.load() && midiRecBlockCount < (int) midiRecBlock.size())
+                midiRecBlock[(size_t) midiRecBlockCount++] = { (double) m.samplePosition, msg.getNoteNumber(), msg.getFloatVelocity(), msg.isNoteOn() };
             continue;
         }
         if (msg.isNoteOn())
@@ -437,6 +440,12 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     if (! playSong) { wasFollowing = false; ppqCarry = 0.0; lastHostPpq = -1.0; } // stopped: the next play follows your DAW from where it starts
     songPlaying = playSong || preview;
     if (! (playSong || preview) && trackRecording.load()) { trackRecording = false; trackTakeReady = true; } // (stopped: the take is done)
+    if (! (playSong || preview))
+    {
+        midiRecBlockCount = 0; // (notes played while stopped aren't recorded)
+        if (recordOn.load() && songWasPlaying) midiTakeEnded = true; // (stopped while recording: the take is done)
+    }
+    songWasPlaying = playSong || preview;
     if (playSong || preview) t.shouldPlay = false; // the weather music steps aside while your song plays
     // your keys play the sample instrument (Play mode), or the built-in instrument
     const bool toGrains = grainsActive.load() && ! chordMode;
@@ -519,8 +528,23 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             studio.liveInL = liveL.data();
             studio.liveInR = liveR.data();
         }
-        // an armed track records what comes in, from where the song is
-        if (armTrack.load() >= 0 && getTotalNumInputChannels() > 0 && (size_t) n <= recInL.size())
+        // the armed MIDI track's notes from this block, at their place in the song (beats from bar 1)
+        if (midiRecBlockCount > 0)
+        {
+            const double toBeats = sbpm / 60.0 / StudioPlayer::fileRate;
+            int s1, n1, s2, n2;
+            midiRecFifo.prepareToWrite (midiRecBlockCount, s1, n1, s2, n2);
+            for (int i = 0; i < n1 + n2; ++i)
+            {
+                auto r = midiRecBlock[(size_t) i];
+                r.beat = (pos + r.beat * inc) * toBeats;
+                midiRecBuf[(size_t) (i < n1 ? s1 + i : s2 + (i - n1))] = r;
+            }
+            midiRecFifo.finishedWrite (n1 + n2);
+            midiRecBlockCount = 0;
+        }
+        // an armed track records what comes in, from where the song is (while Record is on)
+        if (recordOn.load() && armTrack.load() >= 0 && getTotalNumInputChannels() > 0 && (size_t) n <= recInL.size())
         {
             if (! trackRecording.load()) { trackRecStart = pos; trackRecording = true; }
             const juce::SpinLock::ScopedTryLockType wl (trackWriterLock);
@@ -1862,4 +1886,86 @@ void LivePlanetProcessor::finishTrackTake()
             if (self->onRecordMessage) self->onRecordMessage ("Recorded into " + name);
         });
     });
+}
+
+// ---- the Record button
+void LivePlanetProcessor::startRecording (bool& startedPlay, juce::String& why)
+{
+    startedPlay = false;
+    const int midiTrack = midiArmTrack.load(), audioTrack = armTrack.load();
+    if (midiTrack < 0 && audioTrack < 0)
+    {
+        why = "Arm a track first: the I button on a MIDI track (for your keyboard), or the record button on an audio track";
+        return;
+    }
+    if (midiTrack < 0 && audioTrack >= 0 && ! canRecordMic())
+    {
+        why = "Plug-ins get no audio input in a DAW: record audio in your DAW and drop the file on the track, or record in the Loopwright app. "
+              "MIDI tracks record here: arm one with its I button.";
+        return;
+    }
+    midiRecFifo.reset();
+    midiRecHeld.clear();
+    midiRecTrack = midiTrack;
+    midiTakeEnded = false;
+    recordOn = true;
+    if (! songPlaying.load() && studio.length() > 0) { previewPlaying = true; startedPlay = true; }
+}
+
+void LivePlanetProcessor::stopRecording()
+{
+    if (! recordOn.exchange (false)) return;
+    midiTakeEnded = false;
+    finishMidiTake();
+    if (trackRecording.load()) { trackRecording = false; trackTakeReady = true; } // (the audio take ends here too)
+}
+
+void LivePlanetProcessor::drainMidiTake()
+{
+    int s1, n1, s2, n2;
+    midiRecFifo.prepareToRead (midiRecFifo.getNumReady(), s1, n1, s2, n2);
+    for (int i = 0; i < n1; ++i) midiRecHeld.push_back (midiRecBuf[(size_t) (s1 + i)]);
+    for (int i = 0; i < n2; ++i) midiRecHeld.push_back (midiRecBuf[(size_t) (s2 + i)]);
+    midiRecFifo.finishedRead (n1 + n2);
+}
+
+void LivePlanetProcessor::finishMidiTake()
+{
+    drainMidiTake(); // (what's still waiting)
+    const int track = midiRecTrack;
+    auto events = std::move (midiRecHeld);
+    midiRecHeld.clear();
+    if (track < 0 || events.empty()) return;
+    // note-ons paired with their note-offs (a note still held at the end lasts to the last event)
+    double last = 0.0;
+    for (auto& e : events) last = std::max (last, e.beat);
+    std::vector<lp::song::Note> added;
+    std::map<int, std::pair<double, float>> open;
+    auto close = [&added] (int pitch, double from, float vel, double to)
+    {
+        added.push_back ({ from, std::max (0.0625, to - from), pitch, juce::jlimit (0.05f, 1.0f, vel) });
+    };
+    for (auto& e : events)
+    {
+        if (e.on)
+        {
+            if (auto it = open.find (e.note); it != open.end()) close (e.note, it->second.first, it->second.second, e.beat);
+            open[e.note] = { e.beat, e.vel };
+        }
+        else if (auto it = open.find (e.note); it != open.end())
+        {
+            close (e.note, it->second.first, it->second.second, e.beat);
+            open.erase (it);
+        }
+    }
+    for (auto& [pitch, o] : open) close (pitch, o.first, o.second, std::max (last, o.first + 0.25));
+    if (added.empty()) return;
+    // the take goes onto what the track already has (overdub)
+    const auto pv = songJob.partView (track);
+    if (! pv.valid || ! pv.midi) return;
+    auto notes = pv.notes;
+    notes.insert (notes.end(), added.begin(), added.end());
+    std::sort (notes.begin(), notes.end(), [] (const lp::song::Note& a, const lp::song::Note& b) { return a.beat < b.beat; });
+    songJob.setNotes (track, std::move (notes));
+    if (onRecordMessage) onRecordMessage ("Recorded " + juce::String ((int) added.size()) + (added.size() == 1 ? " note" : " notes") + " into " + pv.name);
 }

@@ -664,6 +664,46 @@ void PlayButton::toggle()
     repaint();
 }
 
+void RecordButton::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (2.0f);
+    const bool on = proc.recordOn.load();
+    const bool over = isMouseOver();
+    const Colour red (0xffff4d5e);
+    if (on)
+    {
+        // recording: a red disc that breathes
+        const float pulse = 0.5f + 0.5f * std::sin ((float) Time::getMillisecondCounter() * 0.006f);
+        g.setColour (red.withAlpha (0.25f + 0.2f * pulse));
+        g.fillEllipse (r.expanded (1.0f));
+        g.setColour (red);
+        g.fillEllipse (r.reduced (3.0f));
+    }
+    else
+    {
+        g.setColour (Colours::white.withAlpha (over ? 0.16f : 0.08f));
+        g.fillEllipse (r);
+        g.setColour (Colours::white.withAlpha (0.18f));
+        g.drawEllipse (r, 1.0f);
+        g.setColour (red.withAlpha (over ? 1.0f : 0.85f));
+        g.fillEllipse (r.withSizeKeepingCentre (r.getWidth() * 0.38f, r.getHeight() * 0.38f));
+    }
+}
+
+void RecordButton::toggle()
+{
+    if (proc.recordOn.load()) proc.stopRecording();
+    else
+    {
+        bool startedPlay = false;
+        String why;
+        proc.startRecording (startedPlay, why);
+        if (why.isNotEmpty() && onProblem) onProblem (why);
+    }
+    repaint();
+    if (auto* p = getParentComponent()) p->repaint();
+}
+
 //==============================================================================
 
 void PresetBrowser::paint (Graphics& g)
@@ -1859,6 +1899,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
                  lnf.th),
       keys (p, lnf.th),
       playButton (p),
+      recordButton (p),
       presetBrowser (p, lnf.th),
       sampleView (p),
       dragNotes (p),
@@ -1924,6 +1965,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (keySwitch);
     addChildComponent (keys);
     addAndMakeVisible (playButton);
+    addChildComponent (recordButton);
+    recordButton.onProblem = [this] (const String& m) { AlertWindow::showMessageBoxAsync (MessageBoxIconType::NoIcon, "Record", m); };
     addChildComponent (presetBrowser);
     addChildComponent (sampleView);
     addChildComponent (dragNotes);
@@ -2513,6 +2556,7 @@ void LivePlanetEditor::setPage (int p)
     dayToggle.setVisible (sky);
     thunderToggle.setVisible (sky);
     playButton.setVisible (write || studio || sound || edit);
+    recordButton.setVisible (studio && proc.songJob.getStatus().haveSong);
     resized();
     repaint();
 }
@@ -2607,6 +2651,9 @@ void LivePlanetEditor::showOneShotMenu()
 void LivePlanetEditor::timerCallback()
 {
     if (proc.trackTakeReady.load()) proc.finishTrackTake(); // (a take just ended: into its track)
+    if (proc.recordOn.load()) proc.drainMidiTake();
+    if (proc.midiTakeEnded.exchange (false)) { proc.stopRecording(); recordButton.repaint(); } // (stopped while recording)
+    if (proc.recordOn.load()) recordButton.repaint(); // (its pulse)
     if (proc.songJob.getStatus().undoWhat != undoShown) repaint (0, 0, getWidth(), 76); // the undo button in the top bar
     if (page == Sound)
     {
@@ -3138,7 +3185,7 @@ void LivePlanetEditor::resized()
         showDock();
         dockTabs.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
         dockTabs.setBounds (cardDock.getRight() - 18 - 340, cardDock.getY() + 8, 340, 24);
-        fxBtn.setBounds (cardTimeline.getX() + 196, cardTimeline.getY() + 9, 96, 30);
+        fxBtn.setBounds (cardTimeline.getX() + 234, cardTimeline.getY() + 9, 96, 30);
         exportBtn.setBounds (fxBtn.getRight() + 8, fxBtn.getY(), 90, 30);
     }
     else
@@ -3179,7 +3226,11 @@ void LivePlanetEditor::resized()
         grainsPage.setBounds (M, 84, W - 2 * M, B - 84);
         drawSing.setBounds (M, top, W - 2 * M, B - top);
     }
-    if (page == Studio) playButton.setBounds (cardTimeline.getX() + 150, cardTimeline.getY() + 6, 30, 30);
+    if (page == Studio)
+    {
+        playButton.setBounds (cardTimeline.getX() + 150, cardTimeline.getY() + 6, 30, 30);
+        recordButton.setBounds (playButton.getRight() + 8, playButton.getY(), 30, 30);
+    }
 
     // ---- sound: the instrument on the left, three knob cards on the right
     cardInstrument = { M, 84, 500, 644 };

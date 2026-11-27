@@ -142,6 +142,23 @@ public:
     // the drum editor: your computer keys or a MIDI controller play the kit (and record into the loop)
     std::atomic<int> drumKeysTrack { -1 };
     std::atomic<int> midiArmTrack { -1 };   // a MIDI track armed (its I button): your keyboard plays its sound, through the track
+
+    // ---- the Record button (next to Play in the Studio): while it's on and the song plays, the armed MIDI track
+    // records the notes you play and the armed audio track records what comes in. Stopping ends the take.
+    std::atomic<bool> recordOn { false };
+    bool songWasPlaying = false; // (audio thread)
+    std::atomic<bool> midiTakeEnded { false }; // (audio thread: playback stopped while recording)
+    struct TakeEvent { double beat = 0.0; int note = 0; float vel = 0.0f; bool on = false; };
+    juce::AbstractFifo midiRecFifo { 4096 };
+    std::array<TakeEvent, 4096> midiRecBuf {};
+    std::array<TakeEvent, 256> midiRecBlock {}; // (this block's notes, until its song position is known)
+    int midiRecBlockCount = 0;
+    std::vector<TakeEvent> midiRecHeld;        // (message thread: notes taken from the fifo so far)
+    int midiRecTrack = -1;
+    void startRecording (bool& startedPlay, juce::String& why); // message thread (the Record button)
+    void stopRecording();                                       // message thread
+    void finishMidiTake();                                      // message thread: the notes into the armed MIDI track
+    void drainMidiTake();                                       // message thread, while recording (keeps the fifo from filling)
     std::atomic<bool> drumPadsOpen { false }; // the Drum pads window takes the hits
     std::atomic<juce::uint32> drumKeysLease { 0 }; // renewed every frame while the drum editor shows
     static int drumNoteFor (int n)
