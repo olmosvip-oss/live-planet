@@ -1109,12 +1109,21 @@ void DrawSing::resized()
     }
     showTools();
     auto bottom = rollCard().reduced (18, 16).removeFromBottom (32);
-    for (auto* b : { &fromLyrics, &recBtn, &fillWords, &clearAll, &undoBtn, &redoBtn })
     {
-        b->setBounds (bottom.removeFromLeft (b == &fromLyrics ? 150 : b == &recBtn ? 128 : b == &undoBtn || b == &redoBtn ? 60 : b == &clearAll ? 70 : 120));
-        bottom.removeFromLeft (8);
+        // the row's buttons at their own widths, all a little narrower when the window is (so every label fits)
+        const std::array<TextButton*, 6> bs { &fromLyrics, &recBtn, &fillWords, &clearAll, &undoBtn, &redoBtn };
+        const std::array<int, 6> want { 150, 128, 120, 70, 60, 60 };
+        const int hearW = jmax (100, Font (font (14.0f)).getStringWidth (hear.getButtonText()) + 32), gap = 8;
+        int total = hearW + gap * (int) bs.size();
+        for (auto w : want) total += w;
+        const float k = jmin (1.0f, (float) bottom.getWidth() / (float) total);
+        for (size_t i = 0; i < bs.size(); ++i)
+        {
+            bs[i]->setBounds (bottom.removeFromLeft (roundToInt (want[i] * k)));
+            bottom.removeFromLeft (roundToInt (gap * k));
+        }
+        hear.setBounds (bottom.removeFromRight (jmin (bottom.getWidth(), roundToInt (hearW * k))));
     }
-    hear.setBounds (bottom.removeFromRight (100));
     // the side, in three groups: the voice and the section; your words; while you draw (and sing it)
     auto s = sideCard().reduced (20, 18);
     s.removeFromTop (30);
