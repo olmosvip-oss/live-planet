@@ -1,3 +1,4 @@
+#include <typeinfo>
 #include "PluginEditor.h"
 #include "License.h"
 #include "BinaryData.h"
@@ -93,6 +94,17 @@ LivePlanetLookAndFeel::LivePlanetLookAndFeel()
     applyThemeColours();
 }
 
+// labels and drop-downs (the settings window's): the plugin's own font
+// (only inside the standalone's Audio/MIDI settings: everything else keeps the fonts it sets itself)
+static bool inAudioSettings (Component& c)
+{
+    for (auto* p = c.getParentComponent(); p != nullptr; p = p->getParentComponent())
+        if (String (typeid (*p).name()).contains ("AudioDeviceSelector")) return true;
+    return false;
+}
+Font LivePlanetLookAndFeel::getLabelFont (Label& l) { return inAudioSettings (l) ? lp::ui::font (14.0f) : LookAndFeel_V4::getLabelFont (l); }
+Font LivePlanetLookAndFeel::getComboBoxFont (ComboBox& c) { return inAudioSettings (c) ? lp::ui::font (14.0f) : LookAndFeel_V4::getComboBoxFont (c); }
+
 void LivePlanetLookAndFeel::applyThemeColours()
 {
     // (a touch see-through: the menu windows then get their rounded corners)
@@ -116,6 +128,23 @@ void LivePlanetLookAndFeel::applyThemeColours()
     setColour (TooltipWindow::outlineColourId, th->line);
     setColour (BubbleComponent::backgroundColourId, panel);
     setColour (ComboBox::backgroundColourId, Colours::transparentBlack);
+    // the standalone app's Audio/MIDI settings window (JUCE's own) in the plugin's look too
+    setColour (ResizableWindow::backgroundColourId, th->bodyDark.interpolatedWith (Colour (0xff0d0d11), 0.6f));
+    setColour (DocumentWindow::textColourId, th->ink);
+    setColour (ComboBox::outlineColourId, th->line.brighter (0.3f));
+    setColour (ComboBox::textColourId, th->ink);
+    setColour (ComboBox::arrowColourId, th->grassLight);
+    setColour (ComboBox::focusedOutlineColourId, th->grass);
+    setColour (Label::textColourId, th->ink.withAlpha (0.75f));
+    setColour (ListBox::backgroundColourId, Colours::black.withAlpha (0.28f));
+    setColour (ListBox::outlineColourId, th->line);
+    setColour (ListBox::textColourId, th->ink);
+    setColour (ToggleButton::textColourId, th->ink);
+    setColour (ToggleButton::tickColourId, Colours::white);
+    setColour (ToggleButton::tickDisabledColourId, th->line.brighter (0.6f));
+    setColour (ScrollBar::thumbColourId, th->grass.withAlpha (0.5f));
+    setColour (TextButton::buttonColourId, th->bodyDark.brighter (0.15f));
+    setColour (TextButton::textColourOffId, th->ink);
 }
 
 void LivePlanetLookAndFeel::drawCallOutBoxBackground (CallOutBox&, Graphics& g, const Path& path, Image&)

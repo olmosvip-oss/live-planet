@@ -45,6 +45,8 @@ public:
     void drawButtonText (juce::Graphics&, juce::TextButton&, bool over, bool down) override;
     void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool over, bool down) override;
     juce::Font getTextButtonFont (juce::TextButton&, int) override;
+    juce::Font getLabelFont (juce::Label&) override;
+    juce::Font getComboBoxFont (juce::ComboBox&) override;
     // menus, confirm boxes and tips, in the plugin's own look
     void drawPopupMenuBackground (juce::Graphics&, int w, int h) override;
     void drawPopupMenuItem (juce::Graphics&, const juce::Rectangle<int>& area, bool isSeparator, bool isActive, bool isHighlighted,
