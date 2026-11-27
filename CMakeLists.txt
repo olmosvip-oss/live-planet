@@ -135,6 +135,13 @@ target_sources(Keygen PRIVATE tools/Keygen.cpp)
 target_compile_definitions(Keygen PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(Keygen PRIVATE juce::juce_core juce::juce_cryptography PUBLIC juce::juce_recommended_config_flags)
 
+# finds the hidden tag in a song's vocal (for you, the seller; not shipped)
+juce_add_console_app(Watermark PRODUCT_NAME "Watermark")
+target_sources(Watermark PRIVATE tools/WatermarkTool.cpp)
+target_compile_definitions(Watermark PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(Watermark PRIVATE juce::juce_audio_formats juce::juce_audio_basics juce::juce_cryptography
+    PUBLIC juce::juce_recommended_config_flags)
+
 juce_add_console_app(RenderDemo PRODUCT_NAME "RenderDemo")
 target_sources(RenderDemo PRIVATE tools/RenderDemo.cpp ${LP_ENGINE_SOURCES})
 target_compile_definitions(RenderDemo PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)

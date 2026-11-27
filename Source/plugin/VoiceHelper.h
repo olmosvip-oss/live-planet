@@ -7,6 +7,7 @@
 #include <mutex>
 #include <vector>
 #include "License.h"
+#include "../song/Watermark.h"
 
 // The Voice page's link to the local voice helper: a separate app on this computer that runs the singing
 // models (nothing of them is inside the plugin). Everything here happens on its own background thread,
@@ -329,6 +330,10 @@ private:
             juce::MemoryBlock head;
             tmp.loadFileAsData (head);
             if (head.getSize() < 44 || std::memcmp (head.getData(), "RIFF", 4) != 0) { tmp.deleteFile(); say ("The voice helper sent something that isn't audio", true); return; }
+            // Jordan's voices: the vocal carries an inaudible tag of whose license made it
+            juce::String voiceOfJob;
+            { const std::lock_guard<std::mutex> l (lock); if (auto it = jobVoice.find (c.id); it != jobVoice.end()) voiceOfJob = it->second; }
+            if (lp::license::isJordanVoice (voiceOfJob)) tagVocal (tmp);
             tmp.moveFileTo (c.dest);
             const std::lock_guard<std::mutex> l (lock);
             snap.files[c.id + "/" + juce::String (c.n)] = c.dest;
@@ -382,10 +387,34 @@ private:
             {
                 anyLive = true;
                 const auto id = v.getProperty ("id", "").toString();
-                if (validJobId (id)) { const std::lock_guard<std::mutex> l (lock); snap.tags[id] = c.req.tag; ++snap.serial; }
+                if (validJobId (id)) { const std::lock_guard<std::mutex> l (lock); snap.tags[id] = c.req.tag; jobVoice[id] = c.req.voice; ++snap.serial; }
             }
         }
         poll();
+    }
+    // writes the license owner's tag into a fetched vocal (in place)
+    static void tagVocal (const juce::File& wavFile)
+    {
+        juce::WavAudioFormat wav;
+        juce::AudioBuffer<float> b;
+        double sr = 0;
+        {
+            std::unique_ptr<juce::AudioFormatReader> rd (wav.createReaderFor (wavFile.createInputStream().release(), true));
+            if (rd == nullptr || rd->lengthInSamples <= 0 || rd->lengthInSamples > (juce::int64) 48000 * 60 * 15) return;
+            b.setSize ((int) rd->numChannels, (int) rd->lengthInSamples);
+            rd->read (&b, 0, b.getNumSamples(), 0, true, true);
+            sr = rd->sampleRate;
+        }
+        auto owner = lp::license::ownerOf (lp::license::jordanFile().loadFileAsString(), lp::license::publicKey(), lp::license::jordanPrefix());
+        if (owner.isEmpty()) owner = "unlicensed";
+        lp::watermark::embed (b, sr, lp::watermark::idOf (owner));
+        const auto out = wavFile.getSiblingFile (wavFile.getFileName() + ".tag");
+        out.deleteFile();
+        {
+            std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (out), sr, (unsigned) b.getNumChannels(), 24, {}, 0));
+            if (w == nullptr || ! w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples())) { out.deleteFile(); return; }
+        }
+        out.moveFileTo (wavFile);
     }
     void setSending (bool s) { const std::lock_guard<std::mutex> l (lock); snap.sending = s; ++snap.serial; }
 
@@ -406,6 +435,7 @@ private:
     }
 
     mutable std::mutex lock;
+    std::map<juce::String, juce::String> jobVoice; // job id -> the voice that sang it
     Snapshot snap;
     std::deque<Cmd> cmds;
     std::atomic<bool> wanted { false }, anyLive { false };
