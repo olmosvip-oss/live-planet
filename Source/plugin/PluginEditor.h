@@ -1028,6 +1028,7 @@ private:
     std::vector<juce::String> shownVoices() const;
     void makeVariants (const juce::File& recording);
     void askToUnlockVoices();
+    void askToUnlockJordan (const juce::String& voiceName);
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
     juce::ComboBox& voices;

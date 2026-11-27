@@ -252,4 +252,36 @@ inline bool unlockMoreVoices (const juce::String& code)
     lp::appFolder().getChildFile ("voices-license.txt").replaceWithText (code.trim());
     return true;
 }
+
+// ---- Jordan's voices (Jordan_Sing, Jordan_Rap): a license bought on loop-wright.com, Standard or Pro.
+// The code is signed for "<email>|standard" or "<email>|pro". What each allows is in the voice license
+// (loop-wright.com/voice-license): Standard $150 + 50% of a song using over 30 s of the voice,
+// Pro $300 + 25% of a song using over 60 s.
+inline juce::String jordanPrefix() { return "Loopwright Jordan voice v1|"; }
+inline juce::File jordanFile() { return lp::appFolder().getChildFile ("jordan-voice-license.txt"); }
+inline bool isJordanVoice (const juce::String& name)
+{
+    const auto base = name.upToFirstOccurrenceOf (" - ", false, false).trim();
+    return base.equalsIgnoreCase ("Jordan_Sing") || base.equalsIgnoreCase ("Jordan_Rap");
+}
+// "standard", "pro", or empty (not licensed)
+inline juce::String jordanTierOf (const juce::String& code)
+{
+    const auto owner = ownerOf (code, publicKey(), jordanPrefix());
+    const auto tier = owner.fromLastOccurrenceOf ("|", false, false).toLowerCase();
+    return owner.contains ("|") && (tier == "standard" || tier == "pro") ? tier : juce::String();
+}
+inline juce::String jordanTier()
+{
+    if (! required()) return "pro"; // (a test build: everything open)
+    return jordanTierOf (jordanFile().loadFileAsString());
+}
+inline bool jordanLicensed() { return jordanTier().isNotEmpty(); }
+inline bool unlockJordan (const juce::String& code)
+{
+    if (jordanTierOf (code).isEmpty()) return false;
+    jordanFile().getParentDirectory().createDirectory();
+    jordanFile().replaceWithText (code.trim());
+    return true;
+}
 } // namespace lp::license

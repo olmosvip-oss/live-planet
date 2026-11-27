@@ -6,6 +6,7 @@
 #include <map>
 #include <mutex>
 #include <vector>
+#include "License.h"
 
 // The Voice page's link to the local voice helper: a separate app on this computer that runs the singing
 // models (nothing of them is inside the plugin). Everything here happens on its own background thread,
@@ -104,7 +105,16 @@ public:
         bool quick = false; // Draw & sing: just sing it (no word check, no mix: the take straight back)
         int loopBars = 0;   // a layer as a loop: just this many bars made (Loopwright repeats it over the section)
     };
-    void create (Request r) { push ({ Cmd::Create, std::move (r), {}, {}, 0, {} }); }
+    void create (Request r)
+    {
+        // Jordan's voices need their license (Standard or Pro, from loop-wright.com)
+        if (lp::license::isJordanVoice (r.voice) && ! lp::license::jordanLicensed())
+        {
+            say ("\"" + r.voice + "\" needs a voice license: pick it in Your voices to buy one or enter your code", true);
+            return;
+        }
+        push ({ Cmd::Create, std::move (r), {}, {}, 0, {} });
+    }
     void cancel (const juce::String& id) { if (validJobId (id)) push ({ Cmd::Cancel, {}, id, {}, 0, {} }); }
     void addVoice (const juce::File& wav) { push ({ Cmd::AddVoice, {}, {}, wav, 0, {} }); }
     // the version's vocal, fetched into `dest` (then it's in snapshot().files)

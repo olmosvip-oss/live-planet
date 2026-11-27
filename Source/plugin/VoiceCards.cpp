@@ -35,8 +35,10 @@ static int ownVoiceCount (const ComboBox& voices)
 
 VoicePicker::About VoicePicker::about (const String& name)
 {
-    if (name.equalsIgnoreCase ("Jordan_Sing")) return { name, "Loopwright voice: singing", false };
-    if (name.equalsIgnoreCase ("Jordan_Rap")) return { name, "Loopwright voice: rap", false };
+    const auto tier = lp::license::jordanTier();
+    const String lic = tier == "pro" ? " (Pro license)" : tier == "standard" ? " (Standard license)" : " (license from $150)";
+    if (name.equalsIgnoreCase ("Jordan_Sing")) return { name, "Loopwright voice: singing" + lic, false };
+    if (name.equalsIgnoreCase ("Jordan_Rap")) return { name, "Loopwright voice: rap" + lic, false };
     for (auto& v : lp::song::variants::all())
         if (name.endsWithIgnoreCase (String (" - ") + v.name))
             return { name.dropLastCharacters ((int) strlen (v.name) + 3) + String::fromUTF8 (" \xc2\xb7 ") + v.name, v.tags, true };
@@ -415,6 +417,8 @@ void VoicePicker::mouseDown (const MouseEvent& e)
     for (auto& [cr, name] : cards)
         if (cr.contains (e.position))
         {
+            // Jordan's voices: bought on loop-wright.com (Standard or Pro)
+            if (isOfficial (name) && ! lp::license::jordanLicensed()) { askToUnlockJordan (name); return; }
             // this voice, everywhere (remembered); the page's list follows
             for (int i = 0; i < voices.getNumItems(); ++i)
                 if (voices.getItemText (i) == name) { voices.setSelectedItemIndex (i, sendNotification); break; }
@@ -515,6 +519,36 @@ void lp::ai::VoicePicker::askToUnlockVoices()
         if (r != 1) return;
         const bool ok = lp::license::unlockMoreVoices (w->getTextEditorContents ("code"));
         self->message = ok ? String ("Unlocked: add as many voices of your own as you like") : String ("That code isn't a voices code: check it and try again");
+        self->repaint();
+    }), true);
+}
+
+// Jordan's voices: a license (Standard or Pro) bought on loop-wright.com, or a code you have
+void lp::ai::VoicePicker::askToUnlockJordan (const String& voiceName)
+{
+    auto* w = new AlertWindow (voiceName + " needs a voice license",
+                               "Jordan's voices are licensed for your songs:\n\n"
+                               "Standard: $150, plus 50% of a song's earnings when it uses more than 30 seconds of the voice.\n"
+                               "Pro: $300, plus 25% of a song's earnings when it uses more than 60 seconds of the voice.\n\n"
+                               "You read and accept the voice license before you pay. Paste the code you get here.",
+                               MessageBoxIconType::NoIcon);
+    w->addTextEditor ("code", {}, "Your voice license code");
+    w->addButton ("Unlock", 1, KeyPress (KeyPress::returnKey));
+    if (lp::license::buyUrl().isNotEmpty()) { w->addButton ("Buy Standard", 2); w->addButton ("Buy Pro", 3); }
+    w->addButton ("Not now", 0, KeyPress (KeyPress::escapeKey));
+    Component::SafePointer<lp::ai::VoicePicker> self (this);
+    w->enterModalState (true, ModalCallbackFunction::create ([self, w] (int r)
+    {
+        if (self == nullptr) return;
+        if (r == 2 || r == 3)
+        {
+            const auto origin = URL (lp::license::buyUrl()).getOrigin();
+            URL (origin + "/voices?tier=" + (r == 2 ? "standard" : "pro")).launchInDefaultBrowser();
+            return;
+        }
+        if (r != 1) return;
+        const bool ok = lp::license::unlockJordan (w->getTextEditorContents ("code"));
+        self->message = ok ? "Unlocked: Jordan's voices (" + lp::license::jordanTier() + " license)" : String ("That code isn't a voice license code: check it and try again");
         self->repaint();
     }), true);
 }
