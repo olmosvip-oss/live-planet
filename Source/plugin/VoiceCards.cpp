@@ -564,9 +564,26 @@ void lp::ai::VoicePicker::askToUnlockJordan (const String& voiceName)
             return;
         }
         if (r != 1) return;
-        const bool ok = lp::license::unlockJordan (w->getTextEditorContents ("code"));
-        self->message = ok ? "Unlocked: Jordan's voices (" + lp::license::jordanTier() + " license)" : String ("That code isn't a voice license code: check it and try again");
-        if (ok) self->choose (nm);
+        const String code = w->getTextEditorContents ("code");
+        if (lp::license::jordanTierOf (code).isEmpty())
+        {
+            self->message = "That code isn't a voice license code: check it and try again";
+            self->repaint();
+            return;
+        }
+        self->message = "Checking your voice license...";
         self->repaint();
+        // (the site adds this computer: off the message thread)
+        Thread::launch ([self, code, nm]
+        {
+            const auto problem = lp::license::unlockJordan (code);
+            MessageManager::callAsync ([self, problem, nm]
+            {
+                if (self == nullptr) return;
+                self->message = problem.isEmpty() ? "Unlocked: Jordan's voices (" + lp::license::jordanTier() + " license)" : problem;
+                if (problem.isEmpty()) self->choose (nm);
+                self->repaint();
+            });
+        });
     }), true);
 }

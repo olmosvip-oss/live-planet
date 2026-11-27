@@ -81,6 +81,12 @@ constexpr int graceDays = 14;
 inline juce::File activationFile() { return lp::appFolder().getChildFile ("activation.txt"); }
 inline juce::File pendingFile()    { return lp::appFolder().getChildFile (".activation-pending"); }
 inline juce::File refusedFile()    { return lp::appFolder().getChildFile (".activation-refused"); }
+// Jordan's voice license: its own code (jordan-voice-license.txt) and its own activation, also on 2 computers
+inline juce::File jordanFile()                { return lp::appFolder().getChildFile ("jordan-voice-license.txt"); }
+inline juce::File jordanActivationFile()      { return lp::appFolder().getChildFile ("jordan-activation.txt"); }
+inline juce::File jordanPendingFile()         { return lp::appFolder().getChildFile (".jordan-activation-pending"); }
+inline juce::File jordanRefusedFile()         { return lp::appFolder().getChildFile (".jordan-activation-refused"); }
+inline juce::String jordanActivationPrefix()  { return "Loopwright Jordan activation v1|"; }
 
 // this computer: a stable id (a hash, so nothing personal is sent) and its name (shown in the list of computers)
 inline juce::String machineId()
@@ -95,14 +101,15 @@ inline juce::String machineId()
 }
 inline juce::String machineName() { return juce::SystemStats::getComputerName().substring (0, 40); }
 
-inline bool activationValid (const juce::String& owner, const juce::String& token, const juce::String& publicKeyText = publicKey())
+inline bool activationValid (const juce::String& owner, const juce::String& token, const juce::String& publicKeyText = publicKey(),
+                             const juce::String& prefix = "Loopwright activation v1|")
 {
     if (owner.isEmpty() || token.trim().isEmpty() || publicKeyText.isEmpty()) return false;
     juce::BigInteger sig;
     sig.parseString (token.trim(), 16);
     if (sig.isZero()) return false;
     juce::RSAKey (publicKeyText).applyToValue (sig);
-    return sig == digestOf (owner.trim() + "|" + machineId(), "Loopwright activation v1|");
+    return sig == digestOf (owner.trim() + "|" + machineId(), prefix);
 }
 
 // the saved code's owner when this computer may use it (empty = not activated here)
@@ -152,7 +159,7 @@ inline juce::String activateUrl()
 struct Answer { bool ok = false, reached = false; juce::String message; };
 
 // asks the website (call it off the message thread: it waits for the answer, 15 seconds at most)
-inline Answer askSite (const juce::String& code, const juce::String& action)
+inline Answer askSite (const juce::String& code, const juce::String& action, const juce::String& product = {})
 {
     Answer a;
     const auto url = activateUrl();
@@ -162,6 +169,7 @@ inline Answer askSite (const juce::String& code, const juce::String& action)
     o->setProperty ("machine", machineId());
     o->setProperty ("name", machineName());
     o->setProperty ("action", action);
+    if (product.isNotEmpty()) o->setProperty ("product", product); // ("jordan": the voice license's own computers)
     int status = 0;
     std::unique_ptr<juce::InputStream> in (juce::URL (url).withPOSTData (juce::JSON::toString (juce::var (o), true))
         .createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inPostData)
@@ -173,7 +181,13 @@ inline Answer askSite (const juce::String& code, const juce::String& action)
     a.reached = reply.isObject();
     a.ok = (bool) reply.getProperty ("ok", false);
     a.message = reply.getProperty ("message", "").toString();
-    if (a.ok && action == "activate")
+    if (a.ok && action == "activate" && product == "jordan")
+    {
+        jordanActivationFile().replaceWithText (reply.getProperty ("token", "").toString());
+        jordanPendingFile().deleteFile();
+        jordanRefusedFile().deleteFile();
+    }
+    else if (a.ok && action == "activate")
     {
         activationFile().replaceWithText (reply.getProperty ("token", "").toString());
         pendingFile().deleteFile();
@@ -258,7 +272,6 @@ inline bool unlockMoreVoices (const juce::String& code)
 // (loop-wright.com/voice-license): Standard $150 + 50% of a song using over 30 s of the voice,
 // Pro $300 + 25% of a song using over 60 s.
 inline juce::String jordanPrefix() { return "Loopwright Jordan voice v1|"; }
-inline juce::File jordanFile() { return lp::appFolder().getChildFile ("jordan-voice-license.txt"); }
 inline bool isJordanVoice (const juce::String& name)
 {
     const auto base = name.upToFirstOccurrenceOf (" - ", false, false).trim();
@@ -271,17 +284,47 @@ inline juce::String jordanTierOf (const juce::String& code)
     const auto tier = owner.fromLastOccurrenceOf ("|", false, false).toLowerCase();
     return owner.contains ("|") && (tier == "standard" || tier == "pro") ? tier : juce::String();
 }
+// the saved code's tier when this computer may use it: activated here (checked offline), or not activated yet
+// but within the grace days (the site couldn't be reached, or a code from before activations; it asks again)
 inline juce::String jordanTier()
 {
     if (! required()) return "pro"; // (a test build: everything open)
-    return jordanTierOf (jordanFile().loadFileAsString());
+    const auto code = jordanFile().loadFileAsString().trim();
+    const auto tier = jordanTierOf (code);
+    if (tier.isEmpty()) return {};
+    const auto owner = ownerOf (code, publicKey(), jordanPrefix());
+    if (activationValid (owner, jordanActivationFile().loadFileAsString(), publicKey(), jordanActivationPrefix())) return tier;
+    if (jordanRefusedFile().existsAsFile()) return {};
+    auto started = jordanPendingFile().loadFileAsString().getLargeIntValue();
+    if (started <= 0) { started = juce::Time::currentTimeMillis(); jordanPendingFile().replaceWithText (juce::String (started)); }
+    return juce::Time::currentTimeMillis() - started < (juce::int64) graceDays * 24 * 60 * 60 * 1000 ? tier : juce::String();
 }
 inline bool jordanLicensed() { return jordanTier().isNotEmpty(); }
-inline bool unlockJordan (const juce::String& code)
+// pasting a voice license code: checked here, then the site adds this computer (2 at most). Answers an empty
+// string when it worked, else what to tell the person. (Off the message thread: it waits for the site.)
+inline juce::String unlockJordan (const juce::String& code)
 {
-    if (jordanTierOf (code).isEmpty()) return false;
+    if (jordanTierOf (code).isEmpty()) return "That code isn't a voice license code: check it and try again";
+    const auto a = askSite (code, "activate", "jordan");
+    if (a.reached && ! a.ok) return a.message.isNotEmpty() ? a.message : "That voice license can't be used on this computer.";
     jordanFile().getParentDirectory().createDirectory();
     jordanFile().replaceWithText (code.trim());
-    return true;
+    jordanRefusedFile().deleteFile();
+    return {}; // (not reached: works for the grace days, and asks again at the next start)
+}
+// at every start: a voice license without this computer's activation yet asks the site again (quietly)
+inline void checkJordanInBackground()
+{
+    if (! required()) return;
+    const auto code = jordanFile().loadFileAsString().trim();
+    const auto owner = ownerOf (code, publicKey(), jordanPrefix());
+    if (owner.isEmpty() || activationValid (owner, jordanActivationFile().loadFileAsString(), publicKey(), jordanActivationPrefix())) return;
+    static std::atomic<bool> asked { false };
+    if (asked.exchange (true)) return;
+    juce::Thread::launch ([code]
+    {
+        const auto a = askSite (code, "activate", "jordan");
+        if (a.reached && ! a.ok) jordanRefusedFile().replaceWithText (a.message.isNotEmpty() ? a.message : "This voice license can't be used on this computer.");
+    });
 }
 } // namespace lp::license

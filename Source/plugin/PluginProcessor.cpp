@@ -117,6 +117,7 @@ LivePlanetProcessor::LivePlanetProcessor()
     weatherService.requestCoordinates (city, lat, lon);
     startTimerHz (2);
     lp::license::checkInBackground(); // (a license code without this computer's activation asks the website once)
+    lp::license::checkJordanInBackground(); // (and Jordan's voice license, the same way)
     songJob.writeAbletonSet = [] (const lp::song::Song&, const lp::song::Rendered&)
     {
         return lp::ableton::installHelper (SongJob::latestPointer());
