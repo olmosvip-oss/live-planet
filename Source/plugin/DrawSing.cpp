@@ -1,3 +1,4 @@
+#include "../song/VocalLevel.h"
 #include "PluginEditor.h"
 #include "../song/LyricMelody.h"
 #include "../song/Transcribe.h"
@@ -1474,6 +1475,9 @@ void DrawSing::renderVoice()
                 for (int ch = 0; ch < 2; ++ch) out->addSample (ch, o, p.seg->getSample (ch, x) * g);
             }
         }
+        // (a safety net: any short burst left where two words meet is held to the level around it; your own
+        // word volumes are left as you set them)
+        lp::song::vocallevel::process (*out, sr, 1.5f, 0.0f);
         MessageManager::callAsync ([v, out, gen, p, start, key]
         {
             if (v->generation.load() != gen) return;

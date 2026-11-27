@@ -11,7 +11,7 @@
 //   - syllables: each word's level against the phrase's, pulled at most `evenDb` towards it
 namespace lp::song::vocallevel
 {
-inline void process (juce::AudioBuffer<float>& buf, double sr, float burstDb = 3.0f, float evenDb = 4.0f)
+inline void process (juce::AudioBuffer<float>& buf, double sr, float burstDb = 1.5f, float evenDb = 4.0f)
 {
     const int n = buf.getNumSamples(), chs = buf.getNumChannels();
     if (n <= 0 || chs <= 0 || sr <= 0) return;
@@ -30,19 +30,22 @@ inline void process (juce::AudioBuffer<float>& buf, double sr, float burstDb = 3
         }
         fast[(size_t) f] = std::sqrt (s / juce::jmax (1, (b - a) * chs));
     }
-    // the surrounding level: a 0.3 s window's median of the loud frames (so a burst doesn't raise its own reference)
-    const int around = (int) (0.15 * sr / hop);
+    // the level around: the note as it goes on (30-150 ms later) and as it was (30-150 ms before), the louder of the
+    // two (so a burst at a note's start is held to the note's own level, and a word after a gap isn't pulled down)
+    const int nearF = (int) (0.030 * sr / hop), farF = (int) (0.150 * sr / hop);
     const double floorLvl = 0.003; // (about -50 dB: below this it's silence, left alone)
     std::vector<double> ref ((size_t) frames, 0.0), tmp;
-    for (int f = 0; f < frames; ++f)
+    auto medianOf = [&] (int a, int b)
     {
         tmp.clear();
-        for (int k = juce::jmax (0, f - around); k <= juce::jmin (frames - 1, f + around); k += 2)
+        for (int k = juce::jmax (0, a); k <= juce::jmin (frames - 1, b); ++k)
             if (fast[(size_t) k] > floorLvl) tmp.push_back (fast[(size_t) k]);
-        if (tmp.size() < 8) { ref[(size_t) f] = 0.0; continue; }
-        std::nth_element (tmp.begin(), tmp.begin() + (long) (tmp.size() * 6 / 10), tmp.end());
-        ref[(size_t) f] = tmp[tmp.size() * 6 / 10];
-    }
+        if ((int) tmp.size() < (farF - nearF) / 3) return 0.0;
+        std::nth_element (tmp.begin(), tmp.begin() + (long) tmp.size() / 2, tmp.end());
+        return tmp[tmp.size() / 2];
+    };
+    for (int f = 0; f < frames; ++f)
+        ref[(size_t) f] = juce::jmax (medianOf (f - farF, f - nearF), medianOf (f + nearF, f + farF));
     // the phrase level (over ~1.5 s, loud frames): words far from it are pulled towards it a little
     const int phrase = (int) (0.75 * sr / hop);
     std::vector<double> phr ((size_t) frames, 0.0);
