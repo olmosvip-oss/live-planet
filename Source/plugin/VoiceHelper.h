@@ -8,6 +8,8 @@
 #include <vector>
 #include "License.h"
 #include "../song/Watermark.h"
+#include "../song/VocalLevel.h"
+#include <set>
 #include "BinaryData.h"
 
 // The Voice page's link to the local voice helper: a separate app on this computer that runs the singing
@@ -110,7 +112,7 @@ public:
     void create (Request r)
     {
         // Jordan's voices without their license (Standard or Pro, from loop-wright.com): they come back with
-        // the spoken tag over them (see tagVocal)
+        // the spoken tag over them (see finishVocal)
         push ({ Cmd::Create, std::move (r), {}, {}, 0, {} });
     }
     void cancel (const juce::String& id) { if (validJobId (id)) push ({ Cmd::Cancel, {}, id, {}, 0, {} }); }
@@ -328,9 +330,15 @@ private:
             tmp.loadFileAsData (head);
             if (head.getSize() < 44 || std::memcmp (head.getData(), "RIFF", 4) != 0) { tmp.deleteFile(); say ("The voice helper sent something that isn't audio", true); return; }
             // Jordan's voices: the vocal carries an inaudible tag of whose license made it
+            // and every sung take: its sudden loud bursts and jumpy syllables evened out (the singing model makes them now and then)
             juce::String voiceOfJob;
-            { const std::lock_guard<std::mutex> l (lock); if (auto it = jobVoice.find (c.id); it != jobVoice.end()) voiceOfJob = it->second; }
-            if (lp::license::isJordanVoice (voiceOfJob)) tagVocal (tmp);
+            bool isLayer = false;
+            {
+                const std::lock_guard<std::mutex> l (lock);
+                if (auto it = jobVoice.find (c.id); it != jobVoice.end()) voiceOfJob = it->second;
+                isLayer = layerJobs.count (c.id) > 0;
+            }
+            if (! isLayer) finishVocal (tmp, lp::license::isJordanVoice (voiceOfJob));
             tmp.moveFileTo (c.dest);
             const std::lock_guard<std::mutex> l (lock);
             snap.files[c.id + "/" + juce::String (c.n)] = c.dest;
@@ -384,13 +392,13 @@ private:
             {
                 anyLive = true;
                 const auto id = v.getProperty ("id", "").toString();
-                if (validJobId (id)) { const std::lock_guard<std::mutex> l (lock); snap.tags[id] = c.req.tag; jobVoice[id] = c.req.voice; ++snap.serial; }
+                if (validJobId (id)) { const std::lock_guard<std::mutex> l (lock); snap.tags[id] = c.req.tag; jobVoice[id] = c.req.voice; if (c.req.layer.isNotEmpty()) layerJobs.insert (id); ++snap.serial; }
             }
         }
         poll();
     }
-    // writes the license owner's tag into a fetched vocal (in place)
-    static void tagVocal (const juce::File& wavFile)
+    // a fetched vocal, in place: evened out, and (Jordan's voices) the license owner's tag written into it
+    static void finishVocal (const juce::File& wavFile, bool jordan)
     {
         juce::WavAudioFormat wav;
         juce::AudioBuffer<float> b;
@@ -402,8 +410,9 @@ private:
             rd->read (&b, 0, b.getNumSamples(), 0, true, true);
             sr = rd->sampleRate;
         }
+        lp::song::vocallevel::process (b, sr);
         auto owner = lp::license::ownerOf (lp::license::jordanFile().loadFileAsString(), lp::license::publicKey(), lp::license::jordanPrefix());
-        if (! lp::license::jordanLicensed())
+        if (jordan && ! lp::license::jordanLicensed())
         {
             // no license: the spoken tag over it, until it's bought
             owner = "unlicensed";
@@ -417,7 +426,7 @@ private:
             }
         }
         if (owner.isEmpty()) owner = "licensed";
-        lp::watermark::embed (b, sr, lp::watermark::idOf (owner));
+        if (jordan) lp::watermark::embed (b, sr, lp::watermark::idOf (owner));
         const auto out = wavFile.getSiblingFile (wavFile.getFileName() + ".tag");
         out.deleteFile();
         {
@@ -446,6 +455,7 @@ private:
 
     mutable std::mutex lock;
     std::map<juce::String, juce::String> jobVoice; // job id -> the voice that sang it
+    std::set<juce::String> layerJobs;              // jobs that play an instrument (not sung: left as they are)
     Snapshot snap;
     std::deque<Cmd> cmds;
     std::atomic<bool> wanted { false }, anyLive { false };

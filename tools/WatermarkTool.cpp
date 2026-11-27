@@ -3,6 +3,7 @@
 //   Watermark --id "buyer@email.com"       a buyer's tag, to compare with what --check finds
 //   Watermark --embed in.wav out.wav "buyer@email.com"   (for testing)
 #include "../Source/song/Watermark.h"
+#include "../Source/song/VocalLevel.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <cstdio>
 
@@ -68,9 +69,26 @@ int main (int argc, char** argv)
         juce::AudioBuffer<float> b ((int) rd->numChannels, (int) rd->lengthInSamples), t (1, (int) tr->lengthInSamples);
         rd->read (&b, 0, b.getNumSamples(), 0, true, true);
         tr->read (&t, 0, t.getNumSamples(), 0, true, false);
+        lp::song::vocallevel::process (b, rd->sampleRate);
         lp::watermark::addSpokenTag (b, rd->sampleRate, t, tr->sampleRate);
         lp::watermark::embed (b, rd->sampleRate, lp::watermark::idOf ("unlicensed"));
         const auto out = cwd.getChildFile (argv[4]);
+        out.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (out), rd->sampleRate, (unsigned) b.getNumChannels(), 24, {}, 0));
+        return w != nullptr && w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples()) ? 0 : 2;
+    }
+    if (cmd == "--level" && argc > 3) // (testing: a take evened out, as Loopwright does) --level in.wav out.wav
+    {
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        auto cwd = juce::File::getCurrentWorkingDirectory();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (cwd.getChildFile (argv[2])));
+        if (rd == nullptr) return 2;
+        juce::AudioBuffer<float> b ((int) rd->numChannels, (int) rd->lengthInSamples);
+        rd->read (&b, 0, b.getNumSamples(), 0, true, true);
+        lp::song::vocallevel::process (b, rd->sampleRate);
+        const auto out = cwd.getChildFile (argv[3]);
         out.deleteFile();
         juce::WavAudioFormat wav;
         std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (out), rd->sampleRate, (unsigned) b.getNumChannels(), 24, {}, 0));
