@@ -1334,7 +1334,7 @@ private:
     int minutesEstimate() const; // roughly how long the helper takes, from what's picked
     // who makes the melody: 0, Loopwright writes it over the song's chords (sung note for note); 1, you, from your own
     // take; 2, the AI improvises one (takes, the best kept)
-    int whoSings = 0;
+    int whoSings = 1; // (only "I sing it" now: your take, in the voice; Write melody and AI freestyle are retired)
     // (AI freestyle retired: it made up its own melody and lost words)
     Segmented who { { "Write melody", "I sing it" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; clean.setToggleState (i == 1, juce::dontSendNotification); resized(); refreshButtons(); repaint(); }, th };
     juce::TextButton recordTake { "Record my take" }, useTake { "Use a recording..." }, hearTake { "hear it" };

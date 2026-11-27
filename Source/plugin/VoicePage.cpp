@@ -115,7 +115,7 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
     who.setTooltip ("Write melody: Loopwright writes a melody for your words over the song's own chords, and the voice sings it note for "
                     "note (every word, in key, in time). I sing it: you rap or sing the lines over the section (rough is fine), and it keeps "
                     "your exact words and timing, then cleans, tunes and turns it into the voice.");
-    addAndMakeVisible (who);
+    addChildComponent (who); // (one way left: no switch to show)
     for (auto* b : { &recordTake, &useTake, &hearTake }) { b->setWantsKeyboardFocus (false); addChildComponent (*b); }
     recordTake.setTooltip ("Plays the section with a one-bar count-in and records your mic until it ends (in the Loopwright app; in a DAW, record there and drop it here)");
     useTake.setTooltip ("A recording of you over this section: from its first bar, or a bounce from bar 1 (it's cut to the section). You can also drop it on this page.");
@@ -172,8 +172,8 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
         b->setWantsKeyboardFocus (false);
         addAndMakeVisible (*b);
     }
-    // (an AI take comes out clean already: noise removal is for your own recordings, and it costs minutes)
-    clean.setToggleState (false, dontSendNotification);
+    // (your own recording: background noise removed, as "I sing it" always did; switch it off for a clean studio take)
+    clean.setToggleState (true, dontSendNotification);
     clean.onClick = [this] { refreshButtons(); };
     consent.onClick = [this] { refreshButtons(); };
     create.getProperties().set ("primary", true);
