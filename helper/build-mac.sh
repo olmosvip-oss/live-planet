@@ -59,6 +59,14 @@ if [ ! -x "$WORK/uv" ]; then
 fi
 cp "$WORK/uv" "$RES/uv"
 
+# the icon: Loopwright's own (Resources/icon/icon-1024.png), as an .icns
+ICONSET="$WORK/AppIcon.iconset"; rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+for sz in 16 32 128 256 512; do
+  sips -z $sz $sz ../Resources/icon/icon-1024.png --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
+  sips -z $((sz * 2)) $((sz * 2)) ../Resources/icon/icon-1024.png --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$RES/AppIcon.icns"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -68,6 +76,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>com.loopwright.voice</string>
   <key>CFBundleExecutable</key><string>Loopwright Voice</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
