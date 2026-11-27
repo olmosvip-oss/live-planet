@@ -8,7 +8,6 @@
 #include <vector>
 #include "License.h"
 #include "../song/Watermark.h"
-#include "../song/VocalLevel.h"
 #include <set>
 #include "BinaryData.h"
 
@@ -330,7 +329,6 @@ private:
             tmp.loadFileAsData (head);
             if (head.getSize() < 44 || std::memcmp (head.getData(), "RIFF", 4) != 0) { tmp.deleteFile(); say ("The voice helper sent something that isn't audio", true); return; }
             // Jordan's voices: the vocal carries an inaudible tag of whose license made it
-            // and every sung take: its sudden loud bursts and jumpy syllables evened out (the singing model makes them now and then)
             juce::String voiceOfJob;
             bool isLayer = false;
             {
@@ -338,7 +336,7 @@ private:
                 if (auto it = jobVoice.find (c.id); it != jobVoice.end()) voiceOfJob = it->second;
                 isLayer = layerJobs.count (c.id) > 0;
             }
-            if (! isLayer) finishVocal (tmp, lp::license::isJordanVoice (voiceOfJob));
+            if (! isLayer && lp::license::isJordanVoice (voiceOfJob)) finishVocal (tmp, true);
             tmp.moveFileTo (c.dest);
             const std::lock_guard<std::mutex> l (lock);
             snap.files[c.id + "/" + juce::String (c.n)] = c.dest;
@@ -397,7 +395,8 @@ private:
         }
         poll();
     }
-    // a fetched vocal, in place: evened out, and (Jordan's voices) the license owner's tag written into it
+    // a fetched vocal of Jordan's voices, in place: the license owner's tag written into it (the take is otherwise
+    // left exactly as sung)
     static void finishVocal (const juce::File& wavFile, bool jordan)
     {
         juce::WavAudioFormat wav;
@@ -410,7 +409,6 @@ private:
             rd->read (&b, 0, b.getNumSamples(), 0, true, true);
             sr = rd->sampleRate;
         }
-        lp::song::vocallevel::process (b, sr);
         auto owner = lp::license::ownerOf (lp::license::jordanFile().loadFileAsString(), lp::license::publicKey(), lp::license::jordanPrefix());
         if (jordan && ! lp::license::jordanLicensed())
         {

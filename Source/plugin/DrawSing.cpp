@@ -17,7 +17,9 @@ namespace { constexpr int kMin = 36, kMax = 88, kRows = 32; } // C2 .. E6, 32 no
 struct DrawSing::Voiced
 {
     std::shared_ptr<const AudioBuffer<float>> take;      // the section, as sung (48 kHz, from the section's start)
-    std::vector<lp::song::lyricmelody::Note> sungNotes; // the notes it was sung on
+    std::vector<lp::song::lyricmelody::Note> sungNotes; // the notes it was sung on (where each word really is, once aligned)
+    std::map<int, lp::song::lyricmelody::Note> asDrawn;  // the same notes as you drew them: a note still like this is played
+                                                        // exactly as it was sung, untouched (no re-pitching or re-timing)
     double bpm = 120.0;
     struct Seg { String key; std::shared_ptr<AudioBuffer<float>> audio; int lead = 0; }; // lead: samples before the note's start
     std::mutex lock;
@@ -110,6 +112,12 @@ struct DrawSing::Voiced
             s.len = (a1[k] - a0[k]) / sr / spb;
         }
     }
+    bool asSung (const lp::song::lyricmelody::Note& n) const
+    {
+        const auto d = asDrawn.find (n.id);
+        return d != asDrawn.end() && d->second.pitch == n.pitch && std::abs (d->second.beat - n.beat) < 1e-6
+            && std::abs (d->second.len - n.len) < 1e-6 && n.ringMs < 0.0f;
+    }
     int leadOf (int id)
     {
         const std::lock_guard<std::mutex> l (lock);
@@ -137,6 +145,22 @@ struct DrawSing::Voiced
         const int N = take->getNumSamples();
         const double ctx = 0.2;
         const int a0 = (int) (s->beat * spb * sr), a1 = (int) ((s->beat + s->len) * spb * sr);
+        // a note you haven't changed: its word exactly as it was sung, where it was sung (nothing re-done to it)
+        if (asSung (n))
+        {
+            const int fi = (int) (0.006 * sr), from = jmax (0, a0 - fi), to = jmin (N, a1 + (int) (0.006 * sr));
+            if (to - from < 64) return nullptr;
+            auto seg = std::make_shared<AudioBuffer<float>> (2, to - from);
+            for (int ch = 0; ch < 2; ++ch) seg->copyFrom (ch, 0, *take, jmin (ch, take->getNumChannels() - 1), from, to - from);
+            const int fade = jmin (seg->getNumSamples() / 3, (int) (0.004 * sr));
+            seg->applyGainRamp (0, fade, 0.0f, 1.0f);
+            seg->applyGainRamp (seg->getNumSamples() - fade, fade, 1.0f, 0.0f);
+            // (placed where it was sung: its start is the drawn start minus this)
+            const int lead = (int) std::round ((n.beat - s->beat) * spb * sr) + (a0 - from);
+            const std::lock_guard<std::mutex> l (lock);
+            cache[n.id] = { key + ":asSung", seg, lead };
+            return seg;
+        }
         // the whole word, as it was sung: its start (a consonant before the beat) and its end (it rings on past the note)
         // are found in the take, as far as the words either side of it
         int prevEnd = 0, nextStart = N;
@@ -540,6 +564,11 @@ void DrawSing::splitNote()
                 child.id = b.id; child.slur = true; child.slide = false; child.vibrato = 0.0f;
                 voiced->sungNotes.push_back (child);
                 voiced->cache.erase (n.id);
+                if (auto d = voiced->asDrawn.find (n.id); d != voiced->asDrawn.end() && std::abs (d->second.beat - n.beat) < 1e-6 && d->second.pitch == n.pitch)
+                {
+                    d->second.len = n.len;   // (n is already the first half here)
+                    voiced->asDrawn[b.id] = b;
+                }
                 break;
             }
     }
@@ -1381,6 +1410,7 @@ void DrawSing::loadTake (const String& token, const File& file)
     if (it == sentNotes.end()) return;
     auto v = std::make_shared<Voiced>();
     v->sungNotes = it->second;
+    for (auto& n : it->second) v->asDrawn[n.id] = n;
     v->bpm = proc.songJob.getStatus().song.bpm;
     const double start = sectionStartSeconds(), len = sectionBeats() * 60.0 / jmax (40.0, v->bpm) + 2.0;
     SafePointer<DrawSing> self (this);
@@ -1430,7 +1460,7 @@ void DrawSing::renderVoice()
         auto out = std::make_shared<AudioBuffer<float>> (2, (int) (len * sr));
         out->clear();
         // each word's piece, where it starts in the section (its first consonant can come before the beat)
-        struct P { std::shared_ptr<AudioBuffer<float>> seg; int at = 0, start = 0, end = 0; float gain = 1.0f; };
+        struct P { std::shared_ptr<AudioBuffer<float>> seg; int at = 0, start = 0, end = 0; float gain = 1.0f; bool asSung = false; };
         std::vector<P> ps;
         std::vector<size_t> order;
         for (size_t i = 0; i < list.size(); ++i) if (use[i]) order.push_back (i);
@@ -1446,6 +1476,7 @@ void DrawSing::renderVoice()
             p.end = (int) ((list[i].beat + list[i].len) * spb * sr);
             p.at = p.start - v->leadOf (list[i].id);
             p.gain = Decibels::decibelsToGain (list[i].gainDb);
+            p.asSung = v->asSung (list[i]);
             ps.push_back (p);
         }
         // each word owns its own stretch: where two meet (a word's ring-out against the next one's first consonant),
@@ -1457,7 +1488,8 @@ void DrawSing::renderVoice()
         {
             auto& a = ps[k]; auto& b = ps[k + 1];
             if (to[k] <= from[k + 1]) continue; // (a gap: nothing to share)
-            const int boundary = b.start >= a.end ? jmax (a.end, b.at) : b.start;
+            // (two words both as sung: where their audio meets in the take, the middle of the little overlap)
+            const int boundary = a.asSung && b.asSung ? (from[k + 1] + to[k]) / 2 : b.start >= a.end ? jmax (a.end, b.at) : b.start;
             to[k] = jmin (to[k], boundary + xf / 2);
             from[k + 1] = jmax (from[k + 1], boundary - xf / 2);
         }
@@ -1475,9 +1507,9 @@ void DrawSing::renderVoice()
                 for (int ch = 0; ch < 2; ++ch) out->addSample (ch, o, p.seg->getSample (ch, x) * g);
             }
         }
-        // (a safety net: any short burst left where two words meet is held to the level around it; your own
-        // word volumes are left as you set them)
-        lp::song::vocallevel::process (*out, sr, 1.5f, 0.0f);
+        // (a safety net, for words you changed: a sudden blow-up, far louder than the word around it, is held down;
+        // anything normal, and your own word volumes, are left exactly as they are)
+        lp::song::vocallevel::process (*out, sr, 6.0f, 0.0f, false);
         MessageManager::callAsync ([v, out, gen, p, start, key]
         {
             if (v->generation.load() != gen) return;

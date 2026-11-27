@@ -99,9 +99,9 @@ inline int repairBursts (juce::AudioBuffer<float>& buf, double sr, float overDb 
     return repaired;
 }
 
-inline void process (juce::AudioBuffer<float>& buf, double sr, float burstDb = 1.5f, float evenDb = 4.0f)
+inline void process (juce::AudioBuffer<float>& buf, double sr, float burstDb = 1.5f, float evenDb = 4.0f, bool repair = true)
 {
-    repairBursts (buf, sr);
+    if (repair) repairBursts (buf, sr);
     const int n = buf.getNumSamples(), chs = buf.getNumChannels();
     if (n <= 0 || chs <= 0 || sr <= 0) return;
     // the level, every 2.5 ms (RMS of the channels over 10 ms)
