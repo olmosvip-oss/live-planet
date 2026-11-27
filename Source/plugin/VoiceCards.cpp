@@ -417,15 +417,20 @@ void VoicePicker::mouseDown (const MouseEvent& e)
     for (auto& [cr, name] : cards)
         if (cr.contains (e.position))
         {
-            // Jordan's voices: bought on loop-wright.com (Standard or Pro)
+            // Jordan's voices: bought on loop-wright.com (Standard or Pro); until then, tried with the spoken tag
             if (isOfficial (name) && ! lp::license::jordanLicensed()) { askToUnlockJordan (name); return; }
-            // this voice, everywhere (remembered); the page's list follows
-            for (int i = 0; i < voices.getNumItems(); ++i)
-                if (voices.getItemText (i) == name) { voices.setSelectedItemIndex (i, sendNotification); break; }
-            lp::setSetting ("voice", name);
-            repaint();
+            choose (name);
             return;
         }
+}
+
+void VoicePicker::choose (const String& name)
+{
+    // this voice, everywhere (remembered); the page's list follows
+    for (int i = 0; i < voices.getNumItems(); ++i)
+        if (voices.getItemText (i) == name) { voices.setSelectedItemIndex (i, sendNotification); break; }
+    lp::setSetting ("voice", name);
+    repaint();
 }
 
 void VoicePicker::mouseMove (const MouseEvent& e)
@@ -530,16 +535,26 @@ void lp::ai::VoicePicker::askToUnlockJordan (const String& voiceName)
                                "Jordan's voices are licensed for your songs:\n\n"
                                "Standard: $150, plus 50% of a song's earnings when it uses more than 30 seconds of the voice.\n"
                                "Pro: $300, plus 25% of a song's earnings when it uses more than 60 seconds of the voice.\n\n"
-                               "You read and accept the voice license before you pay. Paste the code you get here.",
+                               "You read and accept the voice license before you pay. Paste the code you get here.\n\n"
+                               "Or try it first: without a license, its vocals have a spoken tag over them.",
                                MessageBoxIconType::NoIcon);
     w->addTextEditor ("code", {}, "Your voice license code");
     w->addButton ("Unlock", 1, KeyPress (KeyPress::returnKey));
     if (lp::license::buyUrl().isNotEmpty()) { w->addButton ("Buy Standard", 2); w->addButton ("Buy Pro", 3); }
+    w->addButton ("Try it (with tag)", 4);
     w->addButton ("Not now", 0, KeyPress (KeyPress::escapeKey));
     Component::SafePointer<lp::ai::VoicePicker> self (this);
-    w->enterModalState (true, ModalCallbackFunction::create ([self, w] (int r)
+    const String nm = voiceName;
+    w->enterModalState (true, ModalCallbackFunction::create ([self, w, nm] (int r)
     {
         if (self == nullptr) return;
+        if (r == 4)
+        {
+            self->choose (nm);
+            self->message = "\"" + nm + "\": its vocals have a spoken tag until you buy a license";
+            self->repaint();
+            return;
+        }
         if (r == 2 || r == 3)
         {
             const auto origin = URL (lp::license::buyUrl()).getOrigin();
@@ -549,6 +564,7 @@ void lp::ai::VoicePicker::askToUnlockJordan (const String& voiceName)
         if (r != 1) return;
         const bool ok = lp::license::unlockJordan (w->getTextEditorContents ("code"));
         self->message = ok ? "Unlocked: Jordan's voices (" + lp::license::jordanTier() + " license)" : String ("That code isn't a voice license code: check it and try again");
+        if (ok) self->choose (nm);
         self->repaint();
     }), true);
 }

@@ -8,6 +8,7 @@
 #include <vector>
 #include "License.h"
 #include "../song/Watermark.h"
+#include "BinaryData.h"
 
 // The Voice page's link to the local voice helper: a separate app on this computer that runs the singing
 // models (nothing of them is inside the plugin). Everything here happens on its own background thread,
@@ -108,12 +109,8 @@ public:
     };
     void create (Request r)
     {
-        // Jordan's voices need their license (Standard or Pro, from loop-wright.com)
-        if (lp::license::isJordanVoice (r.voice) && ! lp::license::jordanLicensed())
-        {
-            say ("\"" + r.voice + "\" needs a voice license: pick it in Your voices to buy one or enter your code", true);
-            return;
-        }
+        // Jordan's voices without their license (Standard or Pro, from loop-wright.com): they come back with
+        // the spoken tag over them (see tagVocal)
         push ({ Cmd::Create, std::move (r), {}, {}, 0, {} });
     }
     void cancel (const juce::String& id) { if (validJobId (id)) push ({ Cmd::Cancel, {}, id, {}, 0, {} }); }
@@ -406,7 +403,20 @@ private:
             sr = rd->sampleRate;
         }
         auto owner = lp::license::ownerOf (lp::license::jordanFile().loadFileAsString(), lp::license::publicKey(), lp::license::jordanPrefix());
-        if (owner.isEmpty()) owner = "unlicensed";
+        if (! lp::license::jordanLicensed())
+        {
+            // no license: the spoken tag over it, until it's bought
+            owner = "unlicensed";
+            juce::WavAudioFormat tw;
+            std::unique_ptr<juce::AudioFormatReader> tr (tw.createReaderFor (new juce::MemoryInputStream (BinaryData::tag_wav, (size_t) BinaryData::tag_wavSize, false), true));
+            if (tr != nullptr)
+            {
+                juce::AudioBuffer<float> tag (1, (int) tr->lengthInSamples);
+                tr->read (&tag, 0, tag.getNumSamples(), 0, true, false);
+                lp::watermark::addSpokenTag (b, sr, tag, tr->sampleRate);
+            }
+        }
+        if (owner.isEmpty()) owner = "licensed";
         lp::watermark::embed (b, sr, lp::watermark::idOf (owner));
         const auto out = wavFile.getSiblingFile (wavFile.getFileName() + ".tag");
         out.deleteFile();

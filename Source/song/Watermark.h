@@ -91,6 +91,49 @@ inline void embed (juce::AudioBuffer<float>& buf, double sr, juce::uint32 id)
     }
 }
 
+// the audible tag, for vocals made without a license: the spoken tag mixed over the vocal every `every`
+// seconds (first at 1 s), at the vocal's own loudness, only where the vocal is singing (so it can't be cut out
+// in the gaps)
+inline void addSpokenTag (juce::AudioBuffer<float>& buf, double sr, const juce::AudioBuffer<float>& tag, double tagSr, double every = 9.0)
+{
+    const int n = buf.getNumSamples(), chs = buf.getNumChannels(), tn = tag.getNumSamples();
+    if (n <= 0 || tn <= 0 || sr <= 0 || tagSr <= 0) return;
+    // the tag at the vocal's rate (linear interpolation is plenty for a spoken tag)
+    const int len = (int) ((double) tn * sr / tagSr);
+    std::vector<float> t ((size_t) len);
+    double tagRms = 0.0;
+    for (int i = 0; i < len; ++i)
+    {
+        const double p = (double) i * tagSr / sr;
+        const int a = juce::jmin ((int) p, tn - 1), b = juce::jmin (a + 1, tn - 1);
+        const float f = (float) (p - a);
+        t[(size_t) i] = tag.getSample (0, a) * (1.0f - f) + tag.getSample (0, b) * f;
+        tagRms += (double) t[(size_t) i] * t[(size_t) i];
+    }
+    tagRms = std::sqrt (tagRms / juce::jmax (1, len));
+    if (tagRms < 1e-6) return;
+    auto rmsAt = [&] (int from, int count)
+    {
+        double s = 0.0;
+        int k = 0;
+        for (int i = juce::jmax (0, from); i < juce::jmin (n, from + count); ++i, ++k)
+            for (int c = 0; c < chs; ++c) s += (double) buf.getSample (c, i) * buf.getSample (c, i) / chs;
+        return k > 0 ? std::sqrt (s / k) : 0.0;
+    };
+    const int step = (int) (every * sr);
+    for (int at = (int) sr; at < n; at += step)
+    {
+        // where the vocal is: the next place within this stretch where it sings
+        int start = at;
+        while (start + len < n && start < at + step - len && rmsAt (start, len) < 0.01) start += (int) (0.25 * sr);
+        const double v = rmsAt (start, len);
+        if (v < 0.005) continue; // (no singing here at all)
+        const float g = (float) (v / tagRms * 1.1);
+        for (int i = 0; i < len && start + i < n; ++i)
+            for (int c = 0; c < chs; ++c) buf.addSample (c, start + i, t[(size_t) i] * g);
+    }
+}
+
 struct Found { bool found = false; juce::uint32 id = 0; float confidence = 0.0f; int cycles = 0; };
 
 // (an in-place radix-2 FFT, for the scan)

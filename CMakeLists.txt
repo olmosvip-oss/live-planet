@@ -56,7 +56,8 @@ juce_add_binary_data(LivePlanetAssets SOURCES
     Resources/fonts/SpaceGrotesk-Bold.ttf
     Resources/fonts/SpaceMono-Regular.ttf
     Resources/fonts/SpaceMono-Bold.ttf
-    Resources/voices/jordan.jpg)
+    Resources/voices/jordan.jpg
+    Resources/voices/tag.wav)
 
 target_sources(LivePlanet PRIVATE
     ${LP_ENGINE_SOURCES}

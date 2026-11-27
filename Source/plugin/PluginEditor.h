@@ -1029,6 +1029,7 @@ private:
     void makeVariants (const juce::File& recording);
     void askToUnlockVoices();
     void askToUnlockJordan (const juce::String& voiceName);
+    void choose (const juce::String& voiceName); // this voice, everywhere
     LivePlanetProcessor& proc;
     const lp::ui::Theme*& th;
     juce::ComboBox& voices;
