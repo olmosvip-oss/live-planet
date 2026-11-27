@@ -141,6 +141,7 @@ public:
     }
     // the drum editor: your computer keys or a MIDI controller play the kit (and record into the loop)
     std::atomic<int> drumKeysTrack { -1 };
+    std::atomic<int> midiArmTrack { -1 };   // a MIDI track armed (its I button): your keyboard plays its sound, through the track
     std::atomic<bool> drumPadsOpen { false }; // the Drum pads window takes the hits
     std::atomic<juce::uint32> drumKeysLease { 0 }; // renewed every frame while the drum editor shows
     static int drumNoteFor (int n)

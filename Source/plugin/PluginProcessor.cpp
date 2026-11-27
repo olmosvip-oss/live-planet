@@ -368,6 +368,12 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             }
             continue;
         }
+        // an armed MIDI track: your notes play its sound (heard through the track, so its meter moves)
+        if (const int arm = midiArmTrack.load(); arm >= 0 && ! toPads && ! toDrums && (msg.isNoteOn() || msg.isNoteOff()))
+        {
+            if (msg.isNoteOn()) liveDrums.audition (msg.getNoteNumber(), msg.getFloatVelocity());
+            continue;
+        }
         if (msg.isNoteOn())
         {
             held.set ((size_t) msg.getNoteNumber());
@@ -635,7 +641,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     {
         // notes played into an open track (its drum grid or note editor, from your keyboard or a click): heard
         // through that track, so its meter moves and its volume, pan and mute count
-        const int dk = drumKeysTrack.load();
+        const int dk = drumKeysTrack.load() >= 0 ? drumKeysTrack.load() : midiArmTrack.load();
         if (dk >= 0 && dk < StudioPlayer::maxTracks && (size_t) n <= liveL.size())
         {
             std::fill (liveL.begin(), liveL.begin() + n, 0.0f);
@@ -1786,12 +1792,14 @@ void LivePlanetProcessor::finishTrackTake()
     const auto st = songJob.getStatus();
     juce::String why;
     if (track >= 0) armRecord (track, why); // (still armed: the next play records again, into a new file)
-    if (! st.haveSong || track < 0 || track >= (int) st.song.parts.size()) return;
-    const auto& part = st.song.parts[(size_t) track];
-    const juce::String partName (part.name);
+    if (! st.haveSong || track < 0 || track >= (int) st.tracks.size()) return;
+    const juce::String partName (st.tracks[(size_t) track].name);
     const bool isVocal = partName.startsWith ("vocal (");
     const auto name = partName.fromFirstOccurrenceOf ("(", false, false).upToLastOccurrenceOf (")", false, false);
-    const juce::File current (part.samplePath);
+    // what the track plays now, from bar 1 (the take goes into it)
+    juce::File current = st.tracks[(size_t) track].stem;
+    if (track < (int) st.song.parts.size() && juce::String (st.song.parts[(size_t) track].name) == partName && juce::File (st.song.parts[(size_t) track].samplePath).existsAsFile())
+        current = juce::File (st.song.parts[(size_t) track].samplePath);
     auto* self = this;
     juce::Thread::launch ([self, take, start, current, name, isVocal, folder = st.files.folder.getChildFile ("voice")]
     {

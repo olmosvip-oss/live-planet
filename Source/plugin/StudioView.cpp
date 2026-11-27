@@ -599,7 +599,18 @@ void StudioView::paint (Graphics& g)
         };
         pill (colBounds (i, Mute), "M", m.mute.load(), Colour (0xfff2a33a));
         pill (colBounds (i, Solo), "S", m.solo.load(), th.grassLight);
-        if (isAudioTrack (i))
+        if (i < (int) st.tracks.size() && st.tracks[(size_t) i].midi)
+        {
+            // a MIDI track: its I button (armed: your keyboard plays it, through this track)
+            const auto lb = colBounds (i, Lock);
+            const bool armed = proc.midiArmTrack.load() == i;
+            g.setColour (armed ? th.grass : Colours::white.withAlpha (0.08f));
+            g.fillRoundedRectangle (lb, 4.0f);
+            g.setColour (armed ? Colours::white : Colours::white.withAlpha (0.6f));
+            g.setFont (lp::ui::mono (10.0f, true, 0.0f));
+            g.drawText ("I", lb, Justification::centred, false);
+        }
+        else if (isAudioTrack (i))
         {
             // an audio track: its record button (arm it, press play, sing)
             const auto lb = colBounds (i, Lock);
@@ -1402,6 +1413,19 @@ void StudioView::mouseDown (const MouseEvent& e)
             case Mute: m.mute = ! m.mute.load(); mixDirty = true; break;
             case Solo: m.solo = ! m.solo.load(); mixDirty = true; break;
             case Lock:
+                if (st.tracks[(size_t) i].midi)
+                {
+                    // arm (or disarm) this MIDI track: your keyboard plays its sound
+                    if (proc.midiArmTrack.load() == i) proc.midiArmTrack = -1;
+                    else
+                    {
+                        proc.midiArmTrack = i;
+                        ++proc.printsRunning;
+                        Thread::launch ([&pr = proc, i] { pr.liveDrums.setKit (pr.songJob.noteSounds (i, 12, 96)); --pr.printsRunning; });
+                    }
+                    repaint();
+                    break;
+                }
                 if (isAudioTrack (i))
                 {
                     // arm (or disarm) it for recording
@@ -1850,8 +1874,8 @@ void StudioView::resized()
 bool StudioView::isAudioTrack (int i) const
 {
     const auto st = proc.songJob.getStatus();
-    if (i < 0 || i >= (int) st.song.parts.size()) return false;
-    const juce::String n (st.song.parts[(size_t) i].name);
+    if (i < 0 || i >= (int) st.tracks.size()) return false;
+    const juce::String n (st.tracks[(size_t) i].name);
     return n.startsWith ("vocal (") || n.startsWith ("layer (");
 }
 
