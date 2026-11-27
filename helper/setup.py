@@ -195,7 +195,7 @@ def work():
         make_env("the singer", ROOT / ".venv-soulx", PAY / "requirements-soulx.txt")
         make_env("the song model", ROOT / "vendor/ACE-Step-1.5/.venv", PAY / "requirements-ace.txt")
         download_models()
-        say("Ready", "Loopwright Voice is set up. It starts now: open Loopwright and go to the Vocals tab.")
+        say("Ready", "Loopwright Voice is set up and running. You can close this page: open Loopwright and go to the Vocals tab.")
         with lock:
             status["done"] = True
     except Exception as e:
