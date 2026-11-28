@@ -668,7 +668,7 @@ public:
     std::function<bool()> masterShown;     // (lit while its effects are open below)
     float masterLevel = 0.0f;              // (what's coming out, for its meter)
     juce::Rectangle<float> masterBounds() const;
-    float masterRowH() const { return std::max (34.0f, (float) rowStep); }
+    float masterRowH() const { return 30.0f; } // (a slim strip, like a DAW's master: always fits above the feel row)
     std::function<void (const juce::String&)> onOpenDrawn; // a drawn vocal double-clicked: Draw & sing, on its section
     int fxDropRow = -1;
 public:

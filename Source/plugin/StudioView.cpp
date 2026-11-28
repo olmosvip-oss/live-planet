@@ -75,12 +75,17 @@ void StudioView::buildRows()
 
 int StudioView::visibleRows() const
 {
-    return std::max (1, (int) (((float) getHeight() - rowsTop - 34.0f - masterRowH()) / (float) rowStep)); // (the master row, then the feel row below)
+    return std::max (1, (int) (((float) getHeight() - rowsTop - 30.0f - masterRowH()) / (float) rowStep)); // (the master row, then the feel row below)
 }
 
 Rectangle<float> StudioView::masterBounds() const
 {
-    return { 10.0f, rowsTop + (float) visibleRows() * (float) rowStep + 2.0f, (float) getWidth() - 20.0f, masterRowH() - 4.0f };
+    // right under the rows shown, and never into the feel row (when the arrangement is short, the rows give way)
+    const float limit = (float) getHeight() - 30.0f;
+    float y = rowsTop + (float) visibleRows() * (float) rowStep;
+    const float h = jlimit (16.0f, masterRowH() - 4.0f, limit - y - 2.0f);
+    y = std::min (y, limit - 2.0f - h);
+    return { 10.0f, y, (float) getWidth() - 20.0f, h };
 }
 
 Rectangle<float> StudioView::zoomBtn (int i) const
