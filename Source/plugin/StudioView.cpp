@@ -75,7 +75,12 @@ void StudioView::buildRows()
 
 int StudioView::visibleRows() const
 {
-    return std::max (1, (int) (((float) getHeight() - rowsTop - 34.0f) / (float) rowStep)); // (the feel row below)
+    return std::max (1, (int) (((float) getHeight() - rowsTop - 34.0f - masterRowH()) / (float) rowStep)); // (the master row, then the feel row below)
+}
+
+Rectangle<float> StudioView::masterBounds() const
+{
+    return { 10.0f, rowsTop + (float) visibleRows() * (float) rowStep + 2.0f, (float) getWidth() - 20.0f, masterRowH() - 4.0f };
 }
 
 Rectangle<float> StudioView::zoomBtn (int i) const
@@ -448,6 +453,8 @@ void StudioView::paint (Graphics& g)
         int every = 1;
         while (every * pxPerBar < 30.0f && every < 64) every *= 2;
         const int b0 = std::max (0, (int) std::floor (firstBar)), b1 = std::min (totalBars, (int) std::ceil (firstBar + shownBars));
+        g.setColour (Colours::white.withAlpha (0.035f)); // (the loop strip along the top: drag it)
+        g.fillRect (Rectangle<float> (lx, 1.0f, lw, 6.0f));
         {
             // the loop: a band over its bars on the ruler (bright when it's on), faint down through the lanes
             const double la = proc.songLoopA.load(), lb = proc.songLoopB.load(), bar = st.song.bpm > 0.0 ? 240.0 / st.song.bpm * StudioPlayer::fileRate : 0.0;
@@ -455,10 +462,10 @@ void StudioView::paint (Graphics& g)
             {
                 const float xa = xOfBar (la / bar), xb = xOfBar (lb / bar);
                 const bool on = proc.songLoopOn.load();
-                g.setColour (on ? accent.withAlpha (0.35f) : Colours::white.withAlpha (0.08f));
-                g.fillRoundedRectangle (Rectangle<float> (xa, 2.0f, xb - xa, 24.0f), 4.0f);
-                g.setColour (on ? accent.withAlpha (0.9f) : Colours::white.withAlpha (0.2f));
-                g.drawRoundedRectangle (Rectangle<float> (xa, 2.0f, xb - xa, 24.0f).reduced (0.5f), 4.0f, 1.0f);
+                g.setColour (on ? accent.withAlpha (0.16f) : Colours::white.withAlpha (0.04f));
+                g.fillRect (Rectangle<float> (xa, 0.0f, xb - xa, 26.0f));
+                g.setColour (on ? th.grassLight : Colours::white.withAlpha (0.25f));
+                g.fillRoundedRectangle (Rectangle<float> (xa, 1.0f, xb - xa, 6.0f), 3.0f);
                 if (on) { g.setColour (accent.withAlpha (0.05f)); g.fillRect (Rectangle<float> (xa, rowsTop - 2.0f, xb - xa, lanesBottom - rowsTop + 2.0f)); }
             }
         }
@@ -1094,6 +1101,35 @@ void StudioView::paint (Graphics& g)
                         area.reduced (10.0f, 2.0f).removeFromBottom (14.0f), Justification::bottomRight, false);
         }
     }
+    // the master channel, always at the bottom
+    if (st.haveSong)
+    {
+        const auto mb = masterBounds();
+        const bool lit = masterShown && masterShown();
+        const bool drop = fxDropRow == -2;
+        g.setColour (lit || drop ? th.grass.withAlpha (0.22f) : Colours::white.withAlpha (0.05f));
+        g.fillRoundedRectangle (mb, 6.0f);
+        g.setColour (lit || drop ? th.grassLight : Colours::white.withAlpha (0.1f));
+        g.drawRoundedRectangle (mb.reduced (0.5f), 6.0f, lit || drop ? 1.5f : 1.0f);
+        auto head = mb.withRight (laneLeft() - 8.0f).reduced (12.0f, 0.0f);
+        g.setFont (font (13.0f, lp::ui::Medium));
+        g.setColour (th.ink);
+        g.drawText ("Master", head.removeFromLeft (70.0f), Justification::centredLeft, false);
+        StringArray on;
+        for (auto& k : lp::fx::kinds()) if (k.group == 0 && lp::fx::isOn (proc, lp::fx::masterTrack, k.id)) on.add (k.name);
+        g.setFont (font (10.5f));
+        g.setColour (th.inkDim);
+        const String db = String (proc.masterMix.gainDb.load(), 1) + " dB";
+        g.drawText ((on.isEmpty() ? String ("no effects yet: click, or drop one here") : on.joinIntoString (", ")) + String::fromUTF8 ("  \xc2\xb7  ") + db,
+                    head, Justification::centredLeft, true);
+        // what's coming out
+        const auto lane = Rectangle<float> (laneLeft(), mb.getCentreY() - 3.0f, laneRight() - laneLeft(), 6.0f);
+        g.setColour (Colours::white.withAlpha (0.06f));
+        g.fillRoundedRectangle (lane, 3.0f);
+        const float lv = jlimit (0.0f, 1.0f, (Decibels::gainToDecibels (masterLevel, -60.0f) + 60.0f) / 60.0f);
+        g.setColour (lv > 0.97f ? Colour (0xffff6b6b) : th.grassLight.withAlpha (0.85f));
+        g.fillRoundedRectangle (lane.withWidth (lane.getWidth() * lv), 3.0f);
+    }
 }
 
 void StudioView::setFromX (int row, Col c, float x)
@@ -1152,6 +1188,12 @@ Rectangle<float> StudioView::scrollBar() const
 
 void StudioView::mouseDown (const MouseEvent& e)
 {
+    if (masterBounds().contains (e.position) && proc.songJob.getStatus().haveSong)
+    {
+        if (onOpenMaster) onOpenMaster();
+        repaint();
+        return;
+    }
     buildRows();
     dragGroup = {};
     const auto st = proc.songJob.getStatus();
@@ -1185,6 +1227,15 @@ void StudioView::mouseDown (const MouseEvent& e)
         {
             const double bar = std::floor (view != nullptr ? view->barAt (e.position.x, laneLeft(), laneRight() - laneLeft(), totalBars)
                                                            : (e.position.x - laneLeft()) / (laneRight() - laneLeft()) * totalBars);
+            rulerMoved = false;
+            stripClick = e.position.y < 9.0f;
+            if (stripClick && st.song.bpm > 0.0)
+            {
+                // the strip along the top: drag it for a loop, click it to turn the loop on or off
+                rulerDrag = true;
+                rulerFrom = jlimit (0.0, (double) totalBars, bar);
+                return;
+            }
             if (e.getNumberOfClicks() == 1 && st.song.bpm > 0.0)
             {
                 const double at = jlimit (0.0, (double) totalBars, bar) * 240.0 / st.song.bpm * StudioPlayer::fileRate;
@@ -1484,8 +1535,9 @@ void StudioView::mouseDrag (const MouseEvent& e)
 {
     if (rulerDrag)
     {
-        // dragged along the bar numbers: the song loops over those bars
+        // dragged along the top: the song loops over those bars
         if (e.getDistanceFromDragStart() < 6) return;
+        rulerMoved = true;
         const auto st = proc.songJob.getStatus();
         if (! st.haveSong || st.song.bpm <= 0.0) return;
         const int totalBars = std::max (1, st.song.totalBars());
@@ -1584,7 +1636,31 @@ void StudioView::mouseDrag (const MouseEvent& e)
 
 void StudioView::mouseUp (const MouseEvent& e)
 {
-    if (rulerDrag) { rulerDrag = false; return; }
+    if (rulerDrag)
+    {
+        if (stripClick && ! rulerMoved && proc.songLoopB.load() > proc.songLoopA.load())
+        {
+            proc.songLoopOn = ! proc.songLoopOn.load(); // (a click on the strip: the loop on or off)
+            if (onLoopChanged) onLoopChanged();
+            repaint();
+        }
+        else if (stripClick && ! rulerMoved)
+        {
+            // no loop yet: the section clicked
+            const auto st = proc.songJob.getStatus();
+            if (const int sc = sectionAt (e.position.x); sc >= 0 && st.song.bpm > 0.0)
+            {
+                const double bar = 240.0 / st.song.bpm * StudioPlayer::fileRate;
+                proc.songLoopA = st.song.sections[(size_t) sc].startBar * bar;
+                proc.songLoopB = (st.song.sections[(size_t) sc].startBar + st.song.sections[(size_t) sc].bars) * bar;
+                proc.songLoopOn = true;
+                if (onLoopChanged) onLoopChanged();
+                repaint();
+            }
+        }
+        rulerDrag = false; stripClick = false; rulerMoved = false;
+        return;
+    }
     if (trackDrag >= 0)
     {
         if (trackDragging && trackDropValid)
@@ -1697,6 +1773,7 @@ void StudioView::itemDragMove (const SourceDetails& d)
     int row = -1;
     const int n = (int) proc.songJob.getStatus().tracks.size();
     for (int i = 0; i < n; ++i) if (rowShown (i) && rowBounds (i).contains (d.localPosition.toFloat())) row = i;
+    if (masterBounds().contains (d.localPosition.toFloat())) row = -2; // (the master)
     if (row != fxDropRow) { fxDropRow = row; repaint(); }
 }
 
@@ -1706,7 +1783,7 @@ void StudioView::itemDropped (const SourceDetails& d)
     const int row = fxDropRow;
     fxDropRow = -1;
     repaint();
-    if (row >= 0 && onDropFx) onDropFx (row, d.description.toString().fromFirstOccurrenceOf ("fx:", false, false));
+    if ((row >= 0 || row == -2) && onDropFx) onDropFx (row == -2 ? lp::fx::masterTrack : row, d.description.toString().fromFirstOccurrenceOf ("fx:", false, false));
 }
 
 namespace

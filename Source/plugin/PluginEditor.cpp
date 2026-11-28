@@ -2085,6 +2085,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     // a track clicked in the arrangement opens below it (the Studio's own editor)
     studioView.onOpenTrack = [this] (int t)
     {
+        masterOpen = false; // (a track: its own effects, not the master's)
         if (t != trackEditor.selected()) trackEditor.select (t);
         if (dockCollapsed) { dockCollapsed = false; setPage (Studio); resized(); } // (a track clicked: the panel opens again)
         repaint();
@@ -2118,12 +2119,9 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         addFx (trackEditor.selected(), id);
     };
     // the master channel: everything goes through it (its effects, volume and pan), in the dock like a track
-    for (auto* b : { &loopBtn, &masterBtn }) { addChildComponent (*b); b->getProperties().set ("glass", true); b->setWantsKeyboardFocus (false); }
-    masterBtn.setTooltip ("The master channel: effects on the whole song (EQ, compressor, saturator, width, delay, reverb), its volume and pan");
-    masterBtn.onClick = [this] { openMaster(); };
-    loopBtn.setTooltip ("Loop: play the same bars over and over. Drag along the bar numbers to choose which");
-    loopBtn.onClick = [this] { setLoop (! proc.songLoopOn.load()); };
-    studioView.onLoopChanged = [this] { loopBtn.getProperties().set ("primary", proc.songLoopOn.load()); loopBtn.repaint(); };
+    // the master channel: its own row at the bottom of the tracks (its effects open below); the loop: the strip along the top
+    studioView.onOpenMaster = [this] { openMaster(); };
+    studioView.masterShown = [this] { return masterOpen && dockPageShown == 1 && ! dockCollapsed; };
     studioView.onDropFx = [this] (int t, String id) { addFx (t, id); };
     studioView.onOpenDrawn = [this] (const String& sec) { vocalTab = 1; setPage (Voice); drawSing.openSection (sec); };
     studioView.onEditNotes = [this] (int t)
@@ -2542,8 +2540,6 @@ void LivePlanetEditor::setPage (int p)
     dockTabs.setVisible (studio && haveSong0);
     fxBtn.setVisible (studio && haveSong0);
     exportBtn.setVisible (studio && haveSong0);
-    loopBtn.setVisible (studio && haveSong0);
-    masterBtn.setVisible (studio && haveSong0);
     fxBrowser.setVisible (studio && haveSong0 && browserOpen);
     if (! studio) fxRack.setVisible (false);
     // vocals: your vocals, or (with the voice helper switched on) a new one made with AI
@@ -2731,8 +2727,10 @@ void LivePlanetEditor::timerCallback()
         }
         if (masterInfo.getText() != info) masterInfo.setText (info, dontSendNotification);
         pillMix.setLabel (proc.masterPreset.load() >= 0 && proc.masterAfter.load() ? "drag master" : "drag mix");
-        masterMeter.l.update (proc.outPeakL.exchange (0.0f));
-        masterMeter.r.update (proc.outPeakR.exchange (0.0f));
+        const float pkL = proc.outPeakL.exchange (0.0f), pkR = proc.outPeakR.exchange (0.0f);
+        masterMeter.l.update (pkL);
+        masterMeter.r.update (pkR);
+        studioView.masterLevel = jmax (studioView.masterLevel * 0.82f, jmax (pkL, pkR)); // (the master row's meter)
         masterMeter.repaint();
         if (proc.masterResets.load() != seenMasterResets) { seenMasterResets = proc.masterResets.load(); masterBox.setSelectedId (1, dontSendNotification); }
         masterInfo.setColour (Label::textColourId, lnf.th->inkDim);
@@ -2806,7 +2804,7 @@ void LivePlanetEditor::timerCallback()
     if (page == Studio && proc.songJob.getStatus().haveSong)
     {
         if (! trackEditor.isVisible() && ! fxRack.isVisible() && ! dockCollapsed) { showDock(); dockTabs.setVisible (true); }
-        if (trackEditor.selected() != lastDockTrack) { lastDockTrack = trackEditor.selected(); if (masterOpen) { masterOpen = false; masterBtn.getProperties().set ("primary", false); masterBtn.repaint(); } }
+        if (trackEditor.selected() != lastDockTrack) { lastDockTrack = trackEditor.selected(); if (masterOpen) { masterOpen = false; studioView.repaint(); } }
         if (fxRack.isVisible()) { fxRack.setTrack (masterOpen ? lp::fx::masterTrack : trackEditor.selected()); fxRack.repaint(); }
         trackEditor.refresh();
         if (trackEditor.wantsTall() != dockTall) { dockTall = trackEditor.wantsTall(); resized(); repaint(); }
@@ -3084,8 +3082,7 @@ void LivePlanetEditor::openMaster()
     if (! proc.songJob.getStatus().haveSong) return;
     masterOpen = true;
     lastDockTrack = trackEditor.selected();
-    masterBtn.getProperties().set ("primary", true);
-    masterBtn.repaint();
+    studioView.repaint();
     dockCollapsed = false;
     dockPageShown = 1;
     showDock();
@@ -3107,8 +3104,6 @@ void LivePlanetEditor::setLoop (bool on)
         proc.songLoopB = b * bar;
     }
     proc.songLoopOn = on;
-    loopBtn.getProperties().set ("primary", on);
-    loopBtn.repaint();
     studioView.repaint();
 }
 
@@ -3255,11 +3250,8 @@ void LivePlanetEditor::resized()
         showDock();
         dockTabs.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
         dockTabs.setBounds (cardDock.getRight() - 18 - 340, cardDock.getY() + 8, 340, 24);
-        // (narrower with the effects browser open: the arrangement has less room)
-        const bool tight = browserOpen;
-        loopBtn.setBounds (cardTimeline.getX() + 226, cardTimeline.getY() + 9, tight ? 54 : 60, 30);
-        fxBtn.setBounds (loopBtn.getRight() + (tight ? 6 : 8), cardTimeline.getY() + 9, tight ? 76 : 96, 30);
-        exportBtn.setBounds (fxBtn.getRight() + (tight ? 6 : 8), fxBtn.getY(), tight ? 68 : 90, 30);
+        fxBtn.setBounds (cardTimeline.getX() + 234, cardTimeline.getY() + 9, 96, 30);
+        exportBtn.setBounds (fxBtn.getRight() + 8, fxBtn.getY(), 90, 30);
     }
     else
         songView.setBounds (cardTimeline.getX() + 12, cardTimeline.getY() + 46, cardTimeline.getWidth() - 24, cardTimeline.getHeight() - 104);
@@ -3291,14 +3283,12 @@ void LivePlanetEditor::resized()
     {
         // the master, together on the right: its channel (Master), its meter, its loudness, before / after.
         // The loudness menu gives up width when the arrangement is narrow (the effects browser open)
-        const int masterW = browserOpen ? 70 : 84;
-        const int leftLimit = exportBtn.getRight() + 8 + masterW + 8 + 26;
+        const int leftLimit = exportBtn.getRight() + 8 + 26;
         const int boxW = jlimit (140, 236, masterAB.getX() - 8 - leftLimit);
         masterBox.setBounds (masterAB.getX() - 8 - boxW, cardTimeline.getY() + 12, boxW, 26);
         masterMeter.setBounds (masterBox.getX() - 26, cardTimeline.getY() + 8, 13, 34);
-        masterBtn.setBounds (masterMeter.getX() - 8 - masterW, cardTimeline.getY() + 9, masterW, 30);
         const int infoX = exportBtn.getRight() + 10;
-        masterInfo.setBounds (infoX, cardTimeline.getY() + 12, jmax (0, masterBtn.getX() - 8 - infoX), 26);
+        masterInfo.setBounds (infoX, cardTimeline.getY() + 12, jmax (0, masterMeter.getX() - 8 - infoX), 26);
     }
     vocalTabs.setBounds (M, 84, 420, 28);
     {

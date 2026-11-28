@@ -663,6 +663,12 @@ public:
     void itemDragExit (const SourceDetails&) override { fxDropRow = -1; repaint(); }
     std::function<void (int, juce::String)> onDropFx;
     std::function<void (int)> onEditNotes; // a MIDI track's lane double-clicked: its notes, below
+    // the master channel: its own row, always at the bottom of the tracks (it can't be removed); click it for its effects
+    std::function<void()> onOpenMaster;
+    std::function<bool()> masterShown;     // (lit while its effects are open below)
+    float masterLevel = 0.0f;              // (what's coming out, for its meter)
+    juce::Rectangle<float> masterBounds() const;
+    float masterRowH() const { return std::max (34.0f, (float) rowStep); }
     std::function<void (const juce::String&)> onOpenDrawn; // a drawn vocal double-clicked: Draw & sing, on its section
     int fxDropRow = -1;
 public:
@@ -724,7 +730,7 @@ private:
     void deletePicked();
     double wheelZoomRows = 0.0;
     double cuedBar = -1.0;
-    bool rulerDrag = false; double rulerFrom = 0.0; // (a drag along the bar numbers: the loop)
+    bool rulerDrag = false, rulerMoved = false, stripClick = false; double rulerFrom = 0.0; // (a drag along the top: the loop)
 public:
     std::function<void()> onLoopChanged;
 private:
@@ -1759,7 +1765,7 @@ private:
     lp::fx::Browser fxBrowser { lnf.th };
     lp::fx::Rack fxRack { proc, lnf.th };
     bool browserOpen = false;
-    juce::TextButton fxBtn { "Effects" }, exportBtn { "Export" }, loopBtn { "Loop" }, masterBtn { "Master" };
+    juce::TextButton fxBtn { "Effects" }, exportBtn { "Export" };
     bool masterOpen = false; int lastDockTrack = -1; // (the master channel open in the effects dock)
     void openMaster();
     void setLoop (bool on);
