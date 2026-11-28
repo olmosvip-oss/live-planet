@@ -1193,6 +1193,9 @@ private:
     juce::String savedKey;
 public:
     void openSection (const juce::String& sectionName); // (from the Studio: a drawn vocal double-clicked)
+    // a recording of you (Create with AI's take, from the section's start): its melody becomes the notes, and the
+    // recording itself is the voice they play, so each note can be moved, stretched and re-pitched (like Flex Pitch)
+    void useRecording (const juce::File& take, int sectionIndex, const juce::String& words);
 private:
     juce::TextButton recBtn { "record melody" };
     double markerBeat = 0.0;                   // the marker: where "play section" starts (beats into the section)
@@ -1415,7 +1418,10 @@ private:
     int whoSings = 1; // (only "I sing it" now: your take, in the voice; Write melody and AI freestyle are retired)
     // (AI freestyle retired: it made up its own melody and lost words)
     Segmented who { { "Write melody", "I sing it" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; clean.setToggleState (i == 1, juce::dontSendNotification); resized(); refreshButtons(); repaint(); }, th };
-    juce::TextButton recordTake { "Record my take" }, useTake { "Use a recording..." }, hearTake { "hear it" };
+    juce::TextButton recordTake { "Record my take" }, useTake { "Use a recording..." }, hearTake { "hear it" }, editTake { "Edit in Draw & sing" };
+public:
+    std::function<void (const juce::File&, int, const juce::String&)> onEditTake; // (take, song section, its words)
+private:
     juce::String notReady; // (why Create is greyed out)
     juce::File takeFile;          // your take, cut to the section
     double takeSecs = 0.0;

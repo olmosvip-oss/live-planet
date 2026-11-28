@@ -26,6 +26,7 @@ struct DrawSing::Voiced
     std::map<int, Seg> cache;                           // by note id: its piece, re-pitched and re-timed
     std::atomic<int> generation { 0 };
     std::vector<float> env;                             // how loud the take is, 200 times a second (the notes' shapes)
+    std::vector<double> pitchTrack;                     // its pitch (MIDI, 0 = none), 200 times a second
     std::shared_ptr<AudioBuffer<float>> lastRender;     // the section in your voice, as the notes are now
     String renderedKey;                                 // (which notes it was rendered from)
 
@@ -55,6 +56,7 @@ struct DrawSing::Voiced
         std::vector<float> mono ((size_t) N);
         for (int i = 0; i < N; ++i) mono[(size_t) i] = take->getSample (0, i);
         const auto pitch = lp::song::tune::track (mono, sr, hop);
+        pitchTrack = pitch; // (drawn inside the notes: how you really sang each one)
         auto jumpAt = [&pitch] (int f) { return f >= 3 && f < (int) pitch.size() && pitch[(size_t) f] > 0 && pitch[(size_t) f - 3] > 0 && std::abs (pitch[(size_t) f] - pitch[(size_t) f - 3]) >= 0.8; };
 
         std::vector<size_t> order (sungNotes.size());
@@ -1476,6 +1478,26 @@ void DrawSing::paint (Graphics& g)
             blob.closeSubPath();
             g.setColour (Colours::white.withAlpha (0.28f));
             g.fillPath (blob);
+            // the pitch as it was really sung (moved with the note): the drift, the slides in, the vibrato
+            if (! voiced->pitchTrack.empty() && s->len > 0.0)
+            {
+                Path curve;
+                bool down = false;
+                const int f0 = (int) (s->beat * spb * 200.0), f1 = (int) ((s->beat + s->len) * spb * 200.0);
+                const double shift = n.pitch - s->pitch;
+                const float rh = rowH();
+                for (int f = f0; f <= f1; ++f)
+                {
+                    const double m = f >= 0 && f < (int) voiced->pitchTrack.size() ? voiced->pitchTrack[(size_t) f] : 0.0;
+                    if (m <= 0.0 || std::abs (m - s->pitch) > 7.0) { down = false; continue; }
+                    const float x = nr.getX() + nr.getWidth() * (float) (f - f0) / (float) jmax (1, f1 - f0);
+                    const float y = yOf (n.pitch) + rh * 0.5f - (float) (m + shift - n.pitch) * rh;
+                    if (down) curve.lineTo (x, y); else curve.startNewSubPath (x, y);
+                    down = true;
+                }
+                g.setColour (Colours::white.withAlpha (0.85f));
+                g.strokePath (curve, PathStrokeType (1.4f, PathStrokeType::curved, PathStrokeType::rounded));
+            }
         }
         g.setFont (font (10.5f, lp::ui::Medium));
         g.setColour (Colours::white);
@@ -1779,6 +1801,78 @@ void DrawSing::leave()
 }
 
 // a drawn vocal double-clicked in the Studio: its section, here (the notes you drew are kept while Loopwright is open)
+// your take (from Create with AI) as the voice: the melody heard in it becomes the notes, and each note plays its own
+// piece of your recording, so moving a note re-pitches what you sang (formants kept) instead of singing it again
+void DrawSing::useRecording (const File& take, int sectionIndex, const String& words)
+{
+    const auto st = proc.songJob.getStatus();
+    if (! take.existsAsFile() || ! st.haveSong || sectionIndex < 0 || sectionIndex >= (int) st.song.sections.size()) return;
+    if (section.getSelectedItemIndex() != sectionIndex) section.setSelectedItemIndex (sectionIndex, sendNotification);
+    if (words.trim().isNotEmpty()) lyrics.setText (words, false);
+    const String secName (st.song.sections[(size_t) sectionIndex].name);
+    const double start = st.song.sections[(size_t) sectionIndex].startBar * 240.0 / st.song.bpm;
+    const String token = String::toHexString (Random::getSystemRandom().nextInt64()).substring (0, 10);
+    const auto file = st.files.folder.getChildFile ("voice").getChildFile ("drawn " + secName + " " + token + ".wav");
+    lp::song::transcribe::Options o;
+    o.bpm = jmax (40.0, st.song.bpm); o.key = st.song.key; o.minor = st.song.minor; o.lowest = 36; o.highest = 96;
+    message = "Finding the notes in your take...";
+    repaint();
+    SafePointer<DrawSing> self (this);
+    Thread::launch ([self, take, file, o, start, secName, token]
+    {
+        AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<AudioFormatReader> rd (fm.createReaderFor (take));
+        std::vector<lp::song::Note> heard;
+        bool ok = false;
+        if (rd != nullptr && rd->sampleRate > 0)
+        {
+            const int n = (int) jmin<int64> (rd->lengthInSamples, (int64) (rd->sampleRate * 120.0));
+            AudioBuffer<float> b (2, n);
+            b.clear();
+            rd->read (&b, 0, n, 0, true, rd->numChannels > 1);
+            if (rd->numChannels == 1) b.copyFrom (1, 0, b, 0, 0, n);
+            std::vector<float> mono ((size_t) n);
+            for (int i = 0; i < n; ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+            float pk = 0.0f;
+            for (float v : mono) pk = jmax (pk, std::abs (v));
+            if (pk > 1.0e-4f) for (auto& v : mono) v *= 0.9f / pk;
+            heard = lp::song::transcribe::melodyOf (mono.data(), n, rd->sampleRate, o);
+            // the recording, where the section starts in the song (like a sung take), at the song's rate
+            const double ratio = rd->sampleRate / StudioPlayer::fileRate;
+            const int pad = (int) (start * StudioPlayer::fileRate), outLen = (int) (n / ratio);
+            AudioBuffer<float> out (2, pad + outLen);
+            out.clear();
+            for (int ch = 0; ch < 2; ++ch) { LagrangeInterpolator li; li.process (ratio, b.getReadPointer (ch), out.getWritePointer (ch, pad), outLen); }
+            file.getParentDirectory().createDirectory();
+            WavAudioFormat wav;
+            if (std::unique_ptr<AudioFormatWriter> w { wav.createWriterFor (new FileOutputStream (file), StudioPlayer::fileRate, 2, 24, {}, 0) })
+                ok = w->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
+        }
+        MessageManager::callAsync ([self, heard, ok, file, secName, token]
+        {
+            if (self == nullptr) return;
+            if (! ok) { self->message = "Couldn't read your take"; self->repaint(); return; }
+            std::vector<Note> list;
+            for (auto& h : heard) { Note n; n.beat = h.beat; n.len = h.length; n.pitch = h.pitch; list.push_back (n); }
+            self->useMelody (std::move (list), "in your take");
+            if (self->notes.empty()) return;
+            // the notes are your take's: each plays its own piece of it (nothing to sing; move one and it's re-pitched)
+            auto* p = &self->proc;
+            self->sentNotes[token] = self->notes;
+            p->drawnFiles[token] = file;
+            self->lastToken = token;
+            self->loadedToken.clear(); // (loaded as your voice in a moment)
+            self->voiced = nullptr;
+            self->sentKey = self->bakedKey = self->noteKey();
+            p->songJob.addSungVocal (file, "drawn, " + secName, "your take, to edit in Draw & sing", true, "drawn and sung", true);
+            self->message = String ((int) self->notes.size()) + " notes from your take: drag one to change its pitch or timing, "
+                            "stretch it, or option-drag to copy. It plays your own recording.";
+            self->repaint();
+        });
+    });
+}
+
 void DrawSing::openSection (const String& sectionName)
 {
     const auto st = proc.songJob.getStatus();

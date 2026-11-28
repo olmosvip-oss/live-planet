@@ -116,7 +116,15 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
                     "note (every word, in key, in time). I sing it: you rap or sing the lines over the section (rough is fine), and it keeps "
                     "your exact words and timing, then cleans, tunes and turns it into the voice.");
     addChildComponent (who); // (one way left: no switch to show)
-    for (auto* b : { &recordTake, &useTake, &hearTake }) { b->setWantsKeyboardFocus (false); addChildComponent (*b); }
+    for (auto* b : { &recordTake, &useTake, &hearTake, &editTake }) { b->setWantsKeyboardFocus (false); addChildComponent (*b); }
+    editTake.onClick = [this]
+    {
+        // your take in the piano roll: its notes to move and re-pitch, your recording as the voice
+        const int c = section.getSelectedItemIndex();
+        if (! takeFile.existsAsFile() || c < 0 || c >= (int) sectionInfo.size() || onEditTake == nullptr) return;
+        if (hearTake.getButtonText() == "stop") { proc.setVoicePreview (nullptr); proc.previewPlaying = false; hearTake.setButtonText ("hear it"); }
+        onEditTake (takeFile, sectionInfo[(size_t) c].first, lyrics.getText());
+    };
     recordTake.setTooltip ("Plays the section with a one-bar count-in and records your mic until it ends (in the Loopwright app; in a DAW, record there and drop it here)");
     useTake.setTooltip ("A recording of you over this section: from its first bar, or a bounce from bar 1 (it's cut to the section). You can also drop it on this page.");
     recordTake.onClick = [this] { if (takeRecording) finishTakeRecording(); else startTakeRecording(); };
@@ -460,6 +468,7 @@ void VoicePage::refreshButtons()
     recordTake.setVisible (mine);
     useTake.setVisible (mine);
     hearTake.setVisible (mine && haveTake);
+    editTake.setVisible (mine && haveTake);
     recordTake.setEnabled (proc.canRecordMic());
     recordTake.setButtonText (takeRecording ? "Stop" : proc.canRecordMic() ? "Record my take" : "Record (in the app)");
     create.setEnabled (ready);
@@ -576,7 +585,10 @@ void VoicePage::resized()
             recordTake.setBounds (row.removeFromLeft (row.getWidth() / 2 - 3));
             row.removeFromLeft (6);
             useTake.setBounds (row);
-            hearTake.setBounds (t.withTrimmedTop (12).removeFromTop (30).removeFromRight (70));
+            auto row2 = t.withTrimmedTop (12).removeFromTop (30);
+            hearTake.setBounds (row2.removeFromRight (70));
+            row2.removeFromRight (6);
+            editTake.setBounds (row2.removeFromRight (150));
         }
         takes.setBounds (segs.removeFromTop (30).withTrimmedLeft (70));
         segs.removeFromTop (12);
