@@ -266,6 +266,10 @@ public:
     bool masterNow (int preset);
     juce::String masterKeyNow (int preset);
     juce::File masteredFile();                  // up to date with your mix (re-mastered first if it changed)
+    juce::File mixNowFile();                    // the song as you hear it now (every edit, your mix), no master; made again when it changes
+    juce::File mixNowF;
+    juce::String mixNowKey;
+    juce::CriticalSection mixNowLock;
     juce::String masterKey;
     std::atomic<int> masterPreset { -1 };       // the one that's ready and playing
     std::atomic<bool> masterAfter { true };     // A/B: hear the master (true) or the plain mix

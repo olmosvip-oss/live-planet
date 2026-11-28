@@ -231,6 +231,7 @@ void ExportPanel::run (const File& where)
             say ("Exporting the mix...", false);
             File mix;
             if (p->masterPreset.load() >= 0 && p->masterAfter.load()) mix = p->masteredFile();
+            if (! mix.existsAsFile()) mix = p->mixNowFile(); // (the song as it is now, not as first written)
             if (! mix.existsAsFile()) mix = st.files.mixFile;
             const auto out = (w == 0 ? dir.getChildFile (song + ext).getNonexistentSibling (false) : dir.getChildFile (song + " - mix" + ext));
             if (auto e = convert (mix, out, ty, sr); e.isNotEmpty()) problem = e; else ++made;

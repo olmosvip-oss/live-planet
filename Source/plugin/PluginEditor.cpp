@@ -2136,8 +2136,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     {
         if (p.masterPreset.load() >= 0 && p.masterAfter.load())
             if (const auto f = p.masteredFile(); f.existsAsFile()) return StringArray (f.getFullPathName());
-        auto st = p.songJob.getStatus();
-        return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray();
+        if (const auto f = p.mixNowFile(); f.existsAsFile()) return StringArray (f.getFullPathName()); // (as it is now)
+        return StringArray();
     };
     pillChords.filesToDrag = [&p] { const auto f = p.songJob.chordsMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
     // one drag: every MIDI part (drums, 808, hook, bass lines, and the chords + bass your loops play)

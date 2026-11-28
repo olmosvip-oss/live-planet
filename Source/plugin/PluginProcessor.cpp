@@ -811,6 +811,35 @@ juce::File LivePlanetProcessor::masteredFile()
     return masterFile;
 }
 
+// the mix as you hear it now: the song's tracks as they are (arranged, edited, added since it was written) through
+// your mix. The mix saved when the song was written is the first version only, so export and "drag mix" use this
+juce::File LivePlanetProcessor::mixNowFile()
+{
+    const auto st = songJob.getStatus();
+    if (! st.haveSong) return {};
+    const juce::ScopedLock sl (mixNowLock);
+    const auto key = masterKeyNow (-2);
+    if (key == mixNowKey && mixNowF.existsAsFile()) return mixNowF;
+    juce::Array<juce::File> stems;
+    for (auto& t : st.tracks) stems.add (t.stem);
+    juce::ScopedNoDenormals nd;
+    auto song = StudioPlayer::bounce (stems, studio.mix, st.song.bpm, &studio);
+    if (song.getNumSamples() == 0) return st.files.mixFile;
+    // (no clipping: brought down if it goes over)
+    const float pk = juce::jmax (song.getMagnitude (0, 0, song.getNumSamples()), song.getMagnitude (1, 0, song.getNumSamples()));
+    if (pk > 0.98f) song.applyGain (0.98f / pk);
+    const auto file = st.files.folder.getChildFile (st.song.title + " - mix (now).wav");
+    file.deleteFile();
+    juce::WavAudioFormat wav;
+    bool ok = false;
+    if (std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), StudioPlayer::fileRate, 2, 24, {}, 0)); w != nullptr)
+        ok = w->writeFromAudioSampleBuffer (song, 0, song.getNumSamples());
+    if (! ok) return st.files.mixFile;
+    mixNowF = file;
+    mixNowKey = key;
+    return file;
+}
+
 void LivePlanetProcessor::startDrumLoop (int track, double startBeat, double beats)
 {
     setDrumLoop (startBeat, beats);
