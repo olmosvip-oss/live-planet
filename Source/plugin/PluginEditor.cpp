@@ -1,6 +1,7 @@
 #include <typeinfo>
 #include "PluginEditor.h"
 #include "License.h"
+#include "DemoDirector.h"
 #include "BinaryData.h"
 #include "../song/Prompt.h"
 
@@ -3309,9 +3310,20 @@ bool LivePlanetEditor::isInterestedInFileDrag (const StringArray& files)
     return false;
 }
 
-void LivePlanetEditor::filesDropped (const StringArray& files, int, int)
+void LivePlanetEditor::filesDropped (const StringArray& files, int x, int y)
 {
     dragging = false;
+    // the Studio: an audio file dropped on the tracks goes into the song (an audio track there, or a new one)
+    if (page == Studio && studioView.isVisible())
+    {
+        const auto p = studioView.getLocalPoint (this, Point<int> (x, y)).toFloat();
+        for (auto& f : files)
+            if (File (f).existsAsFile() && studioView.getLocalBounds().toFloat().contains (p) && studioView.dropAudio (File (f), p))
+            {
+                repaint();
+                return;
+            }
+    }
     if (page == Write || page == Studio) // song mode: the dropped song becomes the reference
     {
         if (! files.isEmpty()) proc.songJob.setReference (File (files[0]));
@@ -3389,6 +3401,17 @@ LivePlanetWindow::LivePlanetWindow (LivePlanetProcessor& p) : AudioProcessorEdit
         addMouseListener (this, true);
         SafePointer<LivePlanetWindow> sp (this);
         MessageManager::callAsync ([sp] { if (sp != nullptr && sp->isShowing()) sp->grabKeyboardFocus(); });
+    }
+    // recording a tutorial video: the script plays once the window is up
+    if (std::getenv ("LP_DEMO_SCRIPT") != nullptr)
+    {
+        std::fprintf (stderr, "demo: script set, starting in 2.5 s\n");
+        SafePointer<LivePlanetWindow> sp (this);
+        Timer::callAfterDelay (2500, [sp]
+        {
+            std::fprintf (stderr, "demo: start (%s)\n", sp != nullptr ? "window" : "no window");
+            if (sp != nullptr) sp->demo = std::make_unique<lp::demo::Director> (sp->view);
+        });
     }
 }
 

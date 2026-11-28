@@ -44,6 +44,7 @@ private:
     void showLibrary();
     void showCellMenu (int cell);
     void addToSong();
+    void addAsMidiTrack(); // your grains as an instrument: a MIDI track whose notes play them
     void hold (bool on);
     juce::Rectangle<float> screenArea() const, cellsArea() const, envArea() const, filterArea() const, waveArea() const;
     juce::Rectangle<float> cellRect (int i) const;

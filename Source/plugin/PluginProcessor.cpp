@@ -101,7 +101,9 @@ APVTS::ParameterLayout LivePlanetProcessor::createLayout()
 juce::AudioProcessor::BusesProperties LivePlanetProcessor::lpBuses()
 {
     auto b = BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true);
-    if (juce::PluginHostType::jucePlugInClientCurrentWrapperType == juce::AudioProcessor::wrapperType_Standalone)
+    // (not while recording a tutorial video: no mic, so macOS never asks for it)
+    if (juce::PluginHostType::jucePlugInClientCurrentWrapperType == juce::AudioProcessor::wrapperType_Standalone
+        && std::getenv ("LP_DEMO_SCRIPT") == nullptr)
         b = b.withInput ("Mic in", juce::AudioChannelSet::stereo(), true);
     return b;
 }
@@ -1969,4 +1971,85 @@ void LivePlanetProcessor::finishMidiTake()
     std::sort (notes.begin(), notes.end(), [] (const lp::song::Note& a, const lp::song::Note& b) { return a.beat < b.beat; });
     songJob.setNotes (track, std::move (notes));
     if (onRecordMessage) onRecordMessage ("Recorded " + juce::String ((int) added.size()) + (added.size() == 1 ? " note" : " notes") + " into " + pv.name);
+}
+
+// ---- an audio file dropped on the Arrangement
+void LivePlanetProcessor::placeAudio (const juce::File& src, int track, int bar)
+{
+    const auto st = songJob.getStatus();
+    if (! st.haveSong || ! src.existsAsFile()) return;
+    const double bpm = songBpm.load() > 0.0 ? songBpm.load() : (st.song.bpm > 0.0 ? st.song.bpm : 120.0);
+    const int at = (int) std::llround (juce::jmax (0, bar) * 4.0 * 60.0 / bpm * StudioPlayer::fileRate);
+    // into an existing audio track: what it plays now (from bar 1), with the file put in at that bar
+    juce::File current;
+    juce::String name, about = "dropped in from your files";
+    bool isVocal = false, replace = false;
+    if (track >= 0 && track < (int) st.tracks.size())
+    {
+        const juce::String partName (st.tracks[(size_t) track].name);
+        isVocal = partName.startsWith ("vocal (");
+        name = partName.fromFirstOccurrenceOf ("(", false, false).upToLastOccurrenceOf (")", false, false);
+        current = st.tracks[(size_t) track].stem;
+        if (track < (int) st.song.parts.size() && juce::String (st.song.parts[(size_t) track].name) == partName
+            && juce::File (st.song.parts[(size_t) track].samplePath).existsAsFile())
+            current = juce::File (st.song.parts[(size_t) track].samplePath);
+        replace = true;
+    }
+    else name = src.getFileNameWithoutExtension().substring (0, 40);
+    auto* self = this;
+    const auto folder = st.files.folder.getChildFile ("voice");
+    juce::Thread::launch ([self, src, current, name, about, isVocal, replace, at, folder, bar]
+    {
+        auto say = [self] (const juce::String& m) { juce::MessageManager::callAsync ([self, m] { if (self->onRecordMessage) self->onRecordMessage (m); }); };
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        juce::AudioBuffer<float> in;
+        double rate = StudioPlayer::fileRate;
+        if (std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (src)); rd != nullptr && rd->lengthInSamples > 0)
+        {
+            if (rd->lengthInSamples > (juce::int64) (rd->sampleRate * 60 * 12)) { say ("That file is too long (12 minutes at most)"); return; }
+            rate = rd->sampleRate;
+            in.setSize (2, (int) rd->lengthInSamples);
+            rd->read (&in, 0, in.getNumSamples(), 0, true, true);
+            if (rd->numChannels == 1) in.copyFrom (1, 0, in, 0, 0, in.getNumSamples());
+        }
+        if (in.getNumSamples() == 0) { say ("Couldn't read that file"); return; }
+        if (std::abs (rate - StudioPlayer::fileRate) > 0.5)
+        {
+            const double ratio = rate / StudioPlayer::fileRate;
+            juce::AudioBuffer<float> rs (2, (int) (in.getNumSamples() / ratio));
+            for (int c = 0; c < 2; ++c) { juce::WindowedSincInterpolator ip; ip.process (ratio, in.getReadPointer (c), rs.getWritePointer (c), rs.getNumSamples()); }
+            in = std::move (rs);
+        }
+        juce::AudioBuffer<float> old;
+        if (current.existsAsFile())
+            if (std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (current)); rd != nullptr)
+            {
+                old.setSize (2, (int) rd->lengthInSamples);
+                rd->read (&old, 0, old.getNumSamples(), 0, true, true);
+            }
+        const int len = in.getNumSamples();
+        juce::AudioBuffer<float> out (2, std::max (old.getNumSamples(), at + len));
+        out.clear();
+        for (int c = 0; c < 2; ++c) if (old.getNumSamples() > 0) out.copyFrom (c, 0, old, c, 0, old.getNumSamples());
+        const int xf = std::min (len / 4, (int) (0.005 * StudioPlayer::fileRate)); // (short fades where it meets what was there)
+        for (int c = 0; c < 2; ++c)
+            for (int i = 0; i < len; ++i)
+            {
+                const float w = xf > 0 ? std::min (1.0f, std::min ((float) i / xf, (float) (len - 1 - i) / xf)) : 1.0f;
+                out.setSample (c, at + i, out.getSample (c, at + i) * (1.0f - w) + in.getSample (c, i) * w);
+            }
+        folder.createDirectory();
+        const auto file = folder.getChildFile (juce::File::createLegalFileName (name) + " (dropped).wav").getNonexistentSibling (false);
+        juce::WavAudioFormat wav;
+        bool ok = false;
+        if (std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), StudioPlayer::fileRate, 2, 24, {}, 0)); w != nullptr)
+            ok = w->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
+        if (! ok) { say ("Couldn't save it into the song"); return; }
+        juce::MessageManager::callAsync ([self, file, name, about, isVocal, replace, bar]
+        {
+            self->songJob.addSungVocal (file, name, about, isVocal, "dropped", replace);
+            if (self->onRecordMessage) self->onRecordMessage ((replace ? "Dropped into " : "New track: ") + name + ", from bar " + juce::String (bar + 1));
+        });
+    });
 }

@@ -68,8 +68,14 @@ inline juce::String ownerOf (const juce::String& code, const juce::String& publi
     return sig == digestOf (owner, prefix) ? owner : juce::String();
 }
 
-inline juce::File codeFile()  { return lp::appFolder().getChildFile ("license.txt"); }
-inline juce::File trialFile() { return lp::appFolder().getChildFile (".first-run"); }
+// where the license files are kept: the app folder (LP_LICENSE_DIR instead, for recording demos with a demo key)
+inline juce::File licenseFolder()
+{
+    if (auto* d = std::getenv ("LP_LICENSE_DIR")) return juce::File (juce::String (d));
+    return lp::appFolder();
+}
+inline juce::File codeFile()  { return licenseFolder().getChildFile ("license.txt"); }
+inline juce::File trialFile() { return licenseFolder().getChildFile (".first-run"); }
 
 // ---- each license works on 2 computers
 // Activating asks the website once (loop-wright.com/api/activate), which keeps the list of computers and
@@ -78,14 +84,14 @@ inline juce::File trialFile() { return lp::appFolder().getChildFile (".first-run
 // Loopwright never needs the internet again. If the site can't be reached, it works anyway for a while
 // (graceDays) and asks again at the next start.
 constexpr int graceDays = 14;
-inline juce::File activationFile() { return lp::appFolder().getChildFile ("activation.txt"); }
-inline juce::File pendingFile()    { return lp::appFolder().getChildFile (".activation-pending"); }
-inline juce::File refusedFile()    { return lp::appFolder().getChildFile (".activation-refused"); }
+inline juce::File activationFile() { return licenseFolder().getChildFile ("activation.txt"); }
+inline juce::File pendingFile()    { return licenseFolder().getChildFile (".activation-pending"); }
+inline juce::File refusedFile()    { return licenseFolder().getChildFile (".activation-refused"); }
 // Jordan's voice license: its own code (jordan-voice-license.txt) and its own activation, also on 2 computers
-inline juce::File jordanFile()                { return lp::appFolder().getChildFile ("jordan-voice-license.txt"); }
-inline juce::File jordanActivationFile()      { return lp::appFolder().getChildFile ("jordan-activation.txt"); }
-inline juce::File jordanPendingFile()         { return lp::appFolder().getChildFile (".jordan-activation-pending"); }
-inline juce::File jordanRefusedFile()         { return lp::appFolder().getChildFile (".jordan-activation-refused"); }
+inline juce::File jordanFile()                { return licenseFolder().getChildFile ("jordan-voice-license.txt"); }
+inline juce::File jordanActivationFile()      { return licenseFolder().getChildFile ("jordan-activation.txt"); }
+inline juce::File jordanPendingFile()         { return licenseFolder().getChildFile (".jordan-activation-pending"); }
+inline juce::File jordanRefusedFile()         { return licenseFolder().getChildFile (".jordan-activation-refused"); }
 inline juce::String jordanActivationPrefix()  { return "Loopwright Jordan activation v1|"; }
 
 // this computer: a stable id (a hash, so nothing personal is sent) and its name (shown in the list of computers)
@@ -257,13 +263,13 @@ inline int freeVoices() { return 2; }
 inline bool moreVoicesUnlocked()
 {
     if (! required()) return true; // (a test build: everything open)
-    const auto code = lp::appFolder().getChildFile ("voices-license.txt").loadFileAsString();
+    const auto code = licenseFolder().getChildFile ("voices-license.txt").loadFileAsString();
     return ownerOf (code, publicKey(), voicesPrefix()).isNotEmpty();
 }
 inline bool unlockMoreVoices (const juce::String& code)
 {
     if (ownerOf (code, publicKey(), voicesPrefix()).isEmpty()) return false;
-    lp::appFolder().getChildFile ("voices-license.txt").replaceWithText (code.trim());
+    licenseFolder().getChildFile ("voices-license.txt").replaceWithText (code.trim());
     return true;
 }
 

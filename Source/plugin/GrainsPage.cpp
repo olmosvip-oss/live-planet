@@ -1040,6 +1040,8 @@ void GrainsPage::addToSong()
     const auto st = proc.songJob.getStatus();
     if (! st.haveSong || proc.grainSource == nullptr || recordingNow.load()) return;
     PopupMenu m;
+    m.addSectionHeader ("Play it with notes");
+    m.addItem (2, "As a MIDI track: play your grains with notes (keyboard, or write them)");
     m.addSectionHeader ("Record it into your song");
     m.addItem (1, "The whole song");
     for (int i = 0; i < (int) st.song.sections.size(); ++i)
@@ -1049,6 +1051,7 @@ void GrainsPage::addToSong()
     m.showMenuAsync (PopupMenu::Options().withTargetComponent (&addBtn), [self, st] (int r)
     {
         if (self == nullptr || r <= 0) return;
+        if (r == 2) { self->addAsMidiTrack(); return; }
         const double bpm = st.song.bpm > 0.0 ? st.song.bpm : 120.0;
         int fromBar = 0, bars = st.song.totalBars();
         String where = "the whole song";
@@ -1123,6 +1126,61 @@ void GrainsPage::addToSong()
                 self->repaint();
                 if (self->onMessage) self->onMessage (ok ? "recording the grains into your song (" + where + "): a new track" : String ("couldn't record the grains"));
             });
+        });
+    });
+}
+
+// the Grains sound as an instrument: one held C4 (4 seconds, then let go, with its tail), saved with the song;
+// a new MIDI track plays it at each note's pitch (your keyboard plays it too, when the track is armed)
+void GrainsPage::addAsMidiTrack()
+{
+    const auto st = proc.songJob.getStatus();
+    if (! st.haveSong || proc.grainSource == nullptr || recordingNow.load()) return;
+    auto src = proc.grainSource;
+    const auto settings = set();
+    const auto folder = st.files.folder.getChildFile ("grains");
+    folder.createDirectory();
+    const auto name = src->name.substring (0, 24);
+    const auto out = folder.getChildFile (File::createLegalFileName ("grains " + name + " C4 " + String (Time::getMillisecondCounter() % 100000) + ".wav"));
+    recordingNow = true;
+    syncControls();
+    repaint();
+    SafePointer<GrainsPage> self (this);
+    LivePlanetProcessor* p = &proc;
+    Thread::launch ([self, p, src, settings, out, name]
+    {
+        const double sr = 48000.0;
+        const int block = 512, held = (int) (4.0 * sr), length = held + (int) (2.0 * sr);
+        juce::AudioBuffer<float> buf (2, length);
+        buf.clear();
+        G::Synth syn;
+        syn.prepare (sr, block);
+        syn.setSource (src);
+        syn.setSettings (settings);
+        G::Transport t;
+        t.playing = true; t.bpm = 120.0;
+        syn.noteOn (60, 0.85f);
+        for (int i = 0; i < length; i += block)
+        {
+            const int n = std::min (block, length - i);
+            if (i >= held && i - block < held) syn.noteOff (60);
+            t.ppq = (double) i / sr * 2.0;
+            syn.process (buf.getWritePointer (0, i), buf.getWritePointer (1, i), n, t);
+        }
+        if (const float pk = buf.getMagnitude (0, length); pk > 0.0001f) buf.applyGain (0.7f / pk);
+        WavAudioFormat wav;
+        bool ok = false;
+        if (std::unique_ptr<AudioFormatWriter> w (wav.createWriterFor (new FileOutputStream (out), sr, 2, 24, {}, 0)); w != nullptr)
+            ok = w->writeFromAudioSampleBuffer (buf, 0, length);
+        MessageManager::callAsync ([self, p, out, name, ok]
+        {
+            if (ok) p->songJob.addMidiTrackOnSound (out, name);
+            if (self == nullptr) return;
+            self->recordingNow = false;
+            self->syncControls();
+            self->repaint();
+            if (self->onMessage) self->onMessage (ok ? "a Grains MIDI track is in your song: arm it (I) in the Studio to play it, or write its notes"
+                                                     : String ("couldn't make the Grains instrument"));
         });
     });
 }

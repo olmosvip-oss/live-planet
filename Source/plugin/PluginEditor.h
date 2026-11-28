@@ -701,6 +701,11 @@ public:
 private:
     enum Col { None, Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
     bool isAudioTrack (int track) const;  // a vocal or a layer: it has a record button
+public:
+    // an audio file dropped on the Arrangement (p: where, in this view): into the audio track there, at that bar,
+    // or a new audio track from that bar. False when it isn't over the tracks (the drop is then a reference song).
+    bool dropAudio (const juce::File& file, juce::Point<float> p);
+private:
     void addAudioTrack();
     static constexpr float rowsTop = 30.0f;  // (the bar numbers above)
     struct ClipHit { int track, section, b0, b1; juce::Rectangle<float> r; }; // a clip: bars b0 .. b1-1 of a track
@@ -985,11 +990,15 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     void mouseMagnify (const juce::MouseEvent&, float scale) override;
     bool keyPressed (const juce::KeyPress&) override;
+    bool keyStateChanged (bool) override;
     void stopLoop();
     std::function<void()> onToggleBig;
     void setBig (bool b) { bigBtn.setButtonText (b ? "smaller" : "bigger"); }
 
 private:
+    // the computer keyboard as piano keys (A W S E D F T G Y H U J K O L P ;), Z / X an octave down / up
+    std::map<int, int> heldPianoKeys; // key code -> the note it plays
+    int keyOctave = -1;               // (-1: picked from the track, the first time)
     double totalBeats() const { return totalBars * 4.0; }
     juce::Rectangle<float> overviewArea() const;
     juce::Rectangle<float> sectionLane() const;
@@ -1737,6 +1746,7 @@ public:
 private:
     LivePlanetEditor view;
     bool ready = false;
+    std::unique_ptr<juce::Timer> demo; // (recording tutorial videos: LP_DEMO_SCRIPT; see DemoDirector.h)
     double lastSaved = -1.0;
     int lastW = 0, lastH = 0;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivePlanetWindow)

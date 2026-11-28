@@ -338,6 +338,9 @@ public:
     bool armRecord (int track, juce::String& why);  // message thread
     void disarmRecord();                              // message thread
     void finishTrackTake();                           // message thread, once a take has ended (trackTakeReady)
+    // an audio file dropped on the Arrangement: into an audio track at a bar (it replaces what was there), or (track -1)
+    // as a new audio track starting at that bar. Works in the background; onRecordMessage says how it went.
+    void placeAudio (const juce::File& file, int track, int bar);
     std::atomic<int> armTrack { -1 };
     std::atomic<bool> trackRecording { false }, trackTakeReady { false };
     std::atomic<double> trackRecStart { 0.0 };        // where the take starts (song file samples)

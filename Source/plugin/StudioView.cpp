@@ -1897,3 +1897,16 @@ void StudioView::addAudioTrack()
         w->writeFromAudioSampleBuffer (silence, 0, silence.getNumSamples());
     proc.songJob.addSungVocal (file, name, "an audio track: press its red dot, then play, to record", true, "audio track", false);
 }
+
+bool StudioView::dropAudio (const File& file, Point<float> p)
+{
+    const auto st = proc.songJob.getStatus();
+    if (! st.haveSong || p.y < rowsTop || p.x < laneLeft() - 4.0f || p.x > laneRight() + 4.0f) return false;
+    int track = -1;
+    for (int i = 0; i < (int) st.tracks.size(); ++i)
+        if (const auto r = rowBounds (i); p.y >= r.getY() && p.y < r.getBottom()) { track = i; break; }
+    if (track >= 0 && ! isAudioTrack (track)) track = -1; // (on a loop or MIDI track: a new audio track instead)
+    const int bar = std::max (0, (int) std::floor (barAtX (p.x)));
+    proc.placeAudio (file, track, bar);
+    return true;
+}

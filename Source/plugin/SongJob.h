@@ -3642,6 +3642,20 @@ public:
         startIfNeeded();
     }
     std::pair<int, juce::String> pendingMidi;
+    // a MIDI track on a sound you made (the Grains page's sound, held as one note): its notes play that sound
+    void addMidiTrackOnSound (const juce::File& sound, const juce::String& label)
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            if (current.parts.empty() || (int) current.parts.size() >= StudioPlayer::maxTracks) return;
+            pendingMidi = { -2, label };
+            pendingMidiSound = sound;
+            edits.push_back ({ 0, EditOp::AddMidi });
+            status.editing = true;
+        }
+        startIfNeeded();
+    }
+    juce::File pendingMidiSound;
     // the one-shot in your library whose name fits the words best (empty: none fits)
     juce::String oneShotFor (const juce::String& words)
     {
@@ -4154,14 +4168,23 @@ private:
         {
             std::pair<int, juce::String> req;
             lp::song::Song song;
-            { const juce::ScopedLock sl (lock); req = pendingMidi; song = current; }
+            juce::File sound;
+            { const juce::ScopedLock sl (lock); req = pendingMidi; song = current; sound = pendingMidiSound; }
             lp::song::Part part;
             part.kind = lp::song::PartKind::Melody;
             part.midi = true;
+            const juce::String prefix = req.first == -2 ? "Grains " : "MIDI ";
             int n = 1;
-            for (auto& p : song.parts) if (juce::String (p.name).startsWith ("MIDI ")) ++n;
-            part.name = ("MIDI " + juce::String (n)).toStdString();
-            if (req.first >= 0) { part.sound = (lp::SoundId) juce::jlimit (0, lp::kNumBuiltIns - 1, req.first); part.source = juce::String ("loopwright: ") + lp::profileFor (part.sound).name; }
+            for (auto& p : song.parts) if (juce::String (p.name).startsWith (prefix)) ++n;
+            part.name = (prefix + juce::String (n)).toStdString();
+            if (req.first == -2 && sound.existsAsFile())
+            {
+                // your Grains sound, played at each note's pitch (it was recorded on C4)
+                part.resound = true;
+                part.samplePath = sound.getFullPathName();
+                part.source = "grains: " + req.second;
+            }
+            else if (req.first >= 0) { part.sound = (lp::SoundId) juce::jlimit (0, lp::kNumBuiltIns - 1, req.first); part.source = juce::String ("loopwright: ") + lp::profileFor (part.sound).name; }
             else
             {
                 const auto shot = oneShotFor (req.second);
