@@ -3255,10 +3255,11 @@ void LivePlanetEditor::resized()
         showDock();
         dockTabs.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
         dockTabs.setBounds (cardDock.getRight() - 18 - 340, cardDock.getY() + 8, 340, 24);
-        loopBtn.setBounds (cardTimeline.getX() + 226, cardTimeline.getY() + 9, 60, 30);
-        fxBtn.setBounds (loopBtn.getRight() + 8, cardTimeline.getY() + 9, 96, 30);
-        exportBtn.setBounds (fxBtn.getRight() + 8, fxBtn.getY(), 90, 30);
-        masterBtn.setBounds (exportBtn.getRight() + 8, fxBtn.getY(), 90, 30);
+        // (narrower with the effects browser open: the arrangement has less room)
+        const bool tight = browserOpen;
+        loopBtn.setBounds (cardTimeline.getX() + 226, cardTimeline.getY() + 9, tight ? 54 : 60, 30);
+        fxBtn.setBounds (loopBtn.getRight() + (tight ? 6 : 8), cardTimeline.getY() + 9, tight ? 76 : 96, 30);
+        exportBtn.setBounds (fxBtn.getRight() + (tight ? 6 : 8), fxBtn.getY(), tight ? 68 : 90, 30);
     }
     else
         songView.setBounds (cardTimeline.getX() + 12, cardTimeline.getY() + 46, cardTimeline.getWidth() - 24, cardTimeline.getHeight() - 104);
@@ -3287,9 +3288,18 @@ void LivePlanetEditor::resized()
         mixTakes.setBounds (x, cardTimeline.getY() + 12, 104, 26);
         for (int i = 2; i >= 0; --i) { x -= 8 + 78; takeBtn[i].setBounds (x, cardTimeline.getY() + 12, 78, 26); }
     }
-    masterBox.setBounds (masterAB.getX() - 8 - 236, cardTimeline.getY() + 12, 236, 26);
-    masterInfo.setBounds (masterBox.getX() - 8 - 240, cardTimeline.getY() + 12, 240, 26);
-    masterMeter.setBounds (masterBox.getX() - 26, cardTimeline.getY() + 8, 13, 34);
+    {
+        // the master, together on the right: its channel (Master), its meter, its loudness, before / after.
+        // The loudness menu gives up width when the arrangement is narrow (the effects browser open)
+        const int masterW = browserOpen ? 70 : 84;
+        const int leftLimit = exportBtn.getRight() + 8 + masterW + 8 + 26;
+        const int boxW = jlimit (140, 236, masterAB.getX() - 8 - leftLimit);
+        masterBox.setBounds (masterAB.getX() - 8 - boxW, cardTimeline.getY() + 12, boxW, 26);
+        masterMeter.setBounds (masterBox.getX() - 26, cardTimeline.getY() + 8, 13, 34);
+        masterBtn.setBounds (masterMeter.getX() - 8 - masterW, cardTimeline.getY() + 9, masterW, 30);
+        const int infoX = exportBtn.getRight() + 10;
+        masterInfo.setBounds (infoX, cardTimeline.getY() + 12, jmax (0, masterBtn.getX() - 8 - infoX), 26);
+    }
     vocalTabs.setBounds (M, 84, 420, 28);
     {
         const int top = voiceOn() ? 124 : 84;

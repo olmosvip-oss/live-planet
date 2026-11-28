@@ -93,10 +93,10 @@ private:
         auto src = juce::Desktop::getInstance().getMainMouseSource();
         const auto t = juce::Time::getCurrentTime();
         juce::Component::SafePointer<juce::Component> sp (c);
-        const juce::MouseEvent down (src, local, juce::ModifierKeys::leftButtonModifier, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, c, t, local, t, 1, false);
+        const juce::MouseEvent down (src, local, juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier | extraMods), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, c, t, local, t, 1, false);
         c->mouseDown (down);
         if (sp == nullptr) return;
-        const juce::MouseEvent up (src, local, {}, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, c, t, local, t, 1, false);
+        const juce::MouseEvent up (src, local, juce::ModifierKeys (extraMods), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, c, t, local, t, 1, false);
         c->mouseUp (up);
     }
     void hoverHere()
@@ -126,7 +126,7 @@ private:
         dragging = c;
         dragDownLocal = local;
         dragDownTime = juce::Time::getCurrentTime();
-        c->mouseDown (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), local, juce::ModifierKeys::leftButtonModifier,
+        c->mouseDown (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), local, juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier | extraMods),
                                         1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, c, dragDownTime, local, dragDownTime, 1, false));
     }
     void dragMove()
@@ -134,7 +134,7 @@ private:
         if (dragging == nullptr) return;
         auto* c = dragging.getComponent();
         const auto local = c->getLocalPoint (&view, cursor);
-        c->mouseDrag (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), local, juce::ModifierKeys::leftButtonModifier,
+        c->mouseDrag (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), local, juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier | extraMods),
                                         1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, c, juce::Time::getCurrentTime(), dragDownLocal, dragDownTime, 1, true));
     }
     void dragEnd()
@@ -142,9 +142,31 @@ private:
         if (dragging == nullptr) return;
         auto* c = dragging.getComponent();
         const auto local = c->getLocalPoint (&view, cursor);
-        c->mouseUp (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), local, {}, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, c,
+        c->mouseUp (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), local, juce::ModifierKeys (extraMods), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, c,
                                       juce::Time::getCurrentTime(), dragDownLocal, dragDownTime, 1, true));
         dragging = nullptr;
+    }
+
+    int extraMods = 0; // (mods shift / alt / cmd / none: held for the clicks and drags after it)
+    // drop <file>: a file let go over the component under the cursor (the first one up from it that takes files)
+    void dropHere (const juce::String& path)
+    {
+        juce::Point<float> local;
+        for (auto* c = targetAt (local); c != nullptr; c = c->getParentComponent())
+            if (auto* t = dynamic_cast<juce::FileDragAndDropTarget*> (c))
+            {
+                const auto at = c->getLocalPoint (&view, cursor).roundToInt();
+                if (t->isInterestedInFileDrag ({ path })) { t->filesDropped ({ path }, at.x, at.y); return; }
+            }
+    }
+    // press <key>: a key, to the component under the cursor (or the first one up from it that wants it)
+    void pressHere (const juce::String& k)
+    {
+        const auto kp = k == "space" ? juce::KeyPress (juce::KeyPress::spaceKey) : k == "delete" ? juce::KeyPress (juce::KeyPress::backspaceKey)
+                      : juce::KeyPress ((int) k[0], juce::ModifierKeys (extraMods), k[0]);
+        juce::Point<float> local;
+        for (auto* c = targetAt (local); c != nullptr; c = c->getParentComponent())
+            if (c->keyPressed (kp)) return;
     }
 
     void typeChar (juce::juce_wchar ch)
@@ -230,6 +252,27 @@ private:
         }
         if (cmd == "release") { dragEnd(); note(); return true; }
         if (cmd == "fakeclick") { note ("click"); stepUntil = now() + 120; return false; }
+        if (cmd == "drop") { note ("click"); dropHere (s.fromFirstOccurrenceOf ("drop ", false, false).trim()); stepUntil = now() + 120; return false; }
+        if (cmd == "press") { pressHere (w[1]); return true; }
+        if (cmd == "dclick")
+        {
+            note ("click");
+            juce::Point<float> local;
+            auto* c = targetAt (local);
+            const auto t = juce::Time::getCurrentTime();
+            c->mouseDoubleClick (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), local, juce::ModifierKeys::leftButtonModifier,
+                                                   1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, c, t, local, t, 2, false));
+            stepUntil = now() + 120;
+            return false;
+        }
+        if (cmd == "mods")
+        {
+            extraMods = 0;
+            for (int i = 1; i < w.size(); ++i)
+                extraMods |= w[i] == "shift" ? juce::ModifierKeys::shiftModifier : w[i] == "alt" ? juce::ModifierKeys::altModifier
+                           : w[i] == "cmd" ? juce::ModifierKeys::commandModifier : 0;
+            return true;
+        }
         if (cmd == "end") { finish(); return false; }
         return true;
     }
