@@ -724,6 +724,10 @@ private:
     void deletePicked();
     double wheelZoomRows = 0.0;
     double cuedBar = -1.0;
+    bool rulerDrag = false; double rulerFrom = 0.0; // (a drag along the bar numbers: the loop)
+public:
+    std::function<void()> onLoopChanged;
+private:
     // a clip being dragged to another section of its track (option: a copy)
     int dragClipTrack = -1, dragB0 = 0, dragB1 = 0, dragMode = 0, grabBar = 0; // (ticks) mode 0 move, 1 its start, 2 its end
     int dropStart = -1, dropEnd = -1;
@@ -800,6 +804,7 @@ private:
 namespace lp::fx
 {
 struct Kind { const char* id; const char* name; const char* about; int group; }; // group 0 the chain's, 1 the track's own
+constexpr int masterTrack = 1000; // (the master channel, shown in the rack like a track)
 const std::vector<Kind>& kinds();
 bool isOn (LivePlanetProcessor&, int track, const juce::String& id);
 void add (LivePlanetProcessor&, int track, const juce::String& id); // switched on, at a good starting setting
@@ -831,7 +836,7 @@ class Rack : public juce::Component, public juce::DragAndDropTarget
 {
 public:
     Rack (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme) {}
-    void setTrack (int t) { if (t != track) { track = t; repaint(); } }
+    void setTrack (int t) { if (t != track) { track = t; scrollX = 0.0f; repaint(); } }
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
@@ -861,6 +866,11 @@ private:
     juce::String dragId; int dragKnob = -1; float dragStart = 0.0f;
     lp::song::VocalChain editing;  // the chain while a knob is being turned (kept with the song when let go)
     bool pendingChain = false;
+    // the devices scroll sideways (trackpad, mouse wheel) when there are more than fit
+    float scrollX = 0.0f;
+    float contentRight() const;
+public:
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 };
 }
 
@@ -1749,7 +1759,10 @@ private:
     lp::fx::Browser fxBrowser { lnf.th };
     lp::fx::Rack fxRack { proc, lnf.th };
     bool browserOpen = false;
-    juce::TextButton fxBtn { "Effects" }, exportBtn { "Export" };
+    juce::TextButton fxBtn { "Effects" }, exportBtn { "Export" }, loopBtn { "Loop" }, masterBtn { "Master" };
+    bool masterOpen = false; int lastDockTrack = -1; // (the master channel open in the effects dock)
+    void openMaster();
+    void setLoop (bool on);
     void openExport();
     std::unique_ptr<juce::Component> chainWindow;
     void showDock();          // the dock: the track editor, or the open track's effects

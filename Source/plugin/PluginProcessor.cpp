@@ -155,6 +155,7 @@ void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     engine.prepare (sampleRate);
     keyEvents.reserve (1024);
     studio.prepare (std::max (samplesPerBlock, 4096));
+    masterProc.prepare (sampleRate);
     const int maxBlock = std::max (samplesPerBlock, 4096);
     sampleFx.prepare (sampleRate, maxBlock);
     samplerFx.prepare (sampleRate, maxBlock);
@@ -603,6 +604,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             }
             auditioned = true;
         }
+        masterBus (L, R, n, sbpm); // (the master channel: its effects, volume and pan)
         // the master (after), or the plain mix through the song's limiter (before)
         const int mp = masterPreset.load();
         if (mp >= 0 && masterAfter.load() && mp < (int) liveMasters.size())
@@ -622,7 +624,10 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         }
         else if (preview)
         {
-            if (next >= (double) studio.length()) { previewPlaying = false; previewPos = 0.0; }
+            const double la = songLoopA.load(), lb = songLoopB.load();
+            if (songLoopOn.load() && lb > la + 1000.0 && pos < lb && next >= lb)
+                previewPos = la + std::fmod (next - lb, lb - la); // (the loop: back to its start)
+            else if (next >= (double) studio.length()) { previewPlaying = false; previewPos = cuePos.load(); playheadPos = cuePos.load(); }
             else previewPos = next;
         }
     }
@@ -733,6 +738,7 @@ juce::String LivePlanetProcessor::masterKeyNow (int preset)
                          m.nostalgia.load(), m.chorus.load(), m.mute.load() ? 1.0f : 0.0f, m.solo.load() ? 1.0f : 0.0f, m.fxBypass.load() ? 1.0f : 0.0f })
             k << "|" << juce::String (v, 3);
     }
+    k << "|" << masterBusKey();
     k << "|pump " << studio.pumpDepth.load() << "|feel " << studio.bright.load() << " " << studio.sparse.load() << " " << studio.punch.load() << " " << (int) studio.autoMix.load();
     return k;
 }
@@ -752,6 +758,7 @@ bool LivePlanetProcessor::masterNow (int preset)
     juce::ScopedNoDenormals nd;
     auto song = StudioPlayer::bounce (stems, studio.mix, st.song.bpm, &studio);
     if (song.getNumSamples() == 0) return false;
+    masterBusOffline (song, st.song.bpm);
     const double sr = StudioPlayer::fileRate;
     // where the glue starts: a little under the song's loud parts (its 90th-percentile loudness)
     std::vector<float> lv;
@@ -811,6 +818,84 @@ juce::File LivePlanetProcessor::masteredFile()
     return masterFile;
 }
 
+// the master channel, live: the chain (when it's on and not bypassed), then its volume and pan
+void LivePlanetProcessor::masterBus (float* L, float* R, int n, double bpm)
+{
+    {
+        const juce::SpinLock::ScopedTryLockType sl (masterChainLock);
+        if (sl.isLocked() && masterLiveSerial != masterSerial) { masterParamsLive = masterParamsMsg; masterLiveSerial = masterSerial; }
+    }
+    if (! masterMix.fxBypass.load() && masterParamsLive.on) masterProc.process (L, R, n, masterParamsLive, bpm > 0.0 ? bpm : 120.0);
+    const float g = juce::Decibels::decibelsToGain (masterMix.gainDb.load()), pan = masterMix.pan.load();
+    if (std::abs (g - 1.0f) < 1.0e-4f && std::abs (pan) < 1.0e-3f) return;
+    const float gl = g * (pan > 0.0f ? 1.0f - pan : 1.0f), gr = g * (pan < 0.0f ? 1.0f + pan : 1.0f);
+    for (int i = 0; i < n; ++i) { L[i] *= gl; R[i] *= gr; }
+}
+
+void LivePlanetProcessor::masterBusOffline (juce::AudioBuffer<float>& song, double bpm)
+{
+    lp::song::VocalChain c;
+    { const juce::SpinLock::ScopedLockType sl (masterChainLock); c = masterChainV; }
+    const auto prm = lp::song::vocal::Params::of (c);
+    const float g = juce::Decibels::decibelsToGain (masterMix.gainDb.load()), pan = masterMix.pan.load();
+    const bool chain = ! masterMix.fxBypass.load() && prm.on;
+    if (! chain && std::abs (g - 1.0f) < 1.0e-4f && std::abs (pan) < 1.0e-3f) return;
+    auto proc1 = std::make_unique<lp::song::vocal::Processor>();
+    proc1->prepare (StudioPlayer::fileRate);
+    const float gl = g * (pan > 0.0f ? 1.0f - pan : 1.0f), gr = g * (pan < 0.0f ? 1.0f + pan : 1.0f);
+    const int N = song.getNumSamples();
+    for (int a = 0; a < N; a += 512)
+    {
+        const int n = std::min (512, N - a);
+        float* L = song.getWritePointer (0, a);
+        float* R = song.getWritePointer (std::min (1, song.getNumChannels() - 1), a);
+        if (chain) proc1->process (L, R, n, prm, bpm > 0.0 ? bpm : 120.0);
+        for (int i = 0; i < n; ++i) { L[i] *= gl; R[i] *= gr; }
+    }
+}
+
+juce::String LivePlanetProcessor::masterBusKey() const
+{
+    lp::song::VocalChain c;
+    { const juce::SpinLock::ScopedLockType sl (masterChainLock); c = masterChainV; }
+    return "mb " + juce::String (masterMix.gainDb.load(), 2) + " " + juce::String (masterMix.pan.load(), 2) + " "
+         + juce::String ((int) masterMix.fxBypass.load()) + " " + juce::JSON::toString (chainToVar (c), true);
+}
+
+juce::var LivePlanetProcessor::chainToVar (const lp::song::VocalChain& c)
+{
+    auto* vc = new juce::DynamicObject();
+    vc->setProperty ("on", c.on);
+    vc->setProperty ("mods", juce::Array<juce::var> { c.eqOn, c.compOn, c.satOn, c.deessOn, c.airOn, c.delayOn, c.verbOn });
+    vc->setProperty ("vals", juce::Array<juce::var> { c.lowCutHz, c.mudDb, c.presenceDb, c.airDb, c.compAmount, c.drive, c.deess,
+                                                      c.width, c.delayMix, c.delayNote, c.verbSize, c.verbMix,
+                                                      c.compSpeed, c.satTone, c.satMix, c.deessHz, c.focusHz, c.delayFeedback,
+                                                      c.delayTone, c.delayDuck, c.delayPingPong, c.verbPredelayMs, c.verbTone, c.verbDuck,
+                                                      c.mudHz, c.presenceHz, c.airHz });
+    return juce::var (vc);
+}
+
+lp::song::VocalChain LivePlanetProcessor::chainFromVar (const juce::var& vc)
+{
+    lp::song::VocalChain c;
+    if (! vc.isObject()) return c;
+    c.on = vc["on"];
+    if (auto* m = vc["mods"].getArray(); m != nullptr && m->size() == 7)
+    {
+        c.eqOn = (*m)[0]; c.compOn = (*m)[1]; c.satOn = (*m)[2]; c.deessOn = (*m)[3]; c.airOn = (*m)[4]; c.delayOn = (*m)[5]; c.verbOn = (*m)[6];
+    }
+    if (auto* a = vc["vals"].getArray(); a != nullptr && a->size() >= 27)
+    {
+        c.lowCutHz = (*a)[0]; c.mudDb = (*a)[1]; c.presenceDb = (*a)[2]; c.airDb = (*a)[3]; c.compAmount = (*a)[4]; c.drive = (*a)[5];
+        c.deess = (*a)[6]; c.width = (*a)[7]; c.delayMix = (*a)[8]; c.delayNote = (*a)[9]; c.verbSize = (*a)[10]; c.verbMix = (*a)[11];
+        c.compSpeed = (*a)[12]; c.satTone = (*a)[13]; c.satMix = (*a)[14]; c.deessHz = (*a)[15]; c.focusHz = (*a)[16];
+        c.delayFeedback = (*a)[17]; c.delayTone = (*a)[18]; c.delayDuck = (*a)[19]; c.delayPingPong = (*a)[20];
+        c.verbPredelayMs = (*a)[21]; c.verbTone = (*a)[22]; c.verbDuck = (*a)[23];
+        c.mudHz = (*a)[24]; c.presenceHz = (*a)[25]; c.airHz = (*a)[26];
+    }
+    return c;
+}
+
 // the mix as you hear it now: the song's tracks as they are (arranged, edited, added since it was written) through
 // your mix. The mix saved when the song was written is the first version only, so export and "drag mix" use this
 juce::File LivePlanetProcessor::mixNowFile()
@@ -825,6 +910,7 @@ juce::File LivePlanetProcessor::mixNowFile()
     juce::ScopedNoDenormals nd;
     auto song = StudioPlayer::bounce (stems, studio.mix, st.song.bpm, &studio);
     if (song.getNumSamples() == 0) return st.files.mixFile;
+    masterBusOffline (song, st.song.bpm);
     // (no clipping: brought down if it goes over)
     const float pk = juce::jmax (song.getMagnitude (0, 0, song.getNumSamples()), song.getMagnitude (1, 0, song.getNumSamples()));
     if (pk > 0.98f) song.applyGain (0.98f / pk);
@@ -965,6 +1051,15 @@ void LivePlanetProcessor::timerCallback()
                 }
             }
             if (newSong) { masterPreset = -1; ++masterResets; } // a new song needs its own master
+            if (newSong)
+            {
+                // the master channel: as it was with this song, or a clean one
+                const bool had = restore.isValid() && restore.hasProperty ("masterChain");
+                masterMix.gainDb = had ? (float) restore["masterGain"] : 0.0f;
+                masterMix.pan = had ? (float) restore["masterPan"] : 0.0f;
+                masterMix.fxBypass = had && (bool) restore["masterBypass"];
+                setMasterChain (had ? chainFromVar (juce::JSON::parse (restore["masterChain"].toString())) : lp::song::VocalChain {});
+            }
             if (newSong && anySamples && ! restore.isValid()) // (a reopened project keeps its knobs)
                 for (auto id : { "warmth", "echo", "space", "shimmer", "nostalgia", "atmos" })
                     if (auto* prm = params.getParameter (id)) prm->setValueNotifyingHost (0.0f);
@@ -1442,6 +1537,10 @@ void LivePlanetProcessor::getStateInformation (juce::MemoryBlock& destData)
                 t.setProperty ("fxBypass", m.fxBypass.load(), nullptr);
                 mixTree.appendChild (t, nullptr);
             }
+            mixTree.setProperty ("masterGain", masterMix.gainDb.load(), nullptr);
+            mixTree.setProperty ("masterPan", masterMix.pan.load(), nullptr);
+            mixTree.setProperty ("masterBypass", masterMix.fxBypass.load(), nullptr);
+            mixTree.setProperty ("masterChain", juce::JSON::toString (chainToVar (getMasterChain()), true), nullptr);
             state.removeChild (state.getChildWithName ("studioMix"), nullptr);
             state.appendChild (mixTree, nullptr);
         }

@@ -257,6 +257,33 @@ public:
 
     // the studio: the song's tracks with a live mixer, and a preview transport
     StudioPlayer studio;
+    // ---- the master channel: everything the song plays goes through it, before the master (loudness) or the limiter.
+    // Its volume, pan and bypass (masterMix), and its effects: the same chain as a track's (EQ, compressor, saturator,
+    // de-esser, width, delay, reverb). Live, in export and in drag mix; kept with the song
+    StudioPlayer::Mix masterMix;
+    // the play marker (where play starts, and where stop goes back to) and the song's loop (samples at the files' rate)
+    std::atomic<double> cuePos { 0.0 }, songLoopA { 0.0 }, songLoopB { 0.0 };
+    std::atomic<bool> songLoopOn { false };
+    lp::song::VocalChain getMasterChain() const { const juce::SpinLock::ScopedLockType sl (masterChainLock); return masterChainV; }
+    void setMasterChain (const lp::song::VocalChain& c)
+    {
+        const juce::SpinLock::ScopedLockType sl (masterChainLock);
+        masterChainV = c;
+        masterParamsMsg = lp::song::vocal::Params::of (c);
+        ++masterSerial;
+    }
+    void masterBus (float* L, float* R, int n, double bpm);                // (audio thread)
+    void masterBusOffline (juce::AudioBuffer<float>& song, double bpm);   // (an export: a fresh chain at the files' rate)
+    juce::String masterBusKey() const;
+    static juce::var chainToVar (const lp::song::VocalChain&);
+    static lp::song::VocalChain chainFromVar (const juce::var&);
+private:
+    mutable juce::SpinLock masterChainLock;
+    lp::song::VocalChain masterChainV;
+    lp::song::vocal::Params masterParamsMsg, masterParamsLive;
+    int masterSerial = 0, masterLiveSerial = -1;
+    lp::song::vocal::Processor masterProc;
+public:
     lp::SampleFx sampleFx;                      // the knobs, for your Splice samples
     lp::Limiter masterLimiter;                  // the song's loudness, without squashing it
 

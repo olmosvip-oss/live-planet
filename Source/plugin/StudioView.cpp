@@ -448,6 +448,20 @@ void StudioView::paint (Graphics& g)
         int every = 1;
         while (every * pxPerBar < 30.0f && every < 64) every *= 2;
         const int b0 = std::max (0, (int) std::floor (firstBar)), b1 = std::min (totalBars, (int) std::ceil (firstBar + shownBars));
+        {
+            // the loop: a band over its bars on the ruler (bright when it's on), faint down through the lanes
+            const double la = proc.songLoopA.load(), lb = proc.songLoopB.load(), bar = st.song.bpm > 0.0 ? 240.0 / st.song.bpm * StudioPlayer::fileRate : 0.0;
+            if (bar > 0.0 && lb > la)
+            {
+                const float xa = xOfBar (la / bar), xb = xOfBar (lb / bar);
+                const bool on = proc.songLoopOn.load();
+                g.setColour (on ? accent.withAlpha (0.35f) : Colours::white.withAlpha (0.08f));
+                g.fillRoundedRectangle (Rectangle<float> (xa, 2.0f, xb - xa, 24.0f), 4.0f);
+                g.setColour (on ? accent.withAlpha (0.9f) : Colours::white.withAlpha (0.2f));
+                g.drawRoundedRectangle (Rectangle<float> (xa, 2.0f, xb - xa, 24.0f).reduced (0.5f), 4.0f, 1.0f);
+                if (on) { g.setColour (accent.withAlpha (0.05f)); g.fillRect (Rectangle<float> (xa, rowsTop - 2.0f, xb - xa, lanesBottom - rowsTop + 2.0f)); }
+            }
+        }
         g.setFont (lp::ui::mono (9.5f, false, 0.06f));
         for (int bar = b0; bar <= b1; ++bar)
         {
@@ -1176,7 +1190,10 @@ void StudioView::mouseDown (const MouseEvent& e)
                 const double at = jlimit (0.0, (double) totalBars, bar) * 240.0 / st.song.bpm * StudioPlayer::fileRate;
                 proc.previewPos = at;
                 proc.playheadPos = at;
+                proc.cuePos = at; // (play starts here from now on)
                 cuedBar = bar;
+                rulerDrag = true; // (dragged along the bars: a loop)
+                rulerFrom = jlimit (0.0, (double) totalBars, bar);
                 repaint();
             }
             if (view != nullptr && e.getNumberOfClicks() > 1)
@@ -1465,6 +1482,28 @@ void StudioView::mouseDown (const MouseEvent& e)
 
 void StudioView::mouseDrag (const MouseEvent& e)
 {
+    if (rulerDrag)
+    {
+        // dragged along the bar numbers: the song loops over those bars
+        if (e.getDistanceFromDragStart() < 6) return;
+        const auto st = proc.songJob.getStatus();
+        if (! st.haveSong || st.song.bpm <= 0.0) return;
+        const int totalBars = std::max (1, st.song.totalBars());
+        const double now = jlimit (0.0, (double) totalBars, view != nullptr ? view->barAt (e.position.x, laneLeft(), laneRight() - laneLeft(), totalBars)
+                                                                             : (e.position.x - laneLeft()) / (laneRight() - laneLeft()) * totalBars);
+        double a = std::floor (std::min (rulerFrom, now)), b = std::ceil (std::max (rulerFrom + 1.0, now));
+        b = jlimit (a + 1.0, (double) totalBars, b);
+        const double bar = 240.0 / st.song.bpm * StudioPlayer::fileRate;
+        proc.songLoopA = a * bar;
+        proc.songLoopB = b * bar;
+        proc.songLoopOn = true;
+        proc.cuePos = a * bar;
+        if (! proc.previewPlaying.load()) { proc.previewPos = a * bar; proc.playheadPos = a * bar; }
+        cuedBar = a;
+        if (onLoopChanged) onLoopChanged();
+        repaint();
+        return;
+    }
     if (trackDrag >= 0)
     {
         if (! trackDragging && e.getDistanceFromDragStart() < 6) return;
@@ -1545,6 +1584,7 @@ void StudioView::mouseDrag (const MouseEvent& e)
 
 void StudioView::mouseUp (const MouseEvent& e)
 {
+    if (rulerDrag) { rulerDrag = false; return; }
     if (trackDrag >= 0)
     {
         if (trackDragging && trackDropValid)

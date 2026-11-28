@@ -650,7 +650,19 @@ void PlayButton::toggle()
 {
     if (songMode && songMode())
     {
-        if (proc.studio.length() > 0) proc.previewPlaying = ! proc.previewPlaying.load();
+        if (proc.studio.length() > 0)
+        {
+            // play starts at the marker (where you last clicked the bars), or the loop's start when the marker is outside it;
+            // stop goes back to the marker
+            double at = proc.cuePos.load();
+            const double la = proc.songLoopA.load(), lb = proc.songLoopB.load();
+            const bool start = ! proc.previewPlaying.load();
+            if (start && proc.songLoopOn.load() && lb > la && (at < la || at >= lb)) at = la;
+            if (! start) proc.previewPlaying = false;
+            proc.previewPos = at;
+            proc.playheadPos = at;
+            if (start) proc.previewPlaying = true;
+        }
         repaint();
         return;
     }
@@ -2100,7 +2112,18 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     exportBtn.setTooltip ("Save the mix, the stems or the MIDI as WAV, AIFF, FLAC or M4A (Cmd + E)");
     exportBtn.onClick = [this] { openExport(); };
     fxBtn.onClick = [this] { browserOpen = ! browserOpen; fxBtn.getProperties().set ("primary", browserOpen); resized(); repaint(); };
-    fxBrowser.onAdd = [this] (const String& id) { addFx (trackEditor.selected(), id); };
+    fxBrowser.onAdd = [this] (const String& id)
+    {
+        if (masterOpen && dockPageShown == 1) { lp::fx::add (proc, lp::fx::masterTrack, id); fxRack.repaint(); return; }
+        addFx (trackEditor.selected(), id);
+    };
+    // the master channel: everything goes through it (its effects, volume and pan), in the dock like a track
+    for (auto* b : { &loopBtn, &masterBtn }) { addChildComponent (*b); b->getProperties().set ("glass", true); b->setWantsKeyboardFocus (false); }
+    masterBtn.setTooltip ("The master channel: effects on the whole song (EQ, compressor, saturator, width, delay, reverb), its volume and pan");
+    masterBtn.onClick = [this] { openMaster(); };
+    loopBtn.setTooltip ("Loop: play the same bars over and over. Drag along the bar numbers to choose which");
+    loopBtn.onClick = [this] { setLoop (! proc.songLoopOn.load()); };
+    studioView.onLoopChanged = [this] { loopBtn.getProperties().set ("primary", proc.songLoopOn.load()); loopBtn.repaint(); };
     studioView.onDropFx = [this] (int t, String id) { addFx (t, id); };
     studioView.onOpenDrawn = [this] (const String& sec) { vocalTab = 1; setPage (Voice); drawSing.openSection (sec); };
     studioView.onEditNotes = [this] (int t)
@@ -2519,6 +2542,8 @@ void LivePlanetEditor::setPage (int p)
     dockTabs.setVisible (studio && haveSong0);
     fxBtn.setVisible (studio && haveSong0);
     exportBtn.setVisible (studio && haveSong0);
+    loopBtn.setVisible (studio && haveSong0);
+    masterBtn.setVisible (studio && haveSong0);
     fxBrowser.setVisible (studio && haveSong0 && browserOpen);
     if (! studio) fxRack.setVisible (false);
     // vocals: your vocals, or (with the voice helper switched on) a new one made with AI
@@ -2781,7 +2806,8 @@ void LivePlanetEditor::timerCallback()
     if (page == Studio && proc.songJob.getStatus().haveSong)
     {
         if (! trackEditor.isVisible() && ! fxRack.isVisible() && ! dockCollapsed) { showDock(); dockTabs.setVisible (true); }
-        if (fxRack.isVisible()) { fxRack.setTrack (trackEditor.selected()); fxRack.repaint(); }
+        if (trackEditor.selected() != lastDockTrack) { lastDockTrack = trackEditor.selected(); if (masterOpen) { masterOpen = false; masterBtn.getProperties().set ("primary", false); masterBtn.repaint(); } }
+        if (fxRack.isVisible()) { fxRack.setTrack (masterOpen ? lp::fx::masterTrack : trackEditor.selected()); fxRack.repaint(); }
         trackEditor.refresh();
         if (trackEditor.wantsTall() != dockTall) { dockTall = trackEditor.wantsTall(); resized(); repaint(); }
     }
@@ -2955,7 +2981,7 @@ void LivePlanetEditor::paint (Graphics& g)
         const int t = trackEditor.selected();
         g.setFont (lp::ui::mono (10.0f, false, 0.14f));
         g.setColour (th.inkDim);
-        g.drawText ("TRACK " + String (t + 1) + " OF " + String ((int) st.tracks.size()) + "  \xc2\xb7  DRAG THE LINE ABOVE FOR MORE ROOM, DOUBLE-CLICK IT TO HIDE THIS",
+        g.drawText ((masterOpen && dockPageShown == 1 ? String ("MASTER CHANNEL: THE WHOLE SONG GOES THROUGH IT") : "TRACK " + String (t + 1) + " OF " + String ((int) st.tracks.size())) + "  \xc2\xb7  DRAG THE LINE ABOVE FOR MORE ROOM, DOUBLE-CLICK IT TO HIDE THIS",
                     Rectangle<int> (cardDock.getX() + 20, cardDock.getY() + 10, cardDock.getWidth() - 320, 20), Justification::centredLeft, true);
         }
     }
@@ -3053,13 +3079,46 @@ void LivePlanetEditor::addFx (int track, const String& id)
     repaint();
 }
 
+void LivePlanetEditor::openMaster()
+{
+    if (! proc.songJob.getStatus().haveSong) return;
+    masterOpen = true;
+    lastDockTrack = trackEditor.selected();
+    masterBtn.getProperties().set ("primary", true);
+    masterBtn.repaint();
+    dockCollapsed = false;
+    dockPageShown = 1;
+    showDock();
+    resized();
+    repaint();
+}
+
+// the loop on or off; switched on with none chosen yet: the section the marker is in
+void LivePlanetEditor::setLoop (bool on)
+{
+    const auto st = proc.songJob.getStatus();
+    if (on && proc.songLoopB.load() <= proc.songLoopA.load() && st.haveSong && st.song.bpm > 0.0)
+    {
+        const double bar = 240.0 / st.song.bpm * StudioPlayer::fileRate, at = proc.cuePos.load() / bar;
+        double a = std::floor (at), b = a + 4.0;
+        for (auto& sc : st.song.sections)
+            if (at >= sc.startBar && at < sc.startBar + sc.bars) { a = sc.startBar; b = sc.startBar + sc.bars; }
+        proc.songLoopA = a * bar;
+        proc.songLoopB = b * bar;
+    }
+    proc.songLoopOn = on;
+    loopBtn.getProperties().set ("primary", on);
+    loopBtn.repaint();
+    studioView.repaint();
+}
+
 void LivePlanetEditor::showDock()
 {
     const bool studio = page == Studio && proc.songJob.getStatus().haveSong && ! dockCollapsed;
     const bool fx = studio && dockPageShown == 1;
     trackEditor.setVisible (studio && ! fx);
     fxRack.setVisible (fx);
-    if (fx) { fxRack.setTrack (trackEditor.selected()); fxRack.setBounds (trackEditor.getBounds()); }
+    if (fx) { fxRack.setTrack (masterOpen ? lp::fx::masterTrack : trackEditor.selected()); fxRack.setBounds (trackEditor.getBounds()); }
 }
 
 Rectangle<int> LivePlanetEditor::splitBounds() const
@@ -3196,8 +3255,10 @@ void LivePlanetEditor::resized()
         showDock();
         dockTabs.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
         dockTabs.setBounds (cardDock.getRight() - 18 - 340, cardDock.getY() + 8, 340, 24);
-        fxBtn.setBounds (cardTimeline.getX() + 234, cardTimeline.getY() + 9, 96, 30);
+        loopBtn.setBounds (cardTimeline.getX() + 226, cardTimeline.getY() + 9, 60, 30);
+        fxBtn.setBounds (loopBtn.getRight() + 8, cardTimeline.getY() + 9, 96, 30);
         exportBtn.setBounds (fxBtn.getRight() + 8, fxBtn.getY(), 90, 30);
+        masterBtn.setBounds (exportBtn.getRight() + 8, fxBtn.getY(), 90, 30);
     }
     else
         songView.setBounds (cardTimeline.getX() + 12, cardTimeline.getY() + 46, cardTimeline.getWidth() - 24, cardTimeline.getHeight() - 104);
