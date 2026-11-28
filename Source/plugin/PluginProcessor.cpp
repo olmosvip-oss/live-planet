@@ -1,3 +1,4 @@
+#include "DemoAudioTap.h"
 #include "PluginProcessor.h"
 #include "../song/LyricMelody.h"
 #include "License.h"
@@ -156,6 +157,7 @@ void LivePlanetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     keyEvents.reserve (1024);
     studio.prepare (std::max (samplesPerBlock, 4096));
     masterProc.prepare (sampleRate);
+    lp::demo::tap().sampleRate = sampleRate;
     const int maxBlock = std::max (samplesPerBlock, 4096);
     sampleFx.prepare (sampleRate, maxBlock);
     samplerFx.prepare (sampleRate, maxBlock);
@@ -712,6 +714,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         lp::ui::notePeak (outPeakR, pr);
     }
     studio.meterGain = juce::Decibels::decibelsToGain (songMakeupDb.load());
+    lp::demo::tap().push (L, R, n); // (a tutorial being recorded: its sound; nothing otherwise)
 
     // Send the notes out so they can play any other instrument too
     for (int i = 0; i < midiOut.count; ++i)

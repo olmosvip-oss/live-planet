@@ -2,6 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_graphics/juce_graphics.h>
 #include <typeinfo>
+#include "DemoAudioTap.h"
 
 // For recording tutorial videos (off unless LP_DEMO_SCRIPT is set): plays a script of real mouse and key
 // events into the window (the plugin reacts exactly as to a person: hovers, clicks, its own pop-ups) and
@@ -26,6 +27,16 @@ public:
         outDir.createDirectory();
         cursor = { view.getWidth() * 0.5f, view.getHeight() * 0.55f };
         start = juce::Time::getMillisecondCounterHiRes();
+        // its sound too: what the plugin plays, from now (audio.wav, starting at this moment of the recording)
+        {
+            juce::WavAudioFormat wav;
+            const auto f = outDir.getChildFile ("audio.wav");
+            if (auto* os = f.createOutputStream().release())
+                audioOut.reset (wav.createWriterFor (os, tap().sampleRate.load(), 2, 24, {}, 0));
+            audioStart = now();
+            tap().fifo.reset();
+            tap().on = audioOut != nullptr;
+        }
         startTimerHz (60);
     }
     ~Director() override { stopTimer(); pool.removeAllJobs (false, 10000); }
@@ -45,6 +56,8 @@ private:
     juce::ThreadPool pool { 3 };
 
     double now() const { return juce::Time::getMillisecondCounterHiRes() - start; }
+    std::unique_ptr<juce::AudioFormatWriter> audioOut;
+    double audioStart = 0.0;
 
     void note (const juce::String& what = {})
     {
@@ -176,6 +189,7 @@ private:
 
     void timerCallback() override
     {
+        if (audioOut != nullptr) tap().drainInto (*audioOut);
         const double t = now();
         if (moving)
         {
@@ -322,6 +336,15 @@ private:
         o->setProperty ("frames", frames);
         o->setProperty ("log", log);
         o->setProperty ("drawCursor", true);
+        if (audioOut != nullptr)
+        {
+            tap().on = false;
+            tap().drainInto (*audioOut);
+            audioOut.reset(); // (the file finished)
+            o->setProperty ("audio", "audio.wav");
+            o->setProperty ("audioStart", audioStart);
+            o->setProperty ("audioRate", tap().sampleRate.load());
+        }
         outDir.getChildFile ("capture.json").replaceWithText (juce::JSON::toString (juce::var (o), true));
         juce::JUCEApplicationBase::quit();
     }
