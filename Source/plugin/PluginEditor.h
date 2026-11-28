@@ -1163,6 +1163,7 @@ class DrawSing : public juce::Component, public juce::FileDragAndDropTarget
 public:
     DrawSing (LivePlanetProcessor&, const lp::ui::Theme*& theme);
     ~DrawSing() override;
+    void togglePlaySection() { hear.triggerClick(); } // (the space bar on this page)
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -1634,7 +1635,12 @@ private:
     SongView songView;
     StudioView studioView;
 public:
-    void togglePlay() { playButton.toggle(); }
+    // the space bar: the song on every page but Sound (Draw & sing: its section), the instrument on Sound
+    void togglePlay()
+    {
+        if (page == Voice && drawSing.isShowing()) { drawSing.togglePlaySection(); return; }
+        playButton.toggle();
+    }
 private:
     TrackEditor trackEditor;
     VoicePage voicePage;

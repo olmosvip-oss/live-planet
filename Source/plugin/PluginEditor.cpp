@@ -2124,7 +2124,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     };
     addChildComponent (dockTabs);
     trackEditor.setDockPage (0);
-    playButton.songMode = [this] { return page == Write || page == Studio || page == Edit; };
+    playButton.songMode = [this] { return page != Sound; }; // (the Sound page's own instrument plays only there)
     // each track's own Print FX choice decides whether its stem comes with its effects recorded in
     pillStems.filesToDrag = [&p] { auto st = p.songJob.getStatus(); StringArray a;
                                    for (int t = 0; t < (int) st.tracks.size(); ++t) if (auto f = p.fileToDrag (t); f.existsAsFile()) a.add (f.getFullPathName());
@@ -2503,6 +2503,15 @@ void LivePlanetEditor::setPage (int p)
     if (p == Edit) p = Studio; // (the track editor lives in the Studio now, under the arrangement)
     page = p;
     if (p != Studio) trackEditor.stopLive(); // the drum editor's loop stops when you leave it
+    // the Sound page's instrument: only while its page is open (leaving it stops it)
+    proc.soundPageOpen = p == Sound;
+    if (p != Sound)
+        if (auto* pl = proc.params.getParameter ("play"); pl != nullptr && pl->getValue() > 0.5f)
+        {
+            pl->beginChangeGesture();
+            pl->setValueNotifyingHost (0.0f);
+            pl->endChangeGesture();
+        }
     const bool write = p == Write, studio = p == Studio, edit = false, sound = p == Sound, sky = false; // (the weather page is gone)
     const bool haveSong0 = proc.songJob.getStatus().haveSong;
     trackEditor.setVisible (studio && haveSong0 && dockPageShown != 1);

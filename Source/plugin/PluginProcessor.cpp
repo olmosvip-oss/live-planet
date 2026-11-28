@@ -450,6 +450,7 @@ void LivePlanetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     }
     songWasPlaying = playSong || preview;
     if (playSong || preview) t.shouldPlay = false; // the weather music steps aside while your song plays
+    if (! soundPageOpen.load()) t.shouldPlay = false; // (and it only plays while the Sound page is open)
     // your keys play the sample instrument (Play mode), or the built-in instrument
     const bool toGrains = grainsActive.load() && ! chordMode;
     const bool toSampler = samplerOn.load() && ! chordMode && ! toGrains;

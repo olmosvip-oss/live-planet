@@ -141,6 +141,7 @@ public:
     }
     // the drum editor: your computer keys or a MIDI controller play the kit (and record into the loop)
     std::atomic<int> drumKeysTrack { -1 };
+    std::atomic<bool> soundPageOpen { false }; // the instrument (the Sound page) only plays while its page is open
     std::atomic<int> midiArmTrack { -1 };   // a MIDI track armed (its I button): your keyboard plays its sound, through the track
 
     // ---- the Record button (next to Play in the Studio): while it's on and the song plays, the armed MIDI track
