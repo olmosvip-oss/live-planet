@@ -123,7 +123,7 @@ VoicePage::VoicePage (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : pro
         const int c = section.getSelectedItemIndex();
         if (! takeFile.existsAsFile() || c < 0 || c >= (int) sectionInfo.size() || onEditTake == nullptr) return;
         if (hearTake.getButtonText() == "stop") { proc.setVoicePreview (nullptr); proc.previewPlaying = false; hearTake.setButtonText ("hear it"); }
-        onEditTake (takeFile, sectionInfo[(size_t) c].first, lyrics.getText());
+        onEditTake (takeFile, sectionInfo[(size_t) c].first, lyrics.getText(), -1.0);
     };
     recordTake.setTooltip ("Plays the section with a one-bar count-in and records your mic until it ends (in the Loopwright app; in a DAW, record there and drop it here)");
     useTake.setTooltip ("A recording of you over this section: from its first bar, or a bounce from bar 1 (it's cut to the section). You can also drop it on this page.");
@@ -628,6 +628,20 @@ void VoicePage::resized()
                         proc.previewPlaying = true;
                         nr->play.setButtonText ("stop");
                     };
+                    nr->edit.onClick = [this, nr]
+                    {
+                        // this version in the piano roll: its notes to move and re-pitch, the version itself as the voice
+                        if (! nr->vocalFile.existsAsFile() || onEditTake == nullptr) return;
+                        if (nr->play.getButtonText() == "stop") { proc.setVoicePreview (nullptr); proc.previewPlaying = false; nr->play.setButtonText ("play"); }
+                        const auto st = proc.songJob.getStatus();
+                        int sec = -1;
+                        for (int k = 0; k < (int) st.song.sections.size(); ++k)
+                            if (std::abs (st.song.sections[(size_t) k].startBar * 240.0 / jmax (40.0, st.song.bpm) - nr->startSec) < 0.25) sec = k;
+                        const int c = section.getSelectedItemIndex();
+                        if (sec < 0 && c >= 0 && c < (int) sectionInfo.size()) sec = sectionInfo[(size_t) c].first;
+                        if (sec < 0) return;
+                        onEditTake (nr->vocalFile, sec, lyrics.getText(), 0.0); // (a version starts at bar 1)
+                    };
                     nr->toTrack.onClick = [this, nr]
                     {
                         if (! nr->vocalFile.existsAsFile()) return;
@@ -894,6 +908,9 @@ VoicePage::ResultRow::ResultRow (LivePlanetProcessor& p, const lp::ui::Theme*& t
     addAndMakeVisible (play);
     toTrack.setWantsKeyboardFocus (false);
     addAndMakeVisible (toTrack);
+    edit.setWantsKeyboardFocus (false);
+    edit.setTooltip ("Open this version in Draw & sing: move, stretch and re-pitch its notes (like Flex Pitch)");
+    addAndMakeVisible (edit);
     addAndMakeVisible (drag);
 }
 
@@ -911,6 +928,7 @@ void VoicePage::ResultRow::set (const lp::voice::Result& r, const String& id)
     setTooltip (r.heard.isNotEmpty() ? "The words the guide was heard singing: \"" + r.heard + "\"" : String());
     play.setEnabled (preview != nullptr);
     toTrack.setEnabled (vocalFile.existsAsFile() && toTrack.getButtonText() != "added");
+    edit.setEnabled (vocalFile.existsAsFile());
     repaint();
 }
 
@@ -921,6 +939,8 @@ void VoicePage::ResultRow::resized()
     toTrack.setBounds (b.removeFromRight (104).withSizeKeepingCentre (104, 28));
     b.removeFromRight (6);
     drag.setBounds (b.removeFromRight (110).withSizeKeepingCentre (110, 28));
+    b.removeFromRight (6);
+    edit.setBounds (b.removeFromRight (140).withSizeKeepingCentre (140, 28));
 }
 
 void VoicePage::ResultRow::paint (Graphics& g)
@@ -931,7 +951,7 @@ void VoicePage::ResultRow::paint (Graphics& g)
     g.fillRoundedRectangle (r, 12.0f);
     g.setColour (Colours::white.withAlpha (0.06f));
     g.drawRoundedRectangle (r.reduced (0.5f), 12.0f, 1.0f);
-    auto in = r.reduced (10.0f, 6.0f).withTrimmedLeft (48.0f).withTrimmedRight (234.0f);
+    auto in = r.reduced (10.0f, 6.0f).withTrimmedLeft (48.0f).withTrimmedRight (380.0f);
     g.setFont (font (13.5f, lp::ui::Medium));
     g.setColour (t.ink);
     g.drawText ("Version " + String (res.n), in.removeFromTop (17.0f), Justification::centredLeft, false);

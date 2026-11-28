@@ -1984,7 +1984,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (vocalTabs);
     vocalsHub.onOpenInStudio = [this] (int t) { trackEditor.select (t); setPage (Studio); };
     vocalsHub.onGoTab = [this] (int t) { vocalTab = t; setPage (Voice); };
-    voicePage.onEditTake = [this] (const File& take, int sec, const String& words) { vocalTab = 1; setPage (Voice); drawSing.useRecording (take, sec, words); };
+    voicePage.onEditTake = [this] (const File& take, int sec, const String& words, double at) { vocalTab = 1; setPage (Voice); drawSing.useRecording (take, sec, words, at); };
     vocalsHub.voiceAvailable = [this] { return voiceOn(); };
     songView.onLayer = [this] (int first, int count)
     {

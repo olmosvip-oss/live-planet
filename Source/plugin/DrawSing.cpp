@@ -1803,7 +1803,7 @@ void DrawSing::leave()
 // a drawn vocal double-clicked in the Studio: its section, here (the notes you drew are kept while Loopwright is open)
 // your take (from Create with AI) as the voice: the melody heard in it becomes the notes, and each note plays its own
 // piece of your recording, so moving a note re-pitches what you sang (formants kept) instead of singing it again
-void DrawSing::useRecording (const File& take, int sectionIndex, const String& words)
+void DrawSing::useRecording (const File& take, int sectionIndex, const String& words, double fileStartsAt)
 {
     const auto st = proc.songJob.getStatus();
     if (! take.existsAsFile() || ! st.haveSong || sectionIndex < 0 || sectionIndex >= (int) st.song.sections.size()) return;
@@ -1811,6 +1811,7 @@ void DrawSing::useRecording (const File& take, int sectionIndex, const String& w
     if (words.trim().isNotEmpty()) lyrics.setText (words, false);
     const String secName (st.song.sections[(size_t) sectionIndex].name);
     const double start = st.song.sections[(size_t) sectionIndex].startBar * 240.0 / st.song.bpm;
+    const double fileAt = fileStartsAt < 0.0 ? start : jmin (fileStartsAt, start); // (where in the song the file begins)
     const String token = String::toHexString (Random::getSystemRandom().nextInt64()).substring (0, 10);
     const auto file = st.files.folder.getChildFile ("voice").getChildFile ("drawn " + secName + " " + token + ".wav");
     lp::song::transcribe::Options o;
@@ -1818,29 +1819,41 @@ void DrawSing::useRecording (const File& take, int sectionIndex, const String& w
     message = "Finding the notes in your take...";
     repaint();
     SafePointer<DrawSing> self (this);
-    Thread::launch ([self, take, file, o, start, secName, token]
+    Thread::launch ([self, take, file, o, start, fileAt, secName, token]
     {
         AudioFormatManager fm;
         fm.registerBasicFormats();
         std::unique_ptr<AudioFormatReader> rd (fm.createReaderFor (take));
         std::vector<lp::song::Note> heard;
+        std::vector<float> level;
         bool ok = false;
         if (rd != nullptr && rd->sampleRate > 0)
         {
-            const int n = (int) jmin<int64> (rd->lengthInSamples, (int64) (rd->sampleRate * 120.0));
+            const int n = (int) jmin<int64> (rd->lengthInSamples, (int64) (rd->sampleRate * (start - fileAt + 120.0)));
             AudioBuffer<float> b (2, n);
             b.clear();
             rd->read (&b, 0, n, 0, true, rd->numChannels > 1);
             if (rd->numChannels == 1) b.copyFrom (1, 0, b, 0, 0, n);
-            std::vector<float> mono ((size_t) n);
-            for (int i = 0; i < n; ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+            // the melody: heard from the section's start
+            const int skip = jlimit (0, n, (int) ((start - fileAt) * rd->sampleRate)), m = n - skip;
+            std::vector<float> mono ((size_t) m);
+            for (int i = 0; i < m; ++i) mono[(size_t) i] = 0.5f * (b.getSample (0, skip + i) + b.getSample (1, skip + i));
             float pk = 0.0f;
             for (float v : mono) pk = jmax (pk, std::abs (v));
             if (pk > 1.0e-4f) for (auto& v : mono) v *= 0.9f / pk;
-            heard = lp::song::transcribe::melodyOf (mono.data(), n, rd->sampleRate, o);
-            // the recording, where the section starts in the song (like a sung take), at the song's rate
+            if (m > 0) heard = lp::song::transcribe::melodyOf (mono.data(), m, rd->sampleRate, o);
+            // how loud it is, 200 times a second (to tell where one word ends and the next begins)
+            const int hop = jmax (1, (int) (rd->sampleRate / 200.0));
+            for (int i = 0; i + hop <= m; i += hop)
+            {
+                double e = 0.0;
+                const int a = jmax (0, i - hop / 2), len = jmin (m - a, hop * 2);
+                for (int k = 0; k < len; ++k) e += (double) mono[(size_t) (a + k)] * mono[(size_t) (a + k)];
+                level.push_back ((float) std::sqrt (e / jmax (1, len)));
+            }
+            // the recording, where it belongs in the song (like a sung take), at the song's rate
             const double ratio = rd->sampleRate / StudioPlayer::fileRate;
-            const int pad = (int) (start * StudioPlayer::fileRate), outLen = (int) (n / ratio);
+            const int pad = (int) (fileAt * StudioPlayer::fileRate), outLen = (int) (n / ratio);
             AudioBuffer<float> out (2, pad + outLen);
             out.clear();
             for (int ch = 0; ch < 2; ++ch) { LagrangeInterpolator li; li.process (ratio, b.getReadPointer (ch), out.getWritePointer (ch, pad), outLen); }
@@ -1849,12 +1862,46 @@ void DrawSing::useRecording (const File& take, int sectionIndex, const String& w
             if (std::unique_ptr<AudioFormatWriter> w { wav.createWriterFor (new FileOutputStream (file), StudioPlayer::fileRate, 2, 24, {}, 0) })
                 ok = w->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
         }
-        MessageManager::callAsync ([self, heard, ok, file, secName, token]
+        MessageManager::callAsync ([self, heard, level, ok, file, secName, token, bpm = o.bpm]
         {
             if (self == nullptr) return;
             if (! ok) { self->message = "Couldn't read your take"; self->repaint(); return; }
             std::vector<Note> list;
             for (auto& h : heard) { Note n; n.beat = h.beat; n.len = h.length; n.pitch = h.pitch; list.push_back (n); }
+            std::sort (list.begin(), list.end(), [] (const Note& a, const Note& b) { return a.beat < b.beat; });
+            // one word over several notes (a word that slides or bends): the notes after its first hold it ("hold
+            // word"), so your words land where you sang them. A word starts after a gap, or where the voice dips;
+            // the deepest dips are taken, as many as there are words
+            const int W = self->lyricWords().size();
+            if (W > 0 && list.size() > 1)
+            {
+                const double spb = 60.0 / bpm;
+                auto lv = [&level] (double sec) { const int f = (int) (sec * 200.0); return f >= 0 && f < (int) level.size() ? level[(size_t) f] : 0.0f; };
+                auto mean = [&] (double a, double b)
+                {
+                    float sum = 0.0f; int c = 0;
+                    for (double t = a; t < b; t += 0.005) { sum += lv (t); ++c; }
+                    return c > 0 ? sum / (float) c : 0.0f;
+                };
+                std::vector<std::pair<float, size_t>> soft; // (how little it dips, where)
+                int starts = 1;
+                for (size_t i = 1; i < list.size(); ++i)
+                {
+                    const auto& a = list[i - 1];
+                    const auto& b = list[i];
+                    const double gap = (b.beat - (a.beat + a.len)) * spb;
+                    if (gap > 0.12) { ++starts; continue; } // (a breath between: a new word)
+                    const double tb = b.beat * spb;
+                    float dip = 1.0e9f;
+                    for (double t = tb - 0.07; t <= tb + 0.07; t += 0.005) dip = jmin (dip, lv (t));
+                    const float la = mean ((a.beat + a.len * 0.25) * spb, (a.beat + a.len * 0.75) * spb);
+                    const float lb = mean ((b.beat + b.len * 0.25) * spb, (b.beat + b.len * 0.75) * spb);
+                    soft.push_back ({ dip / jmax (1.0e-6f, jmin (la, lb)), i });
+                    list[i].slur = true;
+                }
+                std::sort (soft.begin(), soft.end());
+                for (size_t k = 0; k < soft.size() && starts < W; ++k, ++starts) list[soft[k].second].slur = false;
+            }
             self->useMelody (std::move (list), "in your take");
             if (self->notes.empty()) return;
             // the notes are your take's: each plays its own piece of it (nothing to sing; move one and it's re-pitched)

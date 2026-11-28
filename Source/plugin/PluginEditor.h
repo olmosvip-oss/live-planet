@@ -1195,7 +1195,7 @@ public:
     void openSection (const juce::String& sectionName); // (from the Studio: a drawn vocal double-clicked)
     // a recording of you (Create with AI's take, from the section's start): its melody becomes the notes, and the
     // recording itself is the voice they play, so each note can be moved, stretched and re-pitched (like Flex Pitch)
-    void useRecording (const juce::File& take, int sectionIndex, const juce::String& words);
+    void useRecording (const juce::File& take, int sectionIndex, const juce::String& words, double fileStartsAt = -1.0); // (-1: the section's start)
 private:
     juce::TextButton recBtn { "record melody" };
     double markerBeat = 0.0;                   // the marker: where "play section" starts (beats into the section)
@@ -1378,7 +1378,7 @@ private:
         std::shared_ptr<juce::AudioBuffer<float>> preview;    // ...at 48 kHz, to play with the song
         double startSec = 0.0;
         bool preparing = false;
-        juce::TextButton play { "play" }, toTrack { "add as track" };
+        juce::TextButton play { "play" }, toTrack { "add as track" }, edit { "edit in draw & sing" };
         FilePill drag;
     };
     void timerCallback() override;
@@ -1420,7 +1420,7 @@ private:
     Segmented who { { "Write melody", "I sing it" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; clean.setToggleState (i == 1, juce::dontSendNotification); resized(); refreshButtons(); repaint(); }, th };
     juce::TextButton recordTake { "Record my take" }, useTake { "Use a recording..." }, hearTake { "hear it" }, editTake { "Edit in Draw & sing" };
 public:
-    std::function<void (const juce::File&, int, const juce::String&)> onEditTake; // (take, song section, its words)
+    std::function<void (const juce::File&, int, const juce::String&, double)> onEditTake; // (take, song section, its words, where in the song the file starts: -1 the section)
 private:
     juce::String notReady; // (why Create is greyed out)
     juce::File takeFile;          // your take, cut to the section
