@@ -1,10 +1,18 @@
 #pragma once
+#include "VoiceHelper.h"
 #include "../song/Tune.h"
+#include "../song/Stack.h"
 #include <set>
 #include "Meter.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "PluginProcessor.h"
+
+namespace lp::ui
+{
+// where a full-window panel goes (the vocal chain, chop pads...): over the whole plugin, at its own scale
+juce::Component* overlayHost (juce::Component* from);
+}
 
 namespace lp::ui
 {
@@ -37,6 +45,8 @@ public:
     void drawButtonText (juce::Graphics&, juce::TextButton&, bool over, bool down) override;
     void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool over, bool down) override;
     juce::Font getTextButtonFont (juce::TextButton&, int) override;
+    juce::Font getLabelFont (juce::Label&) override;
+    juce::Font getComboBoxFont (juce::ComboBox&) override;
     // menus, confirm boxes and tips, in the plugin's own look
     void drawPopupMenuBackground (juce::Graphics&, int w, int h) override;
     void drawPopupMenuItem (juce::Graphics&, const juce::Rectangle<int>& area, bool isSeparator, bool isActive, bool isHighlighted,
@@ -132,7 +142,25 @@ public:
     explicit PlayButton (LivePlanetProcessor& p) : proc (p) {}
     std::function<bool()> songMode; // in the song tab it plays the song preview
     void paint (juce::Graphics&) override;
-    void mouseUp (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override { toggle(); }
+    void toggle(); // play / stop (the button, or the space bar)
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+
+private:
+    LivePlanetProcessor& proc;
+};
+
+// The Studio's Record button (next to Play): records your keyboard into the armed MIDI track (and, in the
+// Loopwright app, your mic into the armed audio track) while the song plays. Click again (or stop) to finish.
+class RecordButton : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit RecordButton (LivePlanetProcessor& p) : proc (p) { setTooltip ("Record into the armed track (arm one first: I on a MIDI track)"); }
+    std::function<void (const juce::String&)> onProblem; // (why it couldn't start)
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override { toggle(); }
+    void toggle();
     void mouseEnter (const juce::MouseEvent&) override { repaint(); }
     void mouseExit (const juce::MouseEvent&) override { repaint(); }
 
@@ -457,6 +485,34 @@ private:
     juce::Rectangle<int> closeX;
 };
 
+// EXPORT: the song's mix, stems or MIDI, in the file type you choose, wherever you want them (Export.cpp)
+class ExportPanel : public juce::Component
+{
+public:
+    ExportPanel (LivePlanetProcessor& p, std::function<void()> closed);
+    ~ExportPanel() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseUp (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+
+private:
+    void choose();
+    void run (const juce::File& where);
+    juce::Rectangle<int> card() const;
+    LivePlanetProcessor& proc;
+    std::function<void()> onClosed;
+    const lp::ui::Theme* th = &lp::ui::theme (0);
+    int whatN = 0, typeN = 0, rateN = 0;
+    Segmented what, type, rate;
+    juce::TextButton goBtn { "Choose a folder and export" }, cancelBtn { "Cancel" };
+    juce::String message;
+    bool busy = false;
+    std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);
+    std::unique_ptr<juce::FileChooser> chooser;
+    juce::Rectangle<int> closeX;
+};
+
 class SongPanel : public juce::Component
 {
 public:
@@ -503,6 +559,51 @@ private:
     juce::Rectangle<int> hero, settings;
 };
 
+// The Studio's arrangement: which bars are in view (zoomed in, scrolled along), shared by the sections ruler and the lanes
+struct ArrView
+{
+    double start = 0.0; // the first bar shown
+    double bars = 0.0;  // how many bars are shown (0: the whole song)
+    std::function<void()> changed;
+    double shown (int total) const { return bars <= 0.0 ? (double) juce::jmax (1, total) : juce::jmin (bars, (double) juce::jmax (1, total)); }
+    double first (int total) const { return juce::jlimit (0.0, juce::jmax (0.0, total - shown (total)), start); }
+    float xOf (double bar, float lx, float lw, int total) const { return lx + lw * (float) ((bar - first (total)) / shown (total)); }
+    double barAt (float x, float lx, float lw, int total) const { return first (total) + (double) ((x - lx) / juce::jmax (1.0f, lw)) * shown (total); }
+    bool zoomed (int total) const { return shown (total) < total - 1e-6; }
+    // closer in (factor < 1) or further out, keeping the bar under the mouse where it is
+    void zoom (double factor, double anchorBar, int total)
+    {
+        const double s = shown (total), f = first (total);
+        const double ns = juce::jlimit (juce::jmin (2.0, (double) total), (double) juce::jmax (1, total), s * factor);
+        const double t = (anchorBar - f) / s;
+        bars = ns >= total - 1e-6 ? 0.0 : ns;
+        start = juce::jlimit (0.0, juce::jmax (0.0, total - ns), anchorBar - t * ns);
+        if (changed) changed();
+    }
+    void pan (double dBars, int total)
+    {
+        start = juce::jlimit (0.0, juce::jmax (0.0, total - shown (total)), first (total) + dBars);
+        if (changed) changed();
+    }
+    void fit() { start = 0.0; bars = 0.0; if (changed) changed(); }
+    // a wheel or trackpad over the timeline: cmd/ctrl zooms, sideways (or shift) scrolls along. true: it was used
+    bool wheel (const juce::MouseEvent& e, const juce::MouseWheelDetails& w, float lx, float lw, int total)
+    {
+        if (e.mods.isCommandDown() || e.mods.isCtrlDown())
+        {
+            zoom (std::exp (-(double) w.deltaY * (w.isSmooth ? 1.6 : 2.4)), barAt (e.position.x, lx, lw, total), total);
+            return true;
+        }
+        const double dx = e.mods.isShiftDown() && std::abs (w.deltaX) < 1e-4 ? w.deltaY : -w.deltaX;
+        if (std::abs (dx) > 1e-4 && (e.mods.isShiftDown() || std::abs (w.deltaX) > std::abs (w.deltaY)))
+        {
+            if (zoomed (total)) pan (-dx * shown (total) * 0.6, total);
+            return true;
+        }
+        return false;
+    }
+};
+
 // Song mode, on the screen: the song's sections as a timeline, and progress
 // The song's shape: its sections as blocks. Edit the structure here: click a section to pick it,
 // drag it to move it, drag its right edge to make it longer or shorter; add, duplicate or remove
@@ -517,9 +618,24 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
     void refresh(); // every frame
+    // the Studio: a slim ruler over the track lanes (each section full height, lined up with them)
+    void setRuler (bool r) { if (ruler != r) { ruler = r; resized(); repaint(); } }
+    // "+ AI layer" on the sections picked (the voice helper switched on): first section, how many
+    std::function<void (int, int)> onLayer;
+    bool layerAvailable = false;
+    ArrView* view = nullptr; // the Studio: the bars in view (shared with the lanes below)
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseMagnify (const juce::MouseEvent&, float) override;
+    void requestLayer() { layerBtn.onClick(); }   // over the sections picked (none: the whole song)
+    bool layerReady() const { return ! dirty && ! waiting && ! draft.empty(); }
+    int pickedCount() const { return (int) std::max<size_t> (picked.size(), selected >= 0 ? 1u : 0u); }
 
 private:
+    bool ruler = false;
+    std::set<int> picked; // the sections picked (shift-click for more): remove takes them all out
+    void pickOnly (int i) { picked.clear(); if (i >= 0) picked.insert (i); }
     juce::Rectangle<float> lane() const;
     juce::Rectangle<float> blockRect (int i) const;
     int totalDraftBars() const;
@@ -532,35 +648,109 @@ private:
     int version = -1, selected = -1, dragIndex = -1, dragOrigBars = 0;
     enum class Drag { None, Move, Resize } drag = Drag::None;
     float dragStartX = 0.0f, pxPerBarAtStart = 1.0f;
-    juce::TextButton addBtn { "+ section" }, dupBtn { "duplicate" }, removeBtn { "remove" }, undoBtn { "undo" }, rebuildBtn { "rebuild song" };
+    juce::TextButton addBtn { "+ section" }, dupBtn { "duplicate" }, removeBtn { "remove" }, undoBtn { "undo" }, rebuildBtn { "rebuild song" },
+                     layerBtn { "+ AI layer" };
 };
 
 // The studio: every track of the song, where its sound came from, and its mixer and remix tools
-class StudioView : public juce::Component, public juce::TooltipClient
+class StudioView : public juce::Component, public juce::TooltipClient, public juce::DragAndDropTarget
 {
+public:
+    // an effect dropped from the browser onto a track
+    bool isInterestedInDragSource (const SourceDetails& d) override { return d.description.toString().startsWith ("fx:"); }
+    void itemDropped (const SourceDetails& d) override;
+    void itemDragMove (const SourceDetails& d) override;
+    void itemDragExit (const SourceDetails&) override { fxDropRow = -1; repaint(); }
+    std::function<void (int, juce::String)> onDropFx;
+    std::function<void (int)> onEditNotes; // a MIDI track's lane double-clicked: its notes, below
+    // the master channel: its own row, always at the bottom of the tracks (it can't be removed); click it for its effects
+    std::function<void()> onOpenMaster;
+    std::function<bool()> masterShown;     // (lit while its effects are open below)
+    float masterLevel = 0.0f;              // (what's coming out, for its meter)
+    juce::Rectangle<float> masterBounds() const;
+    float masterRowH() const { return 30.0f; } // (a slim strip, like a DAW's master: always fits above the feel row)
+    std::function<void (const juce::String&)> onOpenDrawn; // a drawn vocal double-clicked: Draw & sing, on its section
+    int fxDropRow = -1;
 public:
     explicit StudioView (LivePlanetProcessor& p) : proc (p) { for (auto* h : { &hFeel, &hTracks }) addAndMakeVisible (*h); }
     void resized() override;
     HelpDot hFeel { "Feel", "Shape the whole song at once (double-click any of them to undo it). Pump: everything ducks under the kick and swells back. "
                             "Bright: brighter and airier, or darker and warmer. Sparse: the quieter sections (intro, verses, bridge) thin out to their core, so the choruses hit harder. "
                             "Punch: drums and bass forward. Auto mix: the bass dips under each kick, chords and melodies stay out of the low end and make room for a voice." },
-            hTracks { "Your tracks", "Click a track's name to open it in Edit. M mutes, S solos, the padlock locks a track you love: 'write the rest again' then gives every unlocked track a new take. "
-                                     "Swap: another sound for the same part. Rev: backwards. - / +: pitch. x deletes the track (undo brings it back). The green bar by each volume shows what it's playing." };
+            hTracks { "Your tracks", "Click a track (its name or its lane) to open it below. Right-click it to swap, reverse, re-pitch or remove it. M mutes, S solos, the padlock locks a track you love: 'write the rest again' then gives every unlocked track a new take. "
+                                     "The bar by each volume shows what it's playing; each lane shows its sound in every section." };
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override { hoverRow = -1; hoverAdd = false; repaint(); }
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseMagnify (const juce::MouseEvent&, float) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    ArrView* view = nullptr;               // the bars in view (zoom, scroll along), shared with the sections ruler
+    int rowStep = 42;                      // how tall each track's lane is (+ the gap)
+    std::function<void (int)> onRowStep;   // (remembered)
     std::function<void()> onMixChanged;
     std::function<void (int)> onOpenTrack; // clicking a track's name opens it in the editor
+    std::function<int()> selectedTrack;    // the track open below (lit in the list)
+    std::function<juce::String()> statusText; // what the AI is making for the song right now
+    struct Ghost { double start = 0, len = 0; juce::String label; }; // (song seconds) a track still being made
+    std::function<std::vector<Ghost>()> ghosts;
+    bool hadGhost = false;
     bool mixDirty = false;
+    // where the lanes are (the sections ruler above lines up with them)
+    float laneLeft() const { return 310.0f; }
+    float laneRight() const { return (float) getWidth() - 14.0f; }
+    juce::Rectangle<float> scrollBar() const;
 
 private:
     enum Col { None, Mute, Solo, Lock, Volume, Pan, Tone, Swap, Reverse, PitchDown, PitchUp, Remove };
+    bool isAudioTrack (int track) const;  // a vocal or a layer: it has a record button
+public:
+    // an audio file dropped on the Arrangement (p: where, in this view): into the audio track there, at that bar,
+    // or a new audio track from that bar. False when it isn't over the tracks (the drop is then a reference song).
+    bool dropAudio (const juce::File& file, juce::Point<float> p);
+private:
+    void addAudioTrack();
+    static constexpr float rowsTop = 30.0f;  // (the bar numbers above)
+    struct ClipHit { int track, section, b0, b1; juce::Rectangle<float> r; }; // a clip: bars b0 .. b1-1 of a track
+    std::vector<ClipHit> clipHits;           // where each clip was drawn (for clicks)
+    std::set<std::tuple<int, int, int>> pickedClips; // (track, first bar, end bar): Delete silences them
+    const ClipHit* clipAt (int track, juce::Point<float> p) const;
+    double barAtX (float x) const;
+    void splitClipAt (int track, int tick);
+    // clips are in ticks (kTicksPerBar a bar): where a click lands, snapped to a grid that follows the zoom
+    int gridTicks() const;
+    int tickAtX (float x, bool snap = true) const;
+    bool trackPicked = false;                // a track's name was clicked: Delete removes the track
+    juce::Rectangle<float> zoomBtn (int i) const;   // 0 out, 1 in, 2 the whole song
+    juce::Rectangle<float> heightBtn (int i) const; // lane height: small, medium, large
+    int sectionAt (float x) const;
+    void deletePicked();
+    double wheelZoomRows = 0.0;
+    double cuedBar = -1.0;
+    bool rulerDrag = false, rulerMoved = false, stripClick = false; double rulerFrom = 0.0; // (a drag along the top: the loop)
+public:
+    std::function<void()> onLoopChanged;
+private:
+    // a clip being dragged to another section of its track (option: a copy)
+    int dragClipTrack = -1, dragB0 = 0, dragB1 = 0, dragMode = 0, grabBar = 0; // (ticks) mode 0 move, 1 its start, 2 its end
+    int dropStart = -1, dropEnd = -1;
+    double dropStartF = -1.0;
+    float panFrom = 0.0f;                     // (a pan knob being turned: where it started)
+    int trackDrag = -1;                       // a track dragged by its name: into a group (or out of its group)
+    bool trackDragging = false, trackDropValid = false;
+    juce::String trackDropGroup;                 // (where a moved clip lands, exactly: off the grid when SNAP is off)
+    static bool snapOn() { return (bool) lp::setting ("snapGrid", true); }
+    bool clipDragging = false, dragCopy = false;                   // clicked in the bar numbers: where play starts
     juce::Rectangle<float> rewriteBounds (int numTracks) const;
     bool hoverRewrite = false;
     void askRemove (int track);
+    void askResound (int track) { if (onResound) onResound (track); } // "change its sound": the layer window, with its notes
+public:
+    std::function<void (int)> onResound;
+private:
     juce::Point<float> lastMouse;
     bool hoverRemove = false;
     juce::Rectangle<float> rowBounds (int row) const;
@@ -571,7 +761,25 @@ private:
     int scroll = 0;                 // first track row shown
     double wheelRows = 0.0;         // scrolling, a bit at a time
     int visibleRows() const;
-    bool rowShown (int row) const { return row >= scroll && row < scroll + visibleRows(); }
+    bool rowShown (int row) const { const int d = displayOf (row); return d >= 0 && d >= scroll && d < scroll + visibleRows(); }
+    // groups (folders): what's shown, in order: a group's row, then its tracks (folded: just the group's row)
+    struct DRow { int track = -1; juce::String group; }; // track -1: the group's own row
+    std::vector<DRow> drows;
+    std::vector<int> rowOfTrack;      // track -> its place in drows (-1: in a folded group)
+    std::vector<bool> inGroup;        // (its head sits a little in, under its group)
+    std::set<juce::String> collapsed; // groups folded
+    std::set<int> selTracks;          // the tracks picked (shift / cmd-click their names): grouped with cmd+G
+    void buildRows();
+    int displayOf (int track) const;
+    int totalRows() const { return (int) drows.size() + 1; } // (+ the "add" row)
+    juce::Rectangle<float> displayBounds (int d) const;
+    juce::Rectangle<float> groupBounds (const juce::String& g) const;
+    std::vector<int> membersOf (const juce::String& g) const;
+    juce::String dragGroup;           // a group's volume being dragged
+    std::vector<float> dragGroupFrom;
+    void groupPicked();               // cmd+G: the picked tracks (or the open one) into a new group
+    void showTrackMenu (int track);   // the track's menu (right-click its name)
+    void askRename (int track);
     Col colAt (int row, juce::Point<float> p) const;
     void setFromX (int row, Col c, float x);
     std::unique_ptr<juce::FileChooser> chooser;
@@ -580,6 +788,12 @@ private:
     std::array<lp::ui::MeterBallistics, StudioPlayer::maxTracks> meterL {}, meterR {};
     juce::Rectangle<float> pumpBounds() const;
     bool draggingPump = false;
+    // each track's stem as a loudness line, read in the background
+    // peaks: the loudest in each bucket (for which sections it plays in); hi / lo: the wave's top and bottom there
+    struct Env { std::vector<float> peaks, hi, lo; double rate = 0.0; juce::int64 length = 0; };
+    struct Envs { std::mutex lock; std::map<juce::String, Env> done; std::set<juce::String> pending; };
+    std::shared_ptr<Envs> envs = std::make_shared<Envs>();
+    const Env* envelopeOf (const juce::File&);
     // the song's feel, along the bottom: pump, bright, sparse, punch, and the auto mix switch
     juce::Rectangle<float> feelBar (int i) const;     // 0 pump, 1 bright, 2 sparse, 3 punch
     juce::Rectangle<float> autoMixBounds() const;
@@ -591,6 +805,80 @@ public:
 private:
     Col dragCol = None;
 };
+
+// Effects, like a DAW's: a browser of effects to drag onto a track, and the open track's devices (on / off, knobs, remove)
+namespace lp::fx
+{
+struct Kind { const char* id; const char* name; const char* about; int group; }; // group 0 the chain's, 1 the track's own
+constexpr int masterTrack = 1000; // (the master channel, shown in the rack like a track)
+const std::vector<Kind>& kinds();
+bool isOn (LivePlanetProcessor&, int track, const juce::String& id);
+void add (LivePlanetProcessor&, int track, const juce::String& id); // switched on, at a good starting setting
+void remove (LivePlanetProcessor&, int track, const juce::String& id);
+
+// the browser: a list of effects (drag one onto a track; double-click: onto the open track)
+class Browser : public juce::Component, public juce::TooltipClient
+{
+public:
+    Browser (const lp::ui::Theme*& theme) : th (theme) {}
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override { hover = -1; repaint(); }
+    juce::String getTooltip() override;
+    std::function<void (const juce::String&)> onAdd; // double-click: on the open track
+private:
+    int itemAt (juce::Point<float>) const;
+    juce::Rectangle<float> itemRect (int i) const;
+    const lp::ui::Theme*& th;
+    int hover = -1, pressed = -1;
+    bool dragging = false;
+};
+
+// the open track's devices, side by side
+class Rack : public juce::Component, public juce::DragAndDropTarget
+{
+public:
+    Rack (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme) {}
+    void setTrack (int t) { if (t != track) { track = t; scrollX = 0.0f; repaint(); } }
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    bool isInterestedInDragSource (const SourceDetails& d) override { return d.description.toString().startsWith ("fx:"); }
+    void itemDropped (const SourceDetails& d) override;
+    void itemDragEnter (const SourceDetails&) override { dropping = true; repaint(); }
+    void itemDragExit (const SourceDetails&) override { dropping = false; repaint(); }
+    std::function<void()> onChanged;       // (the mix to save)
+    std::function<void (int)> onOpenChain; // the full window for the chain's effects
+private:
+    struct Knob { juce::String id; int index; juce::Rectangle<float> r; };
+    struct Dev { juce::String id; juce::Rectangle<float> box, power, close, more; std::vector<Knob> knobs; };
+    // the track's own strip, always first: its volume and pan; bypass, effects in or dry when dragged, and the track to drag
+    juce::Rectangle<float> stripBox() const, bypassRect() const, dryRect() const, dragRect() const, volRect() const, panRect() const;
+    bool draggingFile = false;
+    std::vector<Dev> layout() const;
+    float value (const juce::String& id, int k) const;          // 0..1
+    void setValue (const juce::String& id, int k, float v01);   // heard right away
+    juce::String valueText (const juce::String& id, int k) const;
+    static juce::StringArray knobNames (const juce::String& id);
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    int track = -1;
+    bool dropping = false;
+    juce::String dragId; int dragKnob = -1; float dragStart = 0.0f;
+    lp::song::VocalChain editing;  // the chain while a knob is being turned (kept with the song when let go)
+    bool pendingChain = false;
+    // the devices scroll sideways (trackpad, mouse wheel) when there are more than fit
+    float scrollX = 0.0f;
+    float contentRight() const;
+public:
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+};
+}
 
 // EDIT: one track at a time, like a sampler: its sample (choose which bars play), its own effects and remix tools
 class FilePill : public juce::Component, public juce::SettableTooltipClient
@@ -718,11 +1006,15 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     void mouseMagnify (const juce::MouseEvent&, float scale) override;
     bool keyPressed (const juce::KeyPress&) override;
+    bool keyStateChanged (bool) override;
     void stopLoop();
     std::function<void()> onToggleBig;
     void setBig (bool b) { bigBtn.setButtonText (b ? "smaller" : "bigger"); }
 
 private:
+    // the computer keyboard as piano keys (A W S E D F T G Y H U J K O L P ;), Z / X an octave down / up
+    std::map<int, int> heldPianoKeys; // key code -> the note it plays
+    int keyOctave = -1;               // (-1: picked from the track, the first time)
     double totalBeats() const { return totalBars * 4.0; }
     juce::Rectangle<float> overviewArea() const;
     juce::Rectangle<float> sectionLane() const;
@@ -772,6 +1064,400 @@ private:
                      undoBtn { "undo" }, bigBtn { "bigger" };
 };
 
+// VOICE (experimental): lyrics and a style, sung over a part of your song by the local voice helper,
+// with every stage shown live and the versions to hear and drag out (VoicePage.cpp)
+namespace lp::ai
+{
+juce::String helperKeyName (const lp::song::Song&); // the key the voice helper is told (the minor key with the song's notes)
+// the voice helper's layers and drawn melodies, added to the song by themselves once they're made
+struct AutoAdd
+{
+    void tick (LivePlanetProcessor&);
+    juce::String status; // what's being made right now (or what went wrong)
+    struct Pending { double start = 0, len = 0; juce::String label; }; // (song seconds) a layer or melody still being made
+    std::vector<Pending> pending;
+    // a drawn melody's vibrato and slides (by the token in its tag), put on the sung result when it arrives
+    std::map<juce::String, std::vector<lp::song::stack::Bend>> bends;
+
+private:
+    std::set<juce::String> handled, asked;
+};
+// The voices to sing with, as cards (like a singer library): search, tabs, art, tags; and more voices made
+// from a recording of you (deeper, brighter, airier, raspier, warmer). Opens over the whole window.
+class VoicePicker : public juce::Component
+{
+public:
+    VoicePicker (LivePlanetProcessor&, const lp::ui::Theme*& theme, juce::ComboBox& voices, std::function<void()> closed);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    static void drawArt (juce::Graphics&, juce::Rectangle<float>, const juce::String& voiceName);
+    struct About { juce::String title, tags; bool madeFromYours = false; };
+    static About about (const juce::String& voiceName);
+private:
+    juce::Rectangle<int> card() const;
+    juce::Rectangle<float> gridArea() const;
+    std::vector<juce::String> shownVoices() const;
+    void makeVariants (const juce::File& recording);
+    void askToUnlockVoices();
+    void askToUnlockJordan (const juce::String& voiceName);
+    void choose (const juce::String& voiceName); // this voice, everywhere
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    juce::ComboBox& voices;
+    std::function<void()> onClosed;
+    juce::TextEditor search;
+    juce::TextButton tabAll { "All voices" }, tabMade { "Made from yours" }, tabRec { "Recordings" },
+                     makeBtn { "Make voices from a recording..." }, addBtn { "Add a recording..." }, closeBtn { "Close" };
+    int tab = 0;
+    float scroll = 0.0f;
+    int hover = -1;
+    std::vector<std::pair<juce::Rectangle<float>, juce::String>> cards; // (where each card was drawn)
+    juce::String message;
+    std::unique_ptr<juce::FileChooser> chooser;
+    void showTabs();
+};
+
+// The voice in use, as a card-like chip (its art, name and tags): click it for every voice
+class VoiceChip : public juce::Component, private juce::Timer
+{
+public:
+    VoiceChip (LivePlanetProcessor& p, const lp::ui::Theme*& theme, juce::ComboBox& v) : proc (p), th (theme), voices (v) { startTimerHz (4); }
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+private:
+    void timerCallback() override { if (voices.getText() != shown) { shown = voices.getText(); repaint(); } }
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    juce::ComboBox& voices;
+    juce::String shown;
+    std::unique_ptr<VoicePicker> picker;
+};
+
+// "+ AI layer": an instrument the AI plays over the sections you picked
+class LayerPopup : public juce::Component
+{
+public:
+    LayerPopup (LivePlanetProcessor&, const lp::ui::Theme*& theme, int firstSection, int sectionCount, std::function<void()> closed);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent& e) override { if (! cardBounds().contains (e.getPosition()) && onClosed) onClosed(); }
+    void setBackdrop (juce::Image img); // what's behind it (blurred, seen through the glass)
+    void useNotesOf (int track);        // "generate sound" with this track's notes (right-click a track: change its sound)
+private:
+    juce::Image backdrop;
+    juce::ComboBox notesFrom;           // generate sound: whose notes it plays (or a new part following the chords)
+    juce::Rectangle<int> cardBounds() const;
+    void pickKind (juce::TextButton*);
+    void start();
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    int firstSection, sectionCount;
+    std::function<void()> onClosed;
+    juce::OwnedArray<juce::TextButton> chips;
+    juce::String kind, message;
+    int loopBars = 0; // 0: a part played through; else a loop this many bars long, repeated
+    juce::TextButton asPart { "Instrumental" }, asLoop { "Loop" }, loop1 { "1 bar" }, loop2 { "2 bars" }, loop4 { "4 bars" };
+    // flip a sample from your library (chopped into something new) or have the AI play it
+    int mode = 0; // 0 create (a sample matching your words, following the chords), 1 flip a sample, 2 AI audio
+    int flipAmount = 2;
+    void setMode (int m);
+    juce::TextButton modeCreate { "Generate sound" }, modeFlip { "Flip a sample" }, modeAi { "AI audio" }, amtLight { "Light flip" }, amtMed { "Medium" }, amtHeavy { "Heavy" };
+    void showType();
+    juce::TextEditor describe;
+    juce::TextButton go { "Generate" }, cancel { "Cancel" };
+};
+}
+
+// VOCALS, "Draw & sing": a piano roll over a section; notes with words, sung in your voice by the voice helper
+class DrawSing : public juce::Component, public juce::FileDragAndDropTarget
+{
+public:
+    DrawSing (LivePlanetProcessor&, const lp::ui::Theme*& theme);
+    ~DrawSing() override;
+    void togglePlaySection() { hear.triggerClick(); } // (the space bar on this page)
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    void refresh(); // every frame while showing
+    std::function<juce::String()> statusText; // what the helper is doing with it
+    lp::ai::AutoAdd* autoAdd = nullptr;        // where a melody's vibrato and slides are left for its result
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseMagnify (const juce::MouseEvent&, float scale) override; // (pinch on a trackpad: zoom)
+
+private:
+    using Note = lp::song::lyricmelody::Note;
+    int top = 79;                              // the highest note shown (32 notes at a time; scroll for more)
+    juce::TextButton octUp { "oct +" }, octDown { "oct -" }, holdBtn { "hold word" }, vibBtn { "vibrato" }, slideBtn { "slide in" }, splitBtn { "split" }, straightBtn { "straighten" };
+    void splitNote();                          // the selected note in two (the second keeps singing its word)
+    void showWordEditor (int note);            // double-click a word: its text, its volume, how long it rings on
+    void saveSection();                        // (each section's notes, words and sung take, kept with the song)
+    void useMelody (std::vector<Note> list, const juce::String& how); // (played, sung or dropped: it becomes the notes)
+public:
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int, int) override; // a recording of you humming it: the melody, from the marker
+private:
+    void restoreSection();
+    juce::File stateFile() const;
+    juce::String savedKey;
+public:
+    void openSection (const juce::String& sectionName); // (from the Studio: a drawn vocal double-clicked)
+    // a recording of you (Create with AI's take, from the section's start): its melody becomes the notes, and the
+    // recording itself is the voice they play, so each note can be moved, stretched and re-pitched (like Flex Pitch)
+    void useRecording (const juce::File& take, int sectionIndex, const juce::String& words, double fileStartsAt = -1.0); // (-1: the section's start)
+private:
+    juce::TextButton recBtn { "record melody" };
+    double markerBeat = 0.0;                   // the marker: where "play section" starts (beats into the section)
+    bool draggingMarker = false;
+    juce::Rectangle<float> ruler() const;
+    void setMarker (const juce::MouseEvent&);
+    void toggleRecord();                       // sing or hum the melody with the section: it becomes the notes
+    bool recordingMelody = false;
+    double recStartSec = 0.0;                  // (where in the song the recording started)
+    bool autoPaused = false;                   // (a melody just written or recorded: not sung until you change it or press sing)
+    void toggle (int what);                    // 0 hold, 1 vibrato, 2 slide, on the selected note
+    void showTools();
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    std::vector<Note> notes; // beats from the section's start
+    int page = 0, selectedNote = -1, editing = -1, songVersion = -1;
+    float wheel = 0.0f;
+    // sing as I draw: a moment after the notes stop changing they're sung (a take still singing an older version is stopped)
+    juce::ToggleButton autoSing { "sing as I draw" };
+    juce::String noteKey() const, shownKey, sentKey, lastToken;
+    juce::uint32 changedAt = 0;
+    // the view: how many beats across (zoom), from which beat
+    double beatsShown = 16.0, viewStart = 0.0;
+    juce::TextButton zoomIn { "+" }, zoomOut { "-" };
+    juce::ToggleButton guide { "guide tone with the song" };
+    juce::TextButton addVoiceBtn { "add" };
+    std::unique_ptr<juce::FileChooser> voiceChooser;
+    double snap() const { return beatsShown <= 8.0 ? 0.125 : 0.25; }
+    void zoom (double factor, float aroundX);
+    juce::String guideKey;
+    // your voice, live: the last sung take and the notes it was sung on; moved notes are re-pitched and re-timed from it
+    struct Voiced;
+    std::shared_ptr<Voiced> voiced;
+    std::map<juce::String, std::vector<Note>> sentNotes; // by token: the notes each take was sung from
+    juce::String loadedToken, voicedKey;
+    int nextId = 1;
+    // several notes picked at once (by id): shift-click, a box (shift-drag), cmd+A; dragged, copied (option-drag) and
+    // deleted together
+    std::set<int> selIds;
+    std::set<int> selection() const;      // the picked notes' ids (the one note picked, when there's no group)
+    bool isPicked (const Note& n) const;
+    void pickOnly (int index);
+    void duplicateSelection();
+    void deleteSelection();
+    void noteMenu (int index);
+    std::map<int, std::pair<double, int>> dragFrom; // (id -> beat, pitch, when the drag began)
+    double dragBeat0 = 0.0; int dragPitch0 = 0;
+    std::vector<int> copies; // (option-drag: the copies made; dropped where they began, they're taken back)
+    bool boxing = false;
+    juce::Point<float> boxFrom, boxTo;
+    // the octave the voice sings the melody in, fixed once it's first sung: notes you add later don't move it
+    int lockedRef = -1;
+    juce::String lockedVoice;
+    juce::uint32 voicedChangedAt = 0;
+    void loadTake (const juce::String& token, const juce::File& file);
+    void renderVoice();          // (in the background) the section in your voice, from the notes as they are now
+    void previewNote (int index); // the note being moved, in your voice (or the tone)
+    bool isVoiced (const Note&) const;
+    bool needsSinging() const;   // notes the take doesn't have yet (new ones, or new words): those phrases are sung
+    void bake();                 // only moved, stretched or re-pitched: the edited take goes into the track, no AI
+    juce::String bakedKey;
+    // undo / redo: the notes as they were before each change (a drag is one change)
+    std::vector<std::vector<Note>> undoStack, redoStack;
+    std::vector<Note> committed;
+    juce::String committedKey;
+    juce::TextButton undoBtn { "undo" }, redoBtn { "redo" };
+    void undo (bool back);
+public:
+    void leave();                // the page is left: the song plays the sung track again
+private:
+    enum class Drag { None, Move, Resize } drag = Drag::None;
+    double dragBeatOffset = 0.0;
+    bool connected = false;
+    juce::String message;
+    juce::StringArray shownVoices;
+    juce::ComboBox section, voice;
+    lp::ai::VoiceChip voiceChip { proc, th, voice }; // (the voice, as a card: click it for every voice)
+    juce::TextEditor lyrics, wordBox;
+    juce::TextButton fromLyrics { "Start from a melody" }, fillWords { "Fill in my words" }, clearAll { "Clear" },
+                     prev { "<" }, next { ">" }, hear { "play section" }, sing { "Sing it in my voice" };
+    juce::ToggleButton consent { "this is my voice, or I have the singer's permission" };
+    juce::Rectangle<int> statusArea;
+    int wordsTop = 0, liveTop = 0; // (where the side's groups start: their names are drawn there)
+    double sectionBeats() const, sectionStartSeconds() const;
+    juce::Rectangle<float> roll() const;
+    juce::Rectangle<int> rollCard() const, sideCard() const;
+    float rowH() const, xOf (double beat) const, yOf (int pitch) const;
+    double beatAt (float x) const;
+    int pitchAt (float y) const;
+    juce::Rectangle<float> noteRect (const Note&) const;
+    int noteAt (juce::Point<float>) const;
+    void editWord (int), commitWord(), fillFromLyrics(), writeFromLyrics(), preview (int pitch), hearIt(), singIt();
+    juce::StringArray lyricWords() const;
+    juce::String nextWord() const;
+};
+
+// VOCALS, "Your vocals": every vocal in the song (its chain, chop pads, auto-tune) and ways to add one
+// a tile to start something (an icon, a title, a line about it): the Vocals page's "add a vocal"
+class HubTile : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    HubTile (const lp::ui::Theme*& theme, int iconKind, juce::String title, juce::String sub) : th (theme), icon (iconKind), head (std::move (title)), line (std::move (sub)) {}
+    std::function<void()> onClick;
+    bool highlight = false; // (the main ones: a touch of the theme colour)
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent& e) override { if (isEnabled() && getLocalBounds().contains (e.getPosition()) && onClick) onClick(); }
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    static void drawIcon (juce::Graphics&, juce::Rectangle<float>, int kind, juce::Colour);
+private:
+    const lp::ui::Theme*& th;
+    int icon;
+    juce::String head, line;
+};
+
+class VocalsHub : public juce::Component
+{
+public:
+    VocalsHub (LivePlanetProcessor&, const lp::ui::Theme*& theme);
+    ~VocalsHub() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void refresh(); // every frame while showing
+    std::function<void (int)> onOpenInStudio;
+    std::function<void (int)> onGoTab;      // 1 draw & sing, 2 create with AI
+    std::function<bool()> voiceAvailable;   // the voice helper is set up (draw & sing, create with AI)
+
+private:
+    struct Row { int track = 0; juce::String name, source; juce::File stem; juce::Rectangle<int> area;
+                 juce::TextButton chain { "Vocal chain" }, chops { "Chop pads" }, tune { "Auto-tune" }, studio { "In Studio" }, stack { "Stack it..." }; };
+    void makeStack (int track, int kind); // a double, a harmony or a choir from a vocal, as a new track
+    juce::String working;                 // what's being made right now
+    std::shared_ptr<std::atomic<bool>> busy = std::make_shared<std::atomic<bool>> (false);
+    std::vector<int> vocalTracks() const;
+    void rebuild();
+    void open (int which, int track); // 0 chain, 1 chop pads, 2 auto-tune
+    juce::Rectangle<int> listCard() const, sideCard() const, voiceCard() const;
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    std::vector<std::unique_ptr<Row>> rows;
+    juce::String shownKey;
+    juce::OwnedArray<HubTile> tiles;    // draw & sing, create with AI, chops (2), tuned (2)
+    juce::ComboBox voiceList;           // (hidden: the voices, for the chip)
+    juce::StringArray shownVoices;
+    lp::ai::VoiceChip voiceChip { proc, th, voiceList };
+    // each vocal's loudness along the song (read in the background), for its card
+    struct Waves { std::mutex lock; std::map<juce::String, std::vector<float>> done; std::set<juce::String> pending; };
+    std::shared_ptr<Waves> waves = std::make_shared<Waves>();
+    const std::vector<float>* waveOf (const juce::File&);
+    std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<juce::Component> window;
+};
+
+class VoicePage : public juce::Component, public juce::FileDragAndDropTarget, private juce::Timer
+{
+public:
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void filesDropped (const juce::StringArray& files, int, int) override;
+    VoicePage (LivePlanetProcessor&, const lp::ui::Theme*& theme);
+    ~VoicePage() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void setSnapshot (const lp::voice::Snapshot&);
+    void setSong (const juce::StringArray& sectionNames, int pick, const juce::String& keyText, const juce::String& bpmText);
+    void refresh();                 // (every frame while it shows) the helper's news and the song's sections
+    void shown (bool isShown);      // keep up with the helper only while it shows (or while it sings)
+
+private:
+    struct ResultRow : public juce::Component, public juce::SettableTooltipClient
+    {
+        ResultRow (LivePlanetProcessor&, const lp::ui::Theme*&);
+        void set (const lp::voice::Result&, const juce::String& jobId);
+        void paint (juce::Graphics&) override;
+        void resized() override;
+        LivePlanetProcessor& proc;
+        const lp::ui::Theme*& th;
+        lp::voice::Result res;
+        juce::String jobId;
+        juce::File vocalFile;                                 // the version, starting at bar 1 (dragged, made a track)
+        std::shared_ptr<juce::AudioBuffer<float>> preview;    // ...at 48 kHz, to play with the song
+        double startSec = 0.0;
+        bool preparing = false;
+        juce::TextButton play { "play" }, toTrack { "add as track" }, edit { "edit in draw & sing" };
+        FilePill drag;
+    };
+    void timerCallback() override;
+    void markStyles();
+    void refreshButtons();
+    void startCreate();
+    void prepare (ResultRow&, const juce::File& fetched);
+    juce::File voiceFolder() const;
+    void loadJobs();
+    void saveJobs();
+    juce::Rectangle<float> lyricsCard() const, styleCard() const, setupCard() const, progressCard() const, resultsArea() const;
+    LivePlanetProcessor& proc;
+    const lp::ui::Theme*& th;
+    lp::voice::Snapshot snap;
+    int seenSerial = -1, seenSongVersion = -1;
+    bool demo = false;
+    juce::String songKey, songBpm, songKeyName;  // songKeyName: the minor key sent to the helper ("A")
+    double songBpmValue = 120.0;
+    juce::File songFolder;
+    struct SectionChoice { int first = 0, count = 1; double start = 0.0, secs = 0.0; juce::String name; };
+    std::vector<SectionChoice> sectionInfo; // what each choice in the list is (one section, or two or three in a row)
+    int lyricLines() const;                  // sung lines (tags like [Chorus] don't count)
+    double chosenSeconds() const;
+    double barSeconds() const;               // one bar of the song, in seconds
+    std::map<juce::String, std::pair<double, juce::String>> jobStarts; // job id -> (its section's start, its name)
+    std::set<juce::String> asked;   // versions asked for already
+    float phase = 0.0f;
+    juce::TextEditor lyrics, style;
+    juce::OwnedArray<juce::TextButton> tagChips, styleChips;
+    juce::ComboBox section, voice;
+    lp::ai::VoiceChip voiceChip { proc, th, voice }; // (the voice, as a card: click it for every voice)
+    juce::TextButton addVoice { "add" }, create { "Create vocal" }, stop { "Stop" };
+    int takesN = 4, versionsN = 1;
+    int minutesEstimate() const; // roughly how long the helper takes, from what's picked
+    // who makes the melody: 0, Loopwright writes it over the song's chords (sung note for note); 1, you, from your own
+    // take; 2, the AI improvises one (takes, the best kept)
+    int whoSings = 1; // (only "I sing it" now: your take, in the voice; Write melody and AI freestyle are retired)
+    // (AI freestyle retired: it made up its own melody and lost words)
+    Segmented who { { "Write melody", "I sing it" }, [this] { return whoSings; }, [this] (int i) { whoSings = i; clean.setToggleState (i == 1, juce::dontSendNotification); resized(); refreshButtons(); repaint(); }, th };
+    juce::TextButton recordTake { "Record my take" }, useTake { "Use a recording..." }, hearTake { "hear it" }, editTake { "Edit in Draw & sing" };
+public:
+    std::function<void (const juce::File&, int, const juce::String&, double)> onEditTake; // (take, song section, its words, where in the song the file starts: -1 the section)
+private:
+    juce::String notReady; // (why Create is greyed out)
+    juce::File takeFile;          // your take, cut to the section
+    double takeSecs = 0.0;
+    bool takeRecording = false;
+    double takeFrom = 0.0, takeStopAt = 0.0; // (song seconds: the count-in bar, and the section's end)
+    int takeChoice = -1;          // the section choice it was made for
+    juce::String takeMessage;
+    void startTakeRecording();
+    void finishTakeRecording();
+    void useTakeFile (const juce::File&);
+    static juce::String withVoiceWords (const juce::String& style);
+    static bool rapStyle (const juce::String& style); // hip hop, rap, trap, drill, grime: a rap flow
+    Segmented takes { { "2", "4", "6", "8" }, [this] { return takesN / 2 - 1; }, [this] (int i) { takesN = (i + 1) * 2; refreshButtons(); repaint(); }, th },
+              versions { { "1", "2", "3" }, [this] { return versionsN - 1; }, [this] (int i) { versionsN = i + 1; refreshButtons(); repaint(); }, th };
+    juce::Slider tuning, runs;
+    juce::ToggleButton clean { "remove background noise" }, consent { "this is my voice, or I have the singer's permission" };
+    juce::OwnedArray<ResultRow> rows;
+    std::unique_ptr<juce::FileChooser> chooser;
+};
+
 class TrackEditor : public juce::Component
 {
 public:
@@ -786,6 +1472,11 @@ public:
     void refresh();     // message thread, every frame while showing
     int selected() const { return track; }
     void stopLive() { drumGrid.stopLoop(); }
+    // docked under the arrangement (the Studio): one view at a time, 0 the sample / its notes, 1 its sound (dials)
+    void setDockPage (int p) { if (dockPage != p) { dockPage = p; resized(); repaint(); } }
+    int getDockPage() const { return dockPage; }
+    // docked, showing a drum grid or notes made bigger: the panel wants more of the window
+    bool wantsTall() const { return dockPage == 0 && (showingDrums() || notesTrack) && (notesTrack && ! showingDrums() ? noteBig : drumBig); }
 
 private:
     // a dial is either live (the mixer: plays as you turn it) or re-records the track when you let go (grains)
@@ -822,7 +1513,8 @@ private:
     bool notesTrack = false;
     bool noteBig = true;      // the note editor opens big (notes need the room); "bigger" toggles it
     juce::Rectangle<int> toolSlot (int i) const;
-    bool bigNow() const { return notesTrack && ! showingDrums() ? noteBig : drumBig; }  // a played part (808, hook, bass line): its notes can be edited
+    bool bigNow() const { return dockPage < 0 && (notesTrack && ! showingDrums() ? noteBig : drumBig); }
+    int dockPage = -1; // -1: the whole editor at once (its own page)  // a played part (808, hook, bass line): its notes can be edited
     juce::TextButton sliceBtn { "Slice into hits" }; // a drum loop -> a drum track you can edit
     juce::TextButton vocalBtn { "Vocal chain" };     // a vocal track: its chain, in its own window
     std::unique_ptr<VocalPanel> vocalPanel;
@@ -832,7 +1524,7 @@ private:
     std::unique_ptr<TunePanel> tunePanel;
     juce::TextButton drumPadsBtn { "Drum pads" };  // a drum track: its kit on pads
     std::unique_ptr<DrumPadPanel> drumPadPanel;
-    bool drumBig = false;
+    bool drumBig = true; // (docked: the drum grid opens tall, the arrangement shrinking to make room)
     // one drum's own effects (picked by clicking its name in the drum editor): the mix dials show it instead
     int voice = -1;
     std::array<std::atomic<float>, 8> voiceVals {}; // volume, pan, tone, space, echo, warmth, nostalgia, chorus
@@ -902,8 +1594,27 @@ private:
     std::function<void()> onChange;
 };
 
-class LivePlanetEditor : public juce::AudioProcessorEditor,
+#include "GrainsPage.h"
+
+// "A new version of Loopwright is out": shown when a newer release than this one is published
+class UpdateNotice : public juce::Component
+{
+public:
+    UpdateNotice (const lp::ui::Theme*& theme, juce::String version, std::function<void()> closed);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseUp (const juce::MouseEvent& e) override { if (! card().contains (e.position)) later.triggerClick(); }
+
+private:
+    juce::Rectangle<float> card() const;
+    const lp::ui::Theme*& th;
+    juce::String version;
+    juce::TextButton download { "Download the update" }, later { "Later" }, skip { "Skip this version" };
+};
+
+class LivePlanetEditor : public juce::Component,
                          public juce::FileDragAndDropTarget,
+                         public juce::DragAndDropContainer,
                          private juce::Timer
 {
 public:
@@ -913,7 +1624,17 @@ public:
     void paint (juce::Graphics&) override;
     void paintOverChildren (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override; // clicking anywhere else hands the keyboard back to your DAW
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
     void resized() override;
+    // the Studio's divider between the arrangement and the open track: drag it, double-click to hide the track
+    int studioSplit = 358;
+    bool splitByHand = false; // you dragged the divider: it stays where you put it (even with the drum grid open)
+    bool dockCollapsed = false, draggingSplit = false;
+    int splitDragFrom = 0;
+    juce::Rectangle<int> splitBounds() const;
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int, int) override;
@@ -923,9 +1644,11 @@ public:
 private:
     void timerCallback() override;
     void runSearch();
+public:
     void setPage (int p);
+    enum Page { Write = 0, Studio, Edit, Sound, Voice, GrainsTab };
+private:
     void applyTheme();
-    enum Page { Write = 0, Studio, Edit, Sound };
     juce::Rectangle<int> tabBounds (int i) const;
 
     struct Knob
@@ -943,14 +1666,36 @@ private:
     Segmented liveSwitch, keySwitch;
     SoundKeys keys;
     PlayButton playButton;
+    RecordButton recordButton;
     PresetBrowser presetBrowser;
     SampleView sampleView;
     DragNotes dragNotes;
     SongPanel songPanel;
     SongView songView;
     StudioView studioView;
+public:
+    // the space bar: the song on every page but Sound (Draw & sing: its section), the instrument on Sound
+    void togglePlay()
+    {
+        if (page == Voice && drawSing.isShowing()) { drawSing.togglePlaySection(); return; }
+        playButton.toggle();
+    }
+private:
     TrackEditor trackEditor;
+    VoicePage voicePage;
+    GrainsPage grainsPage;
+    std::unique_ptr<UpdateNotice> updateNotice;
+    void checkForUpdate();
+    VocalsHub vocalsHub;
+    lp::ai::AutoAdd autoAdd;
+    std::unique_ptr<lp::ai::LayerPopup> layerPopup;
+    DrawSing drawSing;
+    int vocalTab = 0; // the Vocals tab: 0 your vocals, 1 draw & sing, 2 create with AI (both through the voice helper)
+    Segmented vocalTabs { { "Your vocals", "Draw & sing", "Create with AI" }, [this] { return vocalTab; }, [this] (int i) { vocalTab = i; setPage (Voice); }, lnf.th };
+    bool voiceOn() const; // the experimental Voice page is switched on
     juce::ComboBox studioKey, studioMode;   // the song's key, at the top of the studio
+    juce::TextButton aiLayer { "AI layer" }; // the Studio: an instrument the AI plays over the sections picked
+    ArrView arrView;                         // the arrangement's zoom (bars in view)
     juce::ComboBox masterBox;               // mastering: off, or a platform's loudness
     juce::TextButton masterAB { "after" };  // hear the master, or the mix before it
     juce::Label masterInfo;                 // what the master came out at
@@ -967,7 +1712,9 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> studioKeyAtt, studioModeAtt;
     GrainView grainView;
     SourcesPanel sourcesPanel;
-    FilePill pillMidi, pillChords, pillStems, pillMix, pillHelper, pillFolder;
+    FilePill pillMidi, pillChords, pillStems, pillMix, pillHelper, pillFolder, pillExport;
+    std::unique_ptr<ExportPanel> exportPanel;
+    juce::String recNote; juce::uint32 recNoteAt = 0; // (a word about recording into a track)
     // help: the tour (the first time, and from the "?" by the logo) and the "?"s by the drag buttons
     HelpDot tourBtn { "", "" },
             hMidi { "Drag MIDI", "Every MIDI part of the song in one drag: the drums, the 808, the hook, every played part, and the chords and bass your loops play (read from them). Drop it in your DAW and each part lands on its own MIDI track, with the song's sections as markers." },
@@ -1003,9 +1750,52 @@ private:
     bool keyPressed (const juce::KeyPress&) override;
     juce::Rectangle<int> cardTimeline, cardInstrument, cardSky, cardWeather, plateMix, plateTex, plateFx;
     int page = 0;
+    static int tabPage (int tab) { static const int pages[] = { Write, Studio, Voice, GrainsTab, Sound }; return pages[juce::jlimit (0, 4, tab)]; }
+    juce::Rectangle<int> cardDock; // the Studio: the open track, under the arrangement
+    int dockPageShown = 0;
+    bool dockTall = false; // the open track's grid made bigger: the arrangement shrinks to its sections and a few lanes
+    // (the dock: 0 the sample, 1 its effects (with its volume, pan and drag), 2 its grains)
+    Segmented dockTabs { { "Sample", "Effects", "Grains" }, [this] { return dockPageShown; },
+                         [this] (int i)
+                         {
+                             if (i == 2) { grainsPage.loadTrack (trackEditor.selected()); setPage (GrainsTab); return; } // (its own page: the track loaded there)
+                             dockPageShown = i; if (i != 1) trackEditor.setDockPage (i); showDock(); repaint();
+                         }, lnf.th };
+    // effects, like a DAW's: the browser (left of the arrangement) and the open track's devices (the dock's Effects)
+    lp::fx::Browser fxBrowser { lnf.th };
+    lp::fx::Rack fxRack { proc, lnf.th };
+    bool browserOpen = false;
+    juce::TextButton fxBtn { "Effects" }, exportBtn { "Export" };
+    bool masterOpen = false; int lastDockTrack = -1; // (the master channel open in the effects dock)
+    void openMaster();
+    void setLoop (bool on);
+    void openExport();
+    std::unique_ptr<juce::Component> chainWindow;
+    void showDock();          // the dock: the track editor, or the open track's effects
+    void addFx (int track, const juce::String& id);
     bool dragging = false;
 
     juce::String cityText, headerText, nowText, statusText;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivePlanetEditor)
+};
+
+// The plugin's window: the whole of Loopwright, drawn at any size you drag the window to (it keeps its shape)
+class LivePlanetWindow : public juce::AudioProcessorEditor
+{
+public:
+    explicit LivePlanetWindow (LivePlanetProcessor&);
+    void resized() override;
+    // the app on its own: the space bar plays and stops (in a DAW, the space bar stays your DAW's)
+    bool keyPressed (const juce::KeyPress&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff0d0d10)); }
+
+private:
+    LivePlanetEditor view;
+    bool ready = false;
+    std::unique_ptr<juce::Timer> demo; // (recording tutorial videos: LP_DEMO_SCRIPT; see DemoDirector.h)
+    double lastSaved = -1.0;
+    int lastW = 0, lastH = 0;
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivePlanetWindow)
 };

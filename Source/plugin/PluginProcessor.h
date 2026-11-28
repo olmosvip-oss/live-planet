@@ -8,10 +8,13 @@
 #include "SongJob.h"
 #include "StudioPlayer.h"
 #include "LiveDrums.h"
+#include "VoiceHelper.h"
 #include "../engine/SampleFx.h"
 #include "../engine/Master.h"
 #include "../engine/Sampler.h"
+#include "../engine/GrainSynth.h"
 #include "../engine/Limiter.h"
+#include "../song/LyricMelody.h"
 
 class LivePlanetProcessor : public juce::AudioProcessor, private juce::Timer
 {
@@ -56,6 +59,25 @@ public:
     // record your voice straight in (the mic input), then it's chopped like a file
     void startRecording();
     int stopRecording (juce::String& message);
+    // the notes you play (your MIDI keyboard, or Ableton's computer keys) while Draw & sing records a melody:
+    // when (in samples from the start), which note, on / off. Read with takeMidiTake() once it stops.
+    struct TakeNote { juce::int64 pos = 0; int note = 0; float vel = 0.0f; bool on = false; };
+    void startMidiTake() { midiTakeReset = true; midiTaking = true; }
+    std::vector<TakeNote> takeMidiTake()
+    {
+        midiTaking = false;
+        std::vector<TakeNote> out;
+        int s1, n1, s2, n2;
+        midiTakeFifo.prepareToRead (midiTakeFifo.getNumReady(), s1, n1, s2, n2);
+        for (int i = 0; i < n1; ++i) out.push_back (midiTakeBuf[(size_t) (s1 + i)]);
+        for (int i = 0; i < n2; ++i) out.push_back (midiTakeBuf[(size_t) (s2 + i)]);
+        midiTakeFifo.finishedRead (n1 + n2);
+        return out;
+    }
+    std::atomic<bool> midiTaking { false }, midiTakeReset { false };
+    juce::int64 midiTakePos = 0;               // (audio thread)
+    juce::AbstractFifo midiTakeFifo { 4096 };
+    std::array<TakeNote, 4096> midiTakeBuf {};
     std::atomic<bool> recording { false };
     std::atomic<int> recPos { 0 };
     std::atomic<float> inPeak { 0.0f };
@@ -63,6 +85,13 @@ public:
     double recRate = 48000.0;
     void samplerOff();
     lp::Sampler sampler;
+    // GRAINS: the granular instrument (its own page). While that page is open, your keys play it.
+    lp::grains::Synth grainSynth;
+    std::atomic<bool> grainsActive { false };
+    std::shared_ptr<lp::grains::Source> grainSource;  // (message thread) the sound it's playing
+    lp::grains::Settings grainSettings;                // (message thread) everything set on the page
+    bool loadGrainSound (const juce::File& f);          // (message thread)
+    void sendGrainSettings() { grainSynth.setSettings (grainSettings); }
     std::atomic<bool> samplerOn { false };
     juce::SpinLock samplerInfoLock;
     juce::String samplerName, samplerInfo;     // e.g. "CK Keys 01" / "3 velocity layers, recorded at C3"
@@ -112,6 +141,25 @@ public:
     }
     // the drum editor: your computer keys or a MIDI controller play the kit (and record into the loop)
     std::atomic<int> drumKeysTrack { -1 };
+    std::atomic<bool> soundPageOpen { false }; // the instrument (the Sound page) only plays while its page is open
+    std::atomic<int> midiArmTrack { -1 };   // a MIDI track armed (its I button): your keyboard plays its sound, through the track
+
+    // ---- the Record button (next to Play in the Studio): while it's on and the song plays, the armed MIDI track
+    // records the notes you play and the armed audio track records what comes in. Stopping ends the take.
+    std::atomic<bool> recordOn { false };
+    bool songWasPlaying = false; // (audio thread)
+    std::atomic<bool> midiTakeEnded { false }; // (audio thread: playback stopped while recording)
+    struct TakeEvent { double beat = 0.0; int note = 0; float vel = 0.0f; bool on = false; };
+    juce::AbstractFifo midiRecFifo { 4096 };
+    std::array<TakeEvent, 4096> midiRecBuf {};
+    std::array<TakeEvent, 256> midiRecBlock {}; // (this block's notes, until its song position is known)
+    int midiRecBlockCount = 0;
+    std::vector<TakeEvent> midiRecHeld;        // (message thread: notes taken from the fifo so far)
+    int midiRecTrack = -1;
+    void startRecording (bool& startedPlay, juce::String& why); // message thread (the Record button)
+    void stopRecording();                                       // message thread
+    void finishMidiTake();                                      // message thread: the notes into the armed MIDI track
+    void drainMidiTake();                                       // message thread, while recording (keeps the fifo from filling)
     std::atomic<bool> drumPadsOpen { false }; // the Drum pads window takes the hits
     std::atomic<juce::uint32> drumKeysLease { 0 }; // renewed every frame while the drum editor shows
     static int drumNoteFor (int n)
@@ -135,6 +183,50 @@ public:
         liveDrums.audition (note, vel);
         notePadHit (note, vel, 0);
     }
+    // ---- Voice (experimental): the local voice helper, and a sung version heard with the song
+    lp::voice::Client voiceClient;
+    // the song's section (all tracks as you hear them) as a WAV for the helper to sing over (background thread)
+    juce::File renderSectionForVoice (int sectionIndex, int count = 1);
+    // melodies for these lyrics over those sections' chords (one per version, each its own), as the voice helper reads
+    // them. Slow (it listens to the tracks for the chords): call it off the message thread
+    juce::var writeVoiceMelodies (int sectionIndex, int count, const juce::String& lyrics, bool rap, int howMany);
+    std::vector<lp::song::lyricmelody::Line> writeVoiceLines (int sectionIndex, int count, const juce::String& lyrics, bool rap, juce::uint32 seed);
+    // your take from the mic (Voice > I sing it): `skipSeconds` in (the count-in), `seconds` long, at a good level
+    bool saveGuideTake (const juce::File& dest, double skipSeconds, double seconds, juce::String& message);
+    // Draw & sing's guide: the drawn notes played as a soft tone along with the song (seconds from its start), and a
+    // short tone for a note being placed or moved. Set from the editor; played on the audio thread.
+    struct GuideNote { double t0 = 0, t1 = 0; int pitch = 60; };
+    void setGuide (std::vector<GuideNote> notes)
+    {
+        auto fresh = std::make_unique<std::vector<GuideNote>> (std::move (notes));
+        { const juce::SpinLock::ScopedLockType sl (guideLock); std::swap (guideNotes, fresh); }
+    }   // (the old list is freed here, off the audio thread)
+    std::atomic<bool> guideOn { false };
+    void auditionNote (int pitch) { auditionPitch = pitch; ++auditionSerial; }
+    // a version playing along with the song: 48 kHz, starting at bar 1 (null = none)
+    // (offset: where in the song, in 48 kHz samples, the buffer starts: 0 = bar 1)
+    void setVoicePreview (std::shared_ptr<juce::AudioBuffer<float>> b, juce::int64 offset = 0)
+    {
+        std::shared_ptr<juce::AudioBuffer<float>> old;
+        { const juce::SpinLock::ScopedLockType sl (voicePreviewLock); old = std::move (voicePreview); voicePreview = std::move (b); voicePreviewOffset = offset; }
+    }
+    juce::int64 voicePreviewOffset = 0;
+    std::map<juce::String, juce::File> drawnFiles; // (message thread) Draw & sing's sung takes, by token, once they're in the song
+    // a phrase sung again on its own: put into the take it belongs to (the rest of the section as it is now)
+    struct DrawnMerge { std::shared_ptr<const juce::AudioBuffer<float>> base; double start = 0; std::vector<std::pair<double, double>> ranges; };
+    std::map<juce::String, DrawnMerge> drawnMerge; // (message thread) by token
+    // a short sound played once, straight away (Draw & sing: the note you're moving, in your voice); null = the tone
+    void auditionBuffer (std::shared_ptr<juce::AudioBuffer<float>> b)
+    {
+        std::shared_ptr<juce::AudioBuffer<float>> old;
+        { const juce::SpinLock::ScopedLockType sl (voicePreviewLock); old = std::move (auditionBuf); auditionBuf = std::move (b); auditionBufPos = 0; auditionBufDone = false; }
+    }
+    std::shared_ptr<juce::AudioBuffer<float>> auditionBuf;
+    int auditionBufPos = 0;
+    bool auditionBufDone = false;
+    bool hasVoicePreview() const { const juce::SpinLock::ScopedLockType sl (voicePreviewLock); return voicePreview != nullptr; }
+    juce::SpinLock voicePreviewLock;
+    std::shared_ptr<juce::AudioBuffer<float>> voicePreview;
     std::atomic<int> liveTrack { -1 };
     std::atomic<double> loopStartBeat { 0.0 }, loopBeats { 4.0 };
     void startDrumLoop (int track, double startBeat, double beats);
@@ -165,6 +257,33 @@ public:
 
     // the studio: the song's tracks with a live mixer, and a preview transport
     StudioPlayer studio;
+    // ---- the master channel: everything the song plays goes through it, before the master (loudness) or the limiter.
+    // Its volume, pan and bypass (masterMix), and its effects: the same chain as a track's (EQ, compressor, saturator,
+    // de-esser, width, delay, reverb). Live, in export and in drag mix; kept with the song
+    StudioPlayer::Mix masterMix;
+    // the play marker (where play starts, and where stop goes back to) and the song's loop (samples at the files' rate)
+    std::atomic<double> cuePos { 0.0 }, songLoopA { 0.0 }, songLoopB { 0.0 };
+    std::atomic<bool> songLoopOn { false };
+    lp::song::VocalChain getMasterChain() const { const juce::SpinLock::ScopedLockType sl (masterChainLock); return masterChainV; }
+    void setMasterChain (const lp::song::VocalChain& c)
+    {
+        const juce::SpinLock::ScopedLockType sl (masterChainLock);
+        masterChainV = c;
+        masterParamsMsg = lp::song::vocal::Params::of (c);
+        ++masterSerial;
+    }
+    void masterBus (float* L, float* R, int n, double bpm);                // (audio thread)
+    void masterBusOffline (juce::AudioBuffer<float>& song, double bpm);   // (an export: a fresh chain at the files' rate)
+    juce::String masterBusKey() const;
+    static juce::var chainToVar (const lp::song::VocalChain&);
+    static lp::song::VocalChain chainFromVar (const juce::var&);
+private:
+    mutable juce::SpinLock masterChainLock;
+    lp::song::VocalChain masterChainV;
+    lp::song::vocal::Params masterParamsMsg, masterParamsLive;
+    int masterSerial = 0, masterLiveSerial = -1;
+    lp::song::vocal::Processor masterProc;
+public:
     lp::SampleFx sampleFx;                      // the knobs, for your Splice samples
     lp::Limiter masterLimiter;                  // the song's loudness, without squashing it
 
@@ -174,6 +293,10 @@ public:
     bool masterNow (int preset);
     juce::String masterKeyNow (int preset);
     juce::File masteredFile();                  // up to date with your mix (re-mastered first if it changed)
+    juce::File mixNowFile();                    // the song as you hear it now (every edit, your mix), no master; made again when it changes
+    juce::File mixNowF;
+    juce::String mixNowKey;
+    juce::CriticalSection mixNowLock;
     juce::String masterKey;
     std::atomic<int> masterPreset { -1 };       // the one that's ready and playing
     std::atomic<bool> masterAfter { true };     // A/B: hear the master (true) or the plain mix
@@ -206,6 +329,13 @@ public:
     }
     std::vector<float> fxL, fxR, sendL, sendR, liveL, liveR;
     std::atomic<bool> previewPlaying { false };
+    juce::SpinLock guideLock;
+    std::unique_ptr<std::vector<GuideNote>> guideNotes;
+    std::atomic<int> auditionPitch { 60 }, auditionSerial { 0 };
+    int auditionSeen = 0, auditionLeft = 0, guideIdx = -1;
+    double guidePhase = 0.0, guideFreq = 0.0, guideEnv = 0.0, auditionPhase = 0.0, auditionFreq = 0.0;
+    void playGuide (float* L, float* R, int n, double songPos, double inc); // (audio thread)
+    void playAudition (float* L, float* R, int n);                          // (audio thread)
     std::atomic<double> previewPos { 0.0 };   // in 48 kHz samples
     std::atomic<double> dawBpm { 0.0 };
     juce::String songPrompt;                  // "describe your song" (message thread only)
@@ -235,6 +365,24 @@ public:
     bool wasFollowing = false;
     double lastHostPpq = -1.0, lastBlockBeats = 0.0, ppqCarry = 0.0;
     bool canRecordMic() const; // only the standalone app has a mic input
+    // ---- recording into a track: arm an audio track (its R button), press play, and what comes in is recorded
+    // from where the song is; when it stops, the take goes into the track there (replacing what was in that stretch)
+    bool armRecord (int track, juce::String& why);  // message thread
+    void disarmRecord();                              // message thread
+    void finishTrackTake();                           // message thread, once a take has ended (trackTakeReady)
+    // an audio file dropped on the Arrangement: into an audio track at a bar (it replaces what was there), or (track -1)
+    // as a new audio track starting at that bar. Works in the background; onRecordMessage says how it went.
+    void placeAudio (const juce::File& file, int track, int bar);
+    std::atomic<int> armTrack { -1 };
+    std::atomic<bool> trackRecording { false }, trackTakeReady { false };
+    std::atomic<double> trackRecStart { 0.0 };        // where the take starts (song file samples)
+    std::function<void (const juce::String&)> onRecordMessage; // (a short note for the screen)
+    juce::TimeSliceThread trackWriterThread { "Loopwright record" };
+    juce::SpinLock trackWriterLock;
+    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> trackWriter;
+    juce::File trackTakeFile;
+    double trackTakeRate = 48000.0;
+    std::vector<float> recInL, recInR;
     static BusesProperties lpBuses();
     juce::String getSampleInfo() const { return sampleInfo; }
 

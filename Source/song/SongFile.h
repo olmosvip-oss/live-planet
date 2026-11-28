@@ -54,6 +54,37 @@ inline juce::var partToVar (const Part& p)
     o->setProperty ("barFilter", bf);
     o->setProperty ("chop", ints (p.chopBars)); o->setProperty ("stutter", ints (p.stutterBars));
     o->setProperty ("gap", ints (p.gapBars)); o->setProperty ("swell", ints (p.swellBars));
+    {
+        juce::Array<juce::var> sp;
+        for (auto [a, b] : p.silent.m) { sp.add (a); sp.add (b); }
+        o->setProperty ("silentTicks", sp);
+        o->setProperty ("ticksPerBar", lp::song::kTicksPerBar);
+    }
+    o->setProperty ("splitTicks", ints (p.splitTicks));
+    if (! p.moved.empty())
+    {
+        juce::Array<juce::var> mv;
+        for (auto& c : p.moved)
+        {
+            juce::Array<juce::var> mask;
+            for (auto [a, b] : c.mask) { mask.add (a); mask.add (b); }
+            mv.add (juce::Array<juce::var> { c.dst0, c.dst1, c.src0, mask });
+        }
+        o->setProperty ("moved", mv);
+    }
+    {
+        juce::Array<juce::var> bf;
+        for (auto [to, from] : p.barFrom) { bf.add (to); bf.add (from); }
+        o->setProperty ("barFrom", bf);
+        juce::Array<juce::var> ss;
+        for (auto [slot, semis] : p.slotShift) { ss.add (slot); ss.add (semis); }
+        o->setProperty ("slotShift", ss);
+    }
+    o->setProperty ("colour", (juce::int64) p.colour);
+    o->setProperty ("group", p.group);
+    o->setProperty ("resound", p.resound);
+    o->setProperty ("midi", p.midi);
+    o->setProperty ("flipSeed", (int) p.flipSeed); o->setProperty ("flipAmount", p.flipAmount);
     juce::Array<juce::var> fx;
     for (auto& h : p.fxHits) fx.add (juce::Array<juce::var> { h.path, h.beat, h.peakOnBeat, h.gainDb });
     o->setProperty ("fxHits", fx);
@@ -125,6 +156,37 @@ inline Part partFromVar (const juce::var& v)
     for (int x : readInts (v["stutter"])) p.stutterBars.insert (x);
     for (int x : readInts (v["gap"])) p.gapBars.insert (x);
     for (int x : readInts (v["swell"])) p.swellBars.insert (x);
+    // (older songs kept whole bars)
+    for (int x : readInts (v["silent"])) p.silent.add (x * lp::song::kTicksPerBar, (x + 1) * lp::song::kTicksPerBar);
+    for (int x : readInts (v["splits"])) p.splitTicks.insert (x * lp::song::kTicksPerBar);
+    // (ticks saved at another resolution, older songs at 64 a bar: converted to today's)
+    const double tk = (double) lp::song::kTicksPerBar / (double) (int) v.getProperty ("ticksPerBar", 64);
+    auto tick = [tk] (double x) { return (int) std::llround (x * tk); };
+    {
+        const auto sp = readInts (v["silentTicks"]);
+        for (size_t i = 0; i + 1 < sp.size(); i += 2) p.silent.add (tick (sp[i]), tick (sp[i + 1]));
+    }
+    for (int x : readInts (v["splitTicks"])) p.splitTicks.insert (tick (x));
+    if (auto* mv = v["moved"].getArray())
+        for (auto& e : *mv)
+        {
+            lp::song::Part::MovedClip c;
+            c.dst0 = (double) e[0] * tk; c.dst1 = (double) e[1] * tk; c.src0 = (double) e[2] * tk;
+            if (auto* mask = e[3].getArray())
+                for (int i = 0; i + 1 < mask->size(); i += 2) c.mask.push_back ({ (double) (*mask)[i] * tk, (double) (*mask)[i + 1] * tk });
+            if (c.dst1 > c.dst0) p.moved.push_back (c);
+        }
+    {
+        const auto bf = readInts (v["barFrom"]);
+        for (size_t i = 0; i + 1 < bf.size(); i += 2) p.barFrom[bf[i]] = bf[i + 1];
+        const auto ss = readInts (v["slotShift"]);
+        for (size_t i = 0; i + 1 < ss.size(); i += 2) p.slotShift[ss[i]] = ss[i + 1];
+    }
+    p.colour = (juce::uint32) (juce::int64) v["colour"];
+    p.group = v["group"].toString();
+    p.resound = (bool) v["resound"];
+    p.midi = (bool) v["midi"];
+    p.flipSeed = (juce::uint32) (int) v["flipSeed"]; p.flipAmount = v.getProperty ("flipAmount", 2);
     if (auto* a = v["fxHits"].getArray()) for (auto& e : *a) p.fxHits.push_back ({ e[0].toString(), (double) e[1], (bool) e[2], (float) e[3] });
     p.mixDb = v["mixDb"]; p.regionStart = v["regionStart"]; p.regionBars = v["regionBars"];
     p.grainAmount = v["grainAmount"]; p.grainSizeMs = v.getProperty ("grainSizeMs", 120.0f); p.grainChaos = v["grainChaos"];

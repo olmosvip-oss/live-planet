@@ -46,6 +46,13 @@ public:
         loopLen = std::max (0.25, loopBeats);
     }
 
+    // a key let go (the computer keyboard playing an 808 or a MIDI track's sound): its note fades out
+    void release (int note)
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (pendingOff.size() < 32) pendingOff.push_back (note);
+    }
+
     void audition (int note, float vel, double seconds = 0.0)
     {
         const juce::SpinLock::ScopedLockType sl (lock);
@@ -60,6 +67,9 @@ public:
         if (! tl.isLocked()) return;
         for (auto& p : pending) start (p.note, p.vel, 0, 1.0f, p.len > 0.0 ? (int) (p.len * hostRate) : -1);
         pending.clear();
+        for (int off : pendingOff)
+            for (auto& v : voices) if (v.active && v.note == off) v.stopAt = v.stopAt < 0 ? v.age : std::min (v.stopAt, v.age);
+        pendingOff.clear();
         if (sequence && b1 > b0)
         {
             const double perSample = (b1 - b0) / n, loopEnd = loopStart + loopLen;
@@ -95,6 +105,7 @@ public:
     }
 
 private:
+    std::vector<int> pendingOff;
     struct Voice { const juce::AudioBuffer<float>* buf = nullptr; double pos = 0; float gain = 1; int delay = 0; int note = 0; bool active = false;
                    int stopAt = -1, age = 0; float env = 1.0f; };
 

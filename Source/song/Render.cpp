@@ -399,13 +399,13 @@ namespace
     }
 
     // ---------- audio files from your library
-    juce::AudioBuffer<float> loadAudio (const juce::String& path, double targetRate, double stretch = 1.0)
+    juce::AudioBuffer<float> loadAudio (const juce::String& path, double targetRate, double stretch = 1.0, double maxSeconds = 60.0)
     {
         juce::AudioFormatManager fm;
         fm.registerBasicFormats();
         std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (path)));
         if (rd == nullptr || rd->lengthInSamples <= 0) return {};
-        const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * 60.0));
+        const int len = (int) std::min<juce::int64> (rd->lengthInSamples, (juce::int64) (rd->sampleRate * maxSeconds));
         juce::AudioBuffer<float> raw (2, len);
         rd->read (&raw, 0, len, 0, true, rd->numChannels > 1);
         if (rd->numChannels == 1) raw.copyFrom (1, 0, raw, 0, 0, len);
@@ -1065,6 +1065,69 @@ juce::AudioBuffer<float> renderDrumHit (const Song& song, const Part& part, int 
     return out;
 }
 
+// A flipped sample: each bar cut into slices (16ths for drums, 8ths otherwise) and played in a new order, the way a producer
+// chops a loop so it isn't the same one everyone has: the downbeats stay put (it still grooves), other slices swap with
+// ones in the same place in the beat, some play backwards, some stutter. The pattern repeats with the loop, so it's a
+// riff, not noise. Stays in the song's time and key (slices are only moved, never re-pitched).
+static void flipSlices (juce::AudioBuffer<float>& buf, double sr, double spb, const Song& song, const Part& part)
+{
+    const bool drums = part.name.find ("drum") != std::string::npos || part.name.find ("perc") != std::string::npos;
+    const int steps = drums ? 16 : 8;
+    const double barLen = spb * 4.0, stepLen = barLen / steps;
+    const int n = buf.getNumSamples(), chans = buf.getNumChannels();
+    const float amt = juce::jlimit (1, 3, part.flipAmount) / 3.0f; // 0.33 .. 1
+    const int cycle = std::max (1, std::min (4, part.loopBars > 0 ? part.loopBars : 2)); // (the pattern repeats with the loop)
+    const juce::AudioBuffer<float> src (buf);
+    const int fade = std::max (8, (int) (0.003 * sr));
+    for (int bar = 0; bar < song.totalBars(); ++bar)
+    {
+        const int b0 = (int) std::round (bar * barLen);
+        if (b0 >= n) break;
+        // (only bars where it plays)
+        if (src.getMagnitude (0, b0, std::min ((int) barLen, n - b0)) < 1e-4f) continue;
+        juce::Random rng ((juce::int64) part.flipSeed * 7919 + (bar % cycle) * 104729);
+        std::vector<int> from ((size_t) steps);
+        std::vector<bool> back ((size_t) steps, false);
+        for (int k = 0; k < steps; ++k)
+        {
+            from[(size_t) k] = k;
+            const bool downbeat = k % (steps / 2) == 0;   // 1 and 3 stay
+            if (downbeat) continue;
+            if (rng.nextFloat() < 0.35f + 0.5f * amt)
+            {
+                // a slice from the same place in a beat (an offbeat for an offbeat), so the groove holds
+                const int per = steps / 4, pos = k % per;
+                from[(size_t) k] = rng.nextInt (4) * per + (rng.nextFloat() < 0.25f * amt ? rng.nextInt (per) : pos);
+            }
+            back[(size_t) k] = rng.nextFloat() < (drums ? 0.06f : 0.14f) * amt * 1.5f;
+        }
+        // the end of every other bar: a stutter (the slice before, repeated)
+        if (bar % 2 == 1 && rng.nextFloat() < 0.4f + 0.4f * amt)
+            for (int k = steps - (drums ? 3 : 2); k < steps; ++k) from[(size_t) k] = from[(size_t) (steps - (drums ? 4 : 3))];
+        for (int k = 0; k < steps; ++k)
+        {
+            const int d0 = b0 + (int) std::round (k * stepLen), s0 = b0 + (int) std::round (from[(size_t) k] * stepLen);
+            const int len = std::min ({ (int) std::round (stepLen), n - d0, n - s0 });
+            if (len <= 0) continue;
+            // (a fade only where the slice is cut from something else, so straight runs stay seamless)
+            const bool joinPrev = k > 0 && ! back[(size_t) k] && ! back[(size_t) k - 1] && from[(size_t) k] == from[(size_t) k - 1] + 1;
+            const bool joinNext = k + 1 < steps && ! back[(size_t) k] && ! back[(size_t) k + 1] && from[(size_t) k + 1] == from[(size_t) k] + 1;
+            for (int ch = 0; ch < chans; ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                const auto* s = src.getReadPointer (ch);
+                for (int i = 0; i < len; ++i)
+                {
+                    float g = 1.0f;
+                    if (! joinPrev && i < fade) g = (float) i / fade;
+                    if (! joinNext && len - 1 - i < fade) g = std::min (g, (float) (len - 1 - i) / fade);
+                    d[d0 + i] = (back[(size_t) k] ? s[s0 + len - 1 - i] : s[s0 + i]) * g;
+                }
+            }
+        }
+    }
+}
+
 bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs, juce::AudioBuffer<float>& buf,
                  std::function<bool()> shouldStop)
 {
@@ -1154,12 +1217,48 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
             }
         }
     }
-    else if (part.kind == PartKind::Melody && part.samplePath.isNotEmpty() && juce::String (part.name).startsWith ("vocal ("))
+    else if (part.kind == PartKind::Melody && part.samplePath.isNotEmpty()
+             && (juce::String (part.name).startsWith ("vocal (") || juce::String (part.name).startsWith ("layer (")))
     {
-        // your (tuned) vocal, from the start of the song, as you recorded it
-        auto v = loadAudio (part.samplePath, sr);
+        // your (tuned) vocal, from the start of the song, as you recorded it (the whole song long)
+        auto v = loadAudio (part.samplePath, sr, 1.0, 900.0);
+        // your pitch (- / +): moved without changing its timing; a voice keeps its own character (formants)
+        if (part.pitchSemis != 0 && v.getNumSamples() > 0)
+        {
+            const bool sung = juce::String (part.name).startsWith ("vocal (") || juce::String (part.name).containsIgnoreCase ("vocal");
+            v = stretchAndPitch (v, v.getNumSamples(), part.pitchSemis, sr, false, sung);
+        }
         const int n = std::min (v.getNumSamples(), total);
         for (int i = 0; i < n; ++i) { L[i] += v.getSample (0, i); R[i] += v.getSample (1, i); }
+    }
+    else if (part.resound && part.samplePath.isNotEmpty())
+    {
+        // "change its sound": every note (chords too) plays the one-shot, moved from its own pitch to the note's;
+        // held for the note, then let go over a short release
+        auto src = loadAudio (part.samplePath, sr);
+        const int n = src.getNumSamples();
+        if (n > 64)
+        {
+            const double root = rootNoteOf (src, sr, 60.0, part.samplePath);
+            const int rel = (int) (0.09 * sr), atk = (int) (0.003 * sr);
+            for (const auto& note : part.notes)
+            {
+                const long s0 = (long) (note.beat * spb), s1 = (long) ((note.beat + note.length) * spb);
+                const double ratio = std::pow (2.0, (note.pitch - root) / 12.0);
+                const float g = 0.55f * note.velocity;
+                double pos = 0.0;
+                for (long i = std::max (0L, s0); i < s1 + rel && i < total; ++i, pos += ratio)
+                {
+                    const int i0 = (int) pos;
+                    if (i0 + 1 >= n) break;
+                    const float f = (float) (pos - i0);
+                    float env = std::min (1.0f, (float) (i - s0) / (float) std::max (1, atk));
+                    if (i >= s1) env *= 1.0f - (float) (i - s1) / (float) rel;
+                    L[i] += (src.getSample (0, i0) + (src.getSample (0, i0 + 1) - src.getSample (0, i0)) * f) * g * env;
+                    R[i] += (src.getSample (1, i0) + (src.getSample (1, i0 + 1) - src.getSample (1, i0)) * f) * g * env;
+                }
+            }
+        }
     }
     else if (part.samplePath.isNotEmpty() && (part.kind == PartKind::Bass || (part.kind == PartKind::Melody && part.name == "hook")))
     {
@@ -1476,6 +1575,134 @@ bool renderPart (const Song& song, const Part& partIn, const RenderSettings& rs,
         buf.applyGain (1, 0, buf.getNumSamples(), std::min (1.0f, gr));
     }
     shapeForMix (song, part, buf, sr);
+    if (part.flipSeed != 0) flipSlices (buf, sr, spb, song, part);
+    // a sample that follows the song's chords: each stretch on one chord moved to that chord (its timing kept)
+    if (! part.slotShift.empty())
+    {
+        const juce::AudioBuffer<float> src (buf);
+        const double slotLen = spb * 2.0;
+        const int n = buf.getNumSamples(), pad = (int) (0.06 * sr), fade = (int) (0.012 * sr);
+        auto shiftOf = [&part] (int s) { auto f = part.slotShift.find (s); return f != part.slotShift.end() ? f->second : 0; };
+        const int slots = (int) std::ceil (n / slotLen);
+        for (int s = 0; s < slots;)
+        {
+            const int semis = shiftOf (s);
+            int e = s + 1;
+            while (e < slots && shiftOf (e) == semis) ++e;
+            if (semis != 0)
+            {
+                const int a = (int) std::round (s * slotLen), b = std::min (n, (int) std::round (e * slotLen));
+                const int a0 = std::max (0, a - pad), b0 = std::min (n, b + pad);
+                if (b > a && b0 - a0 > 64)
+                {
+                    juce::AudioBuffer<float> seg (2, b0 - a0);
+                    for (int ch = 0; ch < 2; ++ch) seg.copyFrom (ch, 0, src, std::min (ch, src.getNumChannels() - 1), a0, b0 - a0);
+                    auto moved = stretchAndPitch (seg, b0 - a0, semis, sr, false, false);
+                    for (int ch = 0; ch < 2; ++ch)
+                    {
+                        auto* d = buf.getWritePointer (ch);
+                        for (int i = a; i < b; ++i)
+                        {
+                            float w = 1.0f; // (blended in and out over a few ms where the chord changes)
+                            if (i - a < fade) w = (float) (i - a) / fade;
+                            if (b - 1 - i < fade) w = std::min (w, (float) (b - 1 - i) / fade);
+                            d[i] = d[i] * (1.0f - w) + moved.getSample (ch, i - a0) * w;
+                        }
+                    }
+                }
+            }
+            s = e;
+        }
+    }
+    // clips you copied or moved: each of those bars plays another bar's sound (from the track as it was made)
+    if (! part.barFrom.empty())
+    {
+        const juce::AudioBuffer<float> src (buf);
+        const double barLen = spb * 4.0;
+        const int n = buf.getNumSamples(), fade = (int) (0.004 * sr);
+        for (auto [to, from] : part.barFrom)
+        {
+            const int d0 = (int) std::round (to * barLen), s0 = (int) std::round (from * barLen), len = (int) std::round (barLen);
+            if (d0 < 0 || s0 < 0 || d0 >= n || s0 >= n) continue;
+            // (straight on from the bar before when that was copied from the bar before its source: no fade, seamless)
+            const bool joinPrev = part.barFrom.count (to - 1) && part.barFrom.at (to - 1) == from - 1;
+            const bool joinNext = part.barFrom.count (to + 1) && part.barFrom.at (to + 1) == from + 1;
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                const auto* s = src.getReadPointer (ch);
+                for (int i = 0; i < len && d0 + i < n && s0 + i < n; ++i)
+                {
+                    float g = 1.0f;
+                    if (! joinPrev && i < fade) g = (float) i / fade;
+                    if (! joinNext && len - 1 - i < fade) g = std::min (g, (float) (len - 1 - i) / fade);
+                    d[d0 + i] = s[s0 + i] * g;
+                }
+            }
+        }
+    }
+    // (the track as it is before the silences: the moved clips take their sound from it)
+    std::unique_ptr<juce::AudioBuffer<float>> beforeSilence;
+    if (! part.moved.empty()) beforeSilence = std::make_unique<juce::AudioBuffer<float>> (buf);
+    // the bars you deleted: silent (a short fade either side, so nothing clicks; a tail rings on a little)
+    if (! part.silent.empty())
+    {
+        // the stretches you deleted or trimmed: silent (a short fade either side, so nothing clicks)
+        const double tickLen = spb * 4.0 / lp::song::kTicksPerBar;
+        const int fade = (int) (0.006 * sr);
+        const int n = buf.getNumSamples();
+        for (auto [ta, tb] : part.silent.m)
+        {
+            const int a = juce::jlimit (0, n, (int) std::round (ta * tickLen)), b = juce::jlimit (0, n, (int) std::round (tb * tickLen));
+            if (b <= a) continue;
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                for (int i = 0; i < fade && a - fade + i >= 0; ++i) d[a - fade + i] *= 1.0f - (float) i / (float) fade;
+                for (int i = a; i < b; ++i) d[i] = 0.0f;
+                for (int i = 0; i < fade && b + i < n; ++i) d[b + i] *= (float) i / (float) fade;
+            }
+        }
+    }
+    // clips you moved off the grid (or copied): each plays its own stretch of the track, over whatever is there
+    if (beforeSilence != nullptr)
+    {
+        const double tickLen = spb * 4.0 / lp::song::kTicksPerBar;
+        const int n = buf.getNumSamples(), fade = (int) (0.004 * sr);
+        for (auto& c : part.moved)
+        {
+            const int d0 = juce::jlimit (0, n, (int) std::round (c.dst0 * tickLen)), d1 = juce::jlimit (0, n, (int) std::round (c.dst1 * tickLen));
+            const int shift = (int) std::round (c.src0 * tickLen) - (int) std::round (c.dst0 * tickLen);
+            if (d1 <= d0) continue;
+            // (the stretches silent in it, in samples of the source)
+            std::vector<std::pair<int, int>> mask;
+            for (auto [a, b] : c.mask) mask.push_back ({ (int) std::round (a * tickLen), (int) std::round (b * tickLen) });
+            auto maskGain = [&mask, fade] (int sIdx)
+            {
+                float g = 1.0f;
+                for (auto [a, b] : mask)
+                {
+                    if (sIdx >= a && sIdx < b) return 0.0f;
+                    if (sIdx < a && a - sIdx < fade) g = std::min (g, (float) (a - sIdx) / fade);
+                    if (sIdx >= b && sIdx - b < fade) g = std::min (g, (float) (sIdx - b) / fade);
+                }
+                return g;
+            };
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                const auto* src = beforeSilence->getReadPointer (ch);
+                for (int i = d0; i < d1; ++i)
+                {
+                    const int si = i + shift;
+                    float g = (si >= 0 && si < n) ? maskGain (si) : 0.0f;
+                    if (i - d0 < fade) g *= (float) (i - d0) / fade;
+                    if (d1 - 1 - i < fade) g *= (float) (d1 - 1 - i) / fade;
+                    d[i] = (si >= 0 && si < n) ? src[si] * g : 0.0f;
+                }
+            }
+        }
+    }
     return true;
 }
 

@@ -201,8 +201,9 @@ public:
     void clear() { load ({}); }
 
     // the whole song as you hear it in the studio (every track with its mixer and its own effects), for mastering
+    // (from / count: just that stretch of the song, in file samples; the result starts at `from`)
     static juce::AudioBuffer<float> bounce (const juce::Array<juce::File>& stems, const std::array<Mix, maxTracks>& mixes, double bpm,
-                                            const StudioPlayer* pumpFrom = nullptr)
+                                            const StudioPlayer* pumpFrom = nullptr, juce::int64 from = 0, juce::int64 count = -1)
     {
         juce::ScopedNoDenormals noDenormals;
         StudioPlayer p;
@@ -219,14 +220,15 @@ public:
         }
         constexpr int block = 1024;
         p.prepare (block);
-        const int total = (int) (len + (juce::int64) (fileRate * 3.0));
+        const int total = count >= 0 ? (int) std::min<juce::int64> (count, len - from) : (int) (len + (juce::int64) (fileRate * 3.0));
+        if (total <= 0) return {};
         juce::AudioBuffer<float> all (2, total), buf (2, block);
         all.clear();
         for (int pos = 0; pos < total; pos += block)
         {
             const int n = std::min (block, total - pos);
             buf.clear();
-            p.render (buf.getWritePointer (0), buf.getWritePointer (1), n, (double) pos, 1.0, fileRate, nullptr, nullptr, nullptr, nullptr, bpm);
+            p.render (buf.getWritePointer (0), buf.getWritePointer (1), n, (double) (from + pos), 1.0, fileRate, nullptr, nullptr, nullptr, nullptr, bpm);
             for (int ch = 0; ch < 2; ++ch) all.copyFrom (ch, pos, buf, ch, 0, n);
         }
         return all;

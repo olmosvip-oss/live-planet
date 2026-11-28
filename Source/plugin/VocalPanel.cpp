@@ -548,7 +548,7 @@ void VocalPanel::paintVisual (Graphics& g, Rectangle<float> v)
             g.fillRoundedRectangle (bar, 5.0f);
             const float pos = jlimit (0.0f, 1.0f, (float) (1.0 - cor) * 0.5f);
             g.setColour (col.withAlpha (alpha));
-            g.fillRoundedRectangle (bar.withWidth (std::max (6.0f, bar.getWidth() * pos * 2.0f)), 5.0f);
+            g.fillRoundedRectangle (bar.withWidth (std::max (6.0f, bar.getWidth() * pos)), 5.0f);
             ir.removeFromTop (10.0f);
             g.setFont (font (22.0f, lp::ui::Medium));
             g.setColour (t.ink);

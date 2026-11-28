@@ -104,7 +104,22 @@ inline Song rebuild (const Song& old, const std::vector<Item>& plan)
             }
         }
         part.barFilter.clear();
-        part.chopBars.clear(); part.stutterBars.clear(); part.gapBars.clear(); part.swellBars.clear();
+        part.chopBars.clear(); part.stutterBars.clear(); part.silent = {}; part.barFrom.clear(); part.splitTicks.clear(); part.slotShift.clear();
+        std::map<int, int> firstNew; // old bar -> the first new bar that plays it
+        for (int nb = 0; nb < newBars; ++nb) firstNew.emplace (fromBar[(size_t) nb], nb); part.gapBars.clear(); part.swellBars.clear();
+        // clips moved off the grid: where their bars went (dropped if their bar or their sound's bar is gone)
+        part.moved.clear();
+        for (auto c : was.moved)
+        {
+            const int T = lp::song::kTicksPerBar;
+            const int db = (int) std::floor (c.dst0 / T), sb = (int) std::floor (c.src0 / T);
+            const auto fd = firstNew.find (db), fs = firstNew.find (sb);
+            if (fd == firstNew.end() || fs == firstNew.end()) continue;
+            const double dd = (double) (fd->second - db) * T, ds = (double) (fs->second - sb) * T;
+            c.dst0 += dd; c.dst1 += dd; c.src0 += ds;
+            for (auto& m : c.mask) { m.first += ds; m.second += ds; }
+            part.moved.push_back (c);
+        }
         std::vector<int> starts;
         for (int nb = 0; nb < newBars; ++nb)
         {
@@ -112,6 +127,17 @@ inline Song rebuild (const Song& old, const std::vector<Item>& plan)
             if (auto f = was.barFilter.find (ob); f != was.barFilter.end()) part.barFilter[nb] = f->second;
             if (was.chopBars.count (ob)) part.chopBars.insert (nb);
             if (was.stutterBars.count (ob)) part.stutterBars.insert (nb);
+            {
+                // the old bar's silences and cuts, where that bar plays now
+                const int T = lp::song::kTicksPerBar, d = (nb - ob) * T;
+                for (auto [a, b] : was.silent.m)
+                    if (a < (ob + 1) * T && b > ob * T) part.silent.add (std::max (a, ob * T) + d, std::min (b, (ob + 1) * T) + d);
+                for (int t : was.splitTicks) if (t >= ob * T && t < (ob + 1) * T) part.splitTicks.insert (t + d);
+            }
+            for (int h = 0; h < 2; ++h)
+                if (auto sh = was.slotShift.find (ob * 2 + h); sh != was.slotShift.end()) part.slotShift[nb * 2 + h] = sh->second;
+            if (auto bf = was.barFrom.find (ob); bf != was.barFrom.end())
+                if (auto fn = firstNew.find (bf->second); fn != firstNew.end() && fn->second != nb) part.barFrom[nb] = fn->second;
             // drop-outs and swells lead into the next section: only where a section still ends
             bool sectionEnd = false;
             for (auto& sec : s.sections) sectionEnd = sectionEnd || nb == sec.startBar + sec.bars - 1;

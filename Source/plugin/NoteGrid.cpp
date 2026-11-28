@@ -509,6 +509,28 @@ bool NoteGrid::keyPressed (const KeyPress& k)
         changed();
         return true;
     }
+    // the computer keyboard plays the track's sound, like the drum kit's keys (an 808: low, one note at a time)
+    if (! k.getModifiers().isCommandDown() && ! k.getModifiers().isCtrlDown() && ! k.getModifiers().isAltDown())
+    {
+        if (keyOctave < 0) keyOctave = bass ? 2 : 4;
+        const auto ch = (char) std::tolower ((int) k.getTextCharacter());
+        if (ch == 'z' || ch == 'x')
+        {
+            keyOctave = jlimit (0, 7, keyOctave + (ch == 'x' ? 1 : -1));
+            proc.liveDrums.audition (12 * (keyOctave + 1), 0.6f, 0.25); // (a short blip at the new octave's C)
+            return true;
+        }
+        static const char* piano = "awsedftgyhujkolp;";
+        if (const char* at = std::strchr (piano, ch); at != nullptr && ch != 0)
+        {
+            const int code = k.getKeyCode();
+            if (heldPianoKeys.count (code)) return true; // held down: once, not over and over
+            const int pitch = jlimit (0, 127, 12 * (keyOctave + 1) + (int) (at - piano));
+            heldPianoKeys[code] = pitch;
+            proc.liveDrums.audition (pitch, k.getModifiers().isShiftDown() ? 1.0f : 0.85f, 8.0); // (held until the key is let go)
+            return true;
+        }
+    }
     return false;
 }
 
@@ -806,6 +828,14 @@ void NoteGrid::paint (Graphics& g)
     g.setColour (outside > 0 && ! (waitingForRender || dirty) ? Colour (0xfff2a33a) : t.inkDim);
     g.drawText (waitingForRender || dirty ? String ("RECORDING YOUR CHANGES...")
                 : outside > 0 ? String (outside) + String (outside == 1 ? " NOTE IS" : " NOTES ARE") + " OUTSIDE THE KEY (ORANGE): DRAG THEM UP OR DOWN TO FIX"
-                : String ("CLICK: ADD   |   DRAG: MOVE   |   DRAG ITS END: LONGER   |   DOUBLE-CLICK OR DELETE: ERASE   |   OPTION-CLICK: SLIDE   |   SHIFT-DRAG: PICK SEVERAL   |   SCROLL: UP / DOWN, SHIFT: ALONG"),
+                : String ("CLICK: ADD   |   DRAG: MOVE   |   DRAG ITS END: LONGER   |   DOUBLE-CLICK OR DELETE: ERASE   |   OPTION-CLICK: SLIDE   |   SHIFT-DRAG: PICK SEVERAL   |   KEYS A-K: PLAY, Z / X: OCTAVE"),
                 Rectangle<float> (12.0f, ga.getBottom() + 4.0f, ga.getRight() - 12.0f, 16.0f), Justification::centredLeft, true);
+}
+
+bool NoteGrid::keyStateChanged (bool)
+{
+    for (auto it = heldPianoKeys.begin(); it != heldPianoKeys.end();)
+        if (KeyPress::isKeyCurrentlyDown (it->first)) ++it;
+        else { proc.liveDrums.release (it->second); it = heldPianoKeys.erase (it); }
+    return false;
 }

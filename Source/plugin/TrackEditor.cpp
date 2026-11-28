@@ -51,7 +51,7 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     vocalBtn.setWantsKeyboardFocus (false);
     vocalBtn.onClick = [this]
     {
-        auto* top = getTopLevelComponent();
+        auto* top = lp::ui::overlayHost (this);
         if (top == nullptr) return;
         SafePointer<TrackEditor> self (this);
         vocalPanel = std::make_unique<VocalPanel> (proc, track, [self]
@@ -68,7 +68,7 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     chopBtn.setWantsKeyboardFocus (false);
     chopBtn.onClick = [this]
     {
-        auto* top = getTopLevelComponent();
+        auto* top = lp::ui::overlayHost (this);
         if (top == nullptr) return;
         SafePointer<TrackEditor> self (this);
         chopPanel = std::make_unique<ChopPanel> (proc, track, [self]
@@ -86,7 +86,7 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     tuneBtn.setWantsKeyboardFocus (false);
     tuneBtn.onClick = [this]
     {
-        auto* top = getTopLevelComponent();
+        auto* top = lp::ui::overlayHost (this);
         if (top == nullptr) return;
         SafePointer<TrackEditor> self (this);
         tunePanel = std::make_unique<TunePanel> (proc, track, [self]
@@ -104,7 +104,7 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     drumPadsBtn.setWantsKeyboardFocus (false);
     drumPadsBtn.onClick = [this]
     {
-        auto* top = getTopLevelComponent();
+        auto* top = lp::ui::overlayHost (this);
         if (top == nullptr) return;
         SafePointer<TrackEditor> self (this);
         drumPadPanel = std::make_unique<DrumPadPanel> (proc, track, [self]
@@ -118,6 +118,7 @@ TrackEditor::TrackEditor (LivePlanetProcessor& p, const lp::ui::Theme*& theme)
     };
     addChildComponent (drumPadsBtn);
     drumGrid.onToggleBig = [this] { drumBig = ! drumBig; drumGrid.setBig (drumBig); resized(); repaint(); };
+    drumGrid.setBig (drumBig);
     auto mixOf = [this] (int t) -> StudioPlayer::Mix& { return proc.studio.mix[(size_t) jlimit (0, StudioPlayer::maxTracks - 1, t)]; };
     // (with a drum picked in the drum editor, they're that drum's own settings instead)
     addDial ("volume", -30.0, 6.0, [this, mixOf] (int t) -> std::atomic<float>& { return voice >= 0 ? voiceVals[0] : mixOf (t).gainDb; }, 72);
@@ -267,7 +268,7 @@ void TrackEditor::select (int t)
     {
         const auto pv = proc.songJob.partView (track);
         using PK = lp::song::PartKind;
-        notesTrack = pv.valid && (pv.kind == PK::Bass || pv.kind == PK::Melody) && ! pv.notes.empty() && ! pv.name.startsWith ("vocal (");
+        notesTrack = pv.valid && (pv.midi || ((pv.kind == PK::Bass || pv.kind == PK::Melody) && ! pv.notes.empty() && ! pv.name.startsWith ("vocal (") && ! pv.name.startsWith ("layer (")));
     }
     // (the two editors share the live player: only the one showing loads its sounds)
     if (showingDrums()) drumGrid.load (track);
@@ -343,6 +344,8 @@ void TrackEditor::refresh()
 
 Rectangle<float> TrackEditor::screen() const
 {
+    if (dockPage == 0) return { 0.0f, 62.0f, (float) getWidth(), jmax (60.0f, (float) getHeight() - 62.0f - 32.0f) };
+    if (dockPage >= 1) return { 0.0f, 58.0f, (float) getWidth(), 0.0f };
     return { 0.0f, 70.0f, (float) getWidth(), 236.0f };
 }
 
@@ -446,14 +449,14 @@ void TrackEditor::resized()
     const bool gridBig = (showingDrums() || notesTrack) && bigNow();
     const int knobRowH = 112;
     const auto bigGrid = screen().withBottom ((float) (getHeight() - knobRowH - 14)).toNearestInt();
-    drumGrid.setBounds (drumBig ? bigGrid : screen().toNearestInt());
-    noteGrid.setBounds (noteBig ? bigGrid : screen().toNearestInt());
+    drumGrid.setBounds (drumBig && dockPage < 0 ? bigGrid : screen().toNearestInt()); // (docked: the screen is already as big as it gets)
+    noteGrid.setBounds (noteBig && dockPage < 0 ? bigGrid : screen().toNearestInt());
     sliceBtn.setBounds ((int) screen().getRight() - 150, (int) screen().getY() + 10, 138, 28);
 
     // two rows of dials: the track's sound and space, then its grains
     auto rows = gridBig ? Rectangle<int> (0, getHeight() - knobRowH, getWidth(), knobRowH * 2)
-                        : getLocalBounds().withTrimmedTop ((int) screen().getBottom() + 30);
-    const int h = gridBig ? knobRowH : rows.getHeight() / 2;
+                        : getLocalBounds().withTrimmedTop ((int) screen().getBottom() + (dockPage >= 1 ? 6 : 30));
+    const int h = gridBig ? knobRowH : dockPage >= 1 ? rows.getHeight() : rows.getHeight() / 2;
     // left of the effects: switch them off, print them into the dragged track, and the track to drag
     const int bh = gridBig ? 28 : 36; // (four buttons fit beside the knobs: bypass, fx, drag track, drag midi)
     bypassFx.setBounds (0, rows.getY() + 4, 100, bh - 6);
@@ -464,14 +467,15 @@ void TrackEditor::resized()
     hFx.setTopLeftPosition (104, rows.getY() + 4 + (bh - 6) / 2 - 8);
     {
         // by the "Grains" title (the second row)
-        const int y = (int) screen().getBottom() + 30 + (getHeight() - (int) screen().getBottom() - 30) / 2;
+        const int gap = dockPage >= 1 ? 6 : 30;
+        const int y = dockPage == 2 ? (int) screen().getBottom() + gap - 6 : (int) screen().getBottom() + gap + (getHeight() - (int) screen().getBottom() - gap) / 2;
         hGrains.setTopLeftPosition (64, y + 10);
     }
     for (int r = 0; r < 2; ++r)
     {
         std::vector<Dial*> inRow;
         for (auto& d : dials) if (d->row == r) inRow.push_back (d.get());
-        auto area = Rectangle<int> (rows.getX() + 110, rows.getY() + r * h, rows.getWidth() - 110 - (gridBig ? 70 : 0), h); // (room for the play button)
+        auto area = Rectangle<int> (rows.getX() + 110, rows.getY() + (dockPage >= 1 ? 0 : r * h), rows.getWidth() - 110 - (gridBig ? 70 : 0), h); // (room for the play button)
         const int w = area.getWidth() / std::max (1, (int) inRow.size());
         for (size_t i = 0; i < inRow.size(); ++i) inRow[i]->s.setBounds (area.getX() + (int) i * w, area.getY(), w, h);
     }
@@ -493,7 +497,7 @@ void TrackEditor::paint (Graphics& g)
     // the drum editor made bigger covers the dials: they hide until it's made smaller again
     const bool big = (showingDrums() || notesTrack) && bigNow();
     const bool isChops = ! showingDrums() && tr0name == "vocal chops";
-    const bool isTuned = ! showingDrums() && tr0name.startsWith ("vocal (tuned");
+    const bool isTuned = ! showingDrums() && track < (int) st.tracks.size() && st.tracks[(size_t) track].tunable;
     if (chopBtn.getBounds() != toolSlot (0)) chopBtn.setBounds (toolSlot (0));
     if (tuneBtn.getBounds() != toolSlot (0)) tuneBtn.setBounds (toolSlot (0));
     if (drumPadsBtn.getBounds() != toolSlot (0)) drumPadsBtn.setBounds (toolSlot (0));
@@ -524,6 +528,19 @@ void TrackEditor::paint (Graphics& g)
         else if (c == &bypassFx) want = voice < 0;
         else if (big && std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s && d->row == 1; }))
             want = false;
+        // docked: the sample view shows the screen and its tools, the sound view the dials and drag buttons
+        if (dockPage >= 0)
+        {
+            const bool screenSide = c == &drumGrid || c == &noteGrid || c == &sliceBtn || c == &vocalBtn || c == &chopBtn || c == &tuneBtn || c == &drumPadsBtn;
+            const bool soundSide = c == &bypassFx || c == &printFx || c == &dragTrack || c == &dragMidi || c == &hFx || c == &voiceChip
+                                || std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s && d->row == 0; });
+            const bool grainSide = c == &hGrains || std::any_of (dials.begin(), dials.end(), [c] (auto& d) { return c == &d->s && d->row == 1; });
+            if (dockPage == 1 && grainSide) want = false;
+            if (dockPage == 2 && soundSide) want = false;
+            if (dockPage >= 1 ? screenSide : ! screenSide && c != &prev && c != &next && c != &swap && c != &rev && c != &pitchDown
+                                                && c != &pitchUp && c != &mute && c != &solo && c != &love && c != &notThis)
+                want = false;
+        }
         if (c->isVisible() != want) c->setVisible (want);
     }
     if (track >= (int) st.tracks.size()) track = 0;
@@ -549,67 +566,70 @@ void TrackEditor::paint (Graphics& g)
 
     // ---- the screen: the sample, its bars, the part that plays
     auto sc = screen();
-    g.setColour (Colour (0xff0a0a0b));
-    g.fillRoundedRectangle (sc, 16.0f);
-    g.setColour (Colours::black);
-    g.drawRoundedRectangle (sc.reduced (1.0f), 16.0f, 2.0f);
-    auto wave = sc.reduced (24.0f, 40.0f);
-    const bool loop = tr.isLoop && tr.samplePath.isNotEmpty();
-    const auto& peaks = peaksFor (loop ? File (tr.samplePath) : tr.stem, ! loop);
-    const int L = std::max (1, tr.loopBars);
-    int rs = tr.regionStart, rb = tr.regionBars > 0 ? tr.regionBars : L;
-    if (dragFrom >= 0) { rs = std::min (dragFrom, dragTo); rb = std::abs (dragTo - dragFrom) + 1; }
-    const float x0 = wave.getX() + wave.getWidth() * (float) rs / (float) L, x1 = wave.getX() + wave.getWidth() * (float) (rs + rb) / (float) L;
-    if (loop)
+    if (dockPage < 1) // (docked, showing the dials: no screen)
     {
-        g.setColour (t.grass.withAlpha (0.14f));
-        g.fillRoundedRectangle (Rectangle<float> (x0, wave.getY() - 14.0f, x1 - x0, wave.getHeight() + 28.0f), 8.0f);
-        for (int b = 0; b <= L; ++b)
+        g.setColour (Colour (0xff0a0a0b));
+        g.fillRoundedRectangle (sc, 16.0f);
+        g.setColour (Colours::black);
+        g.drawRoundedRectangle (sc.reduced (1.0f), 16.0f, 2.0f);
+        auto wave = sc.reduced (24.0f, 40.0f);
+        const bool loop = tr.isLoop && tr.samplePath.isNotEmpty();
+        const auto& peaks = peaksFor (loop ? File (tr.samplePath) : tr.stem, ! loop);
+        const int L = std::max (1, tr.loopBars);
+        int rs = tr.regionStart, rb = tr.regionBars > 0 ? tr.regionBars : L;
+        if (dragFrom >= 0) { rs = std::min (dragFrom, dragTo); rb = std::abs (dragTo - dragFrom) + 1; }
+        const float x0 = wave.getX() + wave.getWidth() * (float) rs / (float) L, x1 = wave.getX() + wave.getWidth() * (float) (rs + rb) / (float) L;
+        if (loop)
         {
-            const float x = wave.getX() + wave.getWidth() * (float) b / (float) L;
-            g.setColour (Colours::white.withAlpha (b == 0 || b == L ? 0.0f : 0.12f));
-            g.drawVerticalLine ((int) x, wave.getY() - 14.0f, wave.getBottom() + 14.0f);
-            if (b < L)
+            g.setColour (t.grass.withAlpha (0.14f));
+            g.fillRoundedRectangle (Rectangle<float> (x0, wave.getY() - 14.0f, x1 - x0, wave.getHeight() + 28.0f), 8.0f);
+            for (int b = 0; b <= L; ++b)
             {
-                g.setFont (lp::ui::mono (9.5f, false, 0.1f));
-                g.setColour (Colours::white.withAlpha (0.4f));
-                g.drawText ("BAR " + String (b + 1), Rectangle<float> (x + 6.0f, wave.getY() - 30.0f, 80.0f, 12.0f), Justification::centredLeft, false);
+                const float x = wave.getX() + wave.getWidth() * (float) b / (float) L;
+                g.setColour (Colours::white.withAlpha (b == 0 || b == L ? 0.0f : 0.12f));
+                g.drawVerticalLine ((int) x, wave.getY() - 14.0f, wave.getBottom() + 14.0f);
+                if (b < L)
+                {
+                    g.setFont (lp::ui::mono (9.5f, false, 0.1f));
+                    g.setColour (Colours::white.withAlpha (0.4f));
+                    g.drawText ("BAR " + String (b + 1), Rectangle<float> (x + 6.0f, wave.getY() - 30.0f, 80.0f, 12.0f), Justification::centredLeft, false);
+                }
             }
         }
-    }
-    if (! peaks.empty())
-    {
-        const float mid = wave.getCentreY(), half = wave.getHeight() * 0.5f;
-        float top = 0.0f;
-        for (float v : peaks) top = std::max (top, v);
-        const float norm = top > 0.0f ? 1.0f / top : 1.0f;
-        for (size_t c = 0; c < peaks.size(); ++c)
+        if (! peaks.empty())
         {
-            const float x = wave.getX() + wave.getWidth() * (float) c / (float) peaks.size();
-            const bool inRegion = ! loop || (x >= x0 && x <= x1);
-            g.setColour (inRegion ? Colours::white.withAlpha (0.88f) : Colours::white.withAlpha (0.22f));
-            const float h = std::max (1.0f, peaks[c] * norm * half);
-            g.fillRect (x, mid - h, std::max (1.0f, wave.getWidth() / (float) peaks.size() - 0.5f), h * 2.0f);
+            const float mid = wave.getCentreY(), half = wave.getHeight() * 0.5f;
+            float top = 0.0f;
+            for (float v : peaks) top = std::max (top, v);
+            const float norm = top > 0.0f ? 1.0f / top : 1.0f;
+            for (size_t c = 0; c < peaks.size(); ++c)
+            {
+                const float x = wave.getX() + wave.getWidth() * (float) c / (float) peaks.size();
+                const bool inRegion = ! loop || (x >= x0 && x <= x1);
+                g.setColour (inRegion ? Colours::white.withAlpha (0.88f) : Colours::white.withAlpha (0.22f));
+                const float h = std::max (1.0f, peaks[c] * norm * half);
+                g.fillRect (x, mid - h, std::max (1.0f, wave.getWidth() / (float) peaks.size() - 0.5f), h * 2.0f);
+            }
+        }
+        g.setFont (lp::ui::mono (10.0f, false, 0.12f));
+        g.setColour (Colours::white.withAlpha (0.55f));
+        auto foot = sc.reduced (24.0f, 12.0f).removeFromBottom (14.0f);
+        if (loop)
+            g.drawText (rb >= L ? "PLAYING ALL " + String (L) + " BARS  \xc2\xb7  DRAG ACROSS THE BARS TO PLAY JUST A PART"
+                                : "PLAYING BARS " + String (rs + 1) + "-" + String (rs + rb) + " OF " + String (L) + "  \xc2\xb7  DOUBLE-CLICK FOR ALL OF IT",
+                        foot, Justification::centredLeft, false);
+        else
+            g.drawText (String::fromUTF8 ("THE WHOLE TRACK  \xc2\xb7  PICKING A PART WORKS ON SAMPLE LOOPS"), foot, Justification::centredLeft, false);
+        if (st.editing)
+        {
+            g.setColour (t.grassLight);
+            g.drawText ("UPDATING...", foot, Justification::centredRight, false);
         }
     }
-    g.setFont (lp::ui::mono (10.0f, false, 0.12f));
-    g.setColour (Colours::white.withAlpha (0.55f));
-    auto foot = sc.reduced (24.0f, 12.0f).removeFromBottom (14.0f);
-    if (loop)
-        g.drawText (rb >= L ? "PLAYING ALL " + String (L) + " BARS  \xc2\xb7  DRAG ACROSS THE BARS TO PLAY JUST A PART"
-                            : "PLAYING BARS " + String (rs + 1) + "-" + String (rs + rb) + " OF " + String (L) + "  \xc2\xb7  DOUBLE-CLICK FOR ALL OF IT",
-                    foot, Justification::centredLeft, false);
-    else
-        g.drawText (String::fromUTF8 ("THE WHOLE TRACK  \xc2\xb7  PICKING A PART WORKS ON SAMPLE LOOPS"), foot, Justification::centredLeft, false);
-    if (st.editing)
-    {
-        g.setColour (t.grassLight);
-        g.drawText ("UPDATING...", foot, Justification::centredRight, false);
-    }
     // the row titles
-    if (! big)
+    if (! big && (dockPage < 0 || dockPage == 2))
     {
-        const float y = sc.getBottom() + 30.0f + (float) ((getHeight() - (int) sc.getBottom() - 30) / 2);
+        const float y = dockPage == 2 ? sc.getBottom() : sc.getBottom() + 30.0f + (float) ((getHeight() - (int) sc.getBottom() - 30) / 2);
         g.setFont (font (17.0f, lp::ui::Medium));
         g.setColour (t.ink);
         g.drawText ("Grains", Rectangle<float> (0.0f, y + 6.0f, 110.0f, 24.0f), Justification::centredLeft, false);
@@ -618,9 +638,10 @@ void TrackEditor::paint (Graphics& g)
         g.drawText ("IN TIME WITH", Rectangle<float> (0.0f, y + 34.0f, 110.0f, 12.0f), Justification::centredLeft, false);
         g.drawText ("YOUR SONG", Rectangle<float> (0.0f, y + 48.0f, 110.0f, 12.0f), Justification::centredLeft, false);
         g.setColour (t.line);
-        g.drawHorizontalLine ((int) y, 0.0f, (float) getWidth());
+        if (dockPage < 0) g.drawHorizontalLine ((int) y, 0.0f, (float) getWidth());
     }
     // the remix note
+    if (dockPage >= 1) return;
     g.setFont (font (12.5f));
     g.setColour (t.inkDim);
     {

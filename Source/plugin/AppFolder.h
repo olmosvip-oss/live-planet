@@ -7,6 +7,8 @@ namespace lp
 {
 inline juce::File appFolder()
 {
+    // (recording tutorial videos: a copy of the folder, so the demo never changes your songs)
+    if (auto* d = std::getenv ("LP_APP_FOLDER")) return juce::File (juce::String (d));
     const auto music = juce::File::getSpecialLocation (juce::File::userMusicDirectory);
     auto folder = music.getChildFile ("Loopwright");
     if (! folder.exists())

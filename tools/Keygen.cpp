@@ -2,6 +2,8 @@
 //
 //   Keygen --new <folder>                 make your key pair: private.key (secret!) and public.key
 //   Keygen --make "Buyer Name" <private.key>   print a license code for a buyer
+//   Keygen --make-voices "Buyer Name" <private.key>   a "more voices" code (unlimited voices of their own)
+//   Keygen --make-jordan "email" standard|pro <private.key>   a license for Jordan's voices
 //   Keygen --check <code> <public.key>    check a code
 //
 // Build the plugin with the public key to switch licensing on:
@@ -28,6 +30,20 @@ int main (int argc, char** argv)
     {
         const auto priv = juce::File::getCurrentWorkingDirectory().getChildFile (argv[3]).loadFileAsString().trim();
         std::printf ("%s\n", lp::license::makeCode (argv[2], priv).toRawUTF8());
+        return 0;
+    }
+    if (cmd == "--make-voices" && argc > 3) // a "more voices" code (unlimited voices of your own)
+    {
+        const auto priv = juce::File::getCurrentWorkingDirectory().getChildFile (argv[3]).loadFileAsString().trim();
+        std::printf ("%s\n", lp::license::makeCode (argv[2], priv, lp::license::voicesPrefix()).toRawUTF8());
+        return 0;
+    }
+    if (cmd == "--make-jordan" && argc > 4) // a Jordan voice license: --make-jordan "email" standard|pro <private.key>
+    {
+        const juce::String tier = juce::String (argv[3]).toLowerCase();
+        if (tier != "standard" && tier != "pro") { std::printf ("tier must be standard or pro\n"); return 1; }
+        const auto priv = juce::File::getCurrentWorkingDirectory().getChildFile (argv[4]).loadFileAsString().trim();
+        std::printf ("%s\n", lp::license::makeCode (juce::String (argv[2]).trim() + "|" + tier, priv, lp::license::jordanPrefix()).toRawUTF8());
         return 0;
     }
     if (cmd == "--check" && argc > 3)

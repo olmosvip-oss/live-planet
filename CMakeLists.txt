@@ -33,6 +33,8 @@ if(LP_BUILD_PLUGIN)
 juce_add_plugin(LivePlanet
     PRODUCT_NAME "Loopwright"
     COMPANY_NAME "Loopwright"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon/icon-1024.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon/icon-256.png"
     BUNDLE_ID "com.loopwright.loopwright"
     PLUGIN_MANUFACTURER_CODE Lpwt
     PLUGIN_CODE Lpw1
@@ -53,7 +55,9 @@ juce_add_binary_data(LivePlanetAssets SOURCES
     Resources/fonts/SpaceGrotesk-Medium.ttf
     Resources/fonts/SpaceGrotesk-Bold.ttf
     Resources/fonts/SpaceMono-Regular.ttf
-    Resources/fonts/SpaceMono-Bold.ttf)
+    Resources/fonts/SpaceMono-Bold.ttf
+    Resources/voices/jordan.jpg
+    Resources/voices/tag.wav)
 
 target_sources(LivePlanet PRIVATE
     ${LP_ENGINE_SOURCES}
@@ -64,10 +68,18 @@ target_sources(LivePlanet PRIVATE
     Source/plugin/DrumGrid.cpp
     Source/plugin/NoteGrid.cpp
     Source/plugin/Help.cpp
+    Source/plugin/Export.cpp
     Source/plugin/VocalPanel.cpp
     Source/plugin/ChopPanel.cpp
     Source/plugin/TunePanel.cpp
     Source/plugin/DrumPadPanel.cpp
+    Source/plugin/VoicePage.cpp
+    Source/plugin/VocalsHub.cpp
+    Source/plugin/AiTools.cpp
+    Source/plugin/VoiceCards.cpp
+    Source/plugin/GrainsPage.cpp
+    Source/plugin/Effects.cpp
+    Source/plugin/DrawSing.cpp
     Source/plugin/GrainView.cpp
     Source/plugin/SourcesPanel.cpp
     Source/plugin/WeatherService.cpp)
@@ -110,6 +122,9 @@ set(LOOPWRIGHT_PUBLIC_KEY "" CACHE STRING "public key for license codes (empty =
 if(LOOPWRIGHT_PUBLIC_KEY)
     target_compile_definitions(LivePlanet PRIVATE LOOPWRIGHT_PUBLIC_KEY="${LOOPWRIGHT_PUBLIC_KEY}")
 endif()
+# which build this is (the release number, 0.9.<build>): the app says when a newer one is out (0 = a test build: it doesn't ask)
+set(LOOPWRIGHT_BUILD "0" CACHE STRING "build number (the release's run number)")
+target_compile_definitions(LivePlanet PRIVATE LOOPWRIGHT_BUILD=${LOOPWRIGHT_BUILD})
 # where "Buy" in the license window goes (your store's checkout page)
 set(LOOPWRIGHT_BUY_URL "" CACHE STRING "checkout page for the Buy button (empty = no Buy button)")
 if(LOOPWRIGHT_BUY_URL)
@@ -121,6 +136,13 @@ juce_add_console_app(Keygen PRODUCT_NAME "Keygen")
 target_sources(Keygen PRIVATE tools/Keygen.cpp)
 target_compile_definitions(Keygen PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(Keygen PRIVATE juce::juce_core juce::juce_cryptography PUBLIC juce::juce_recommended_config_flags)
+
+# finds the hidden tag in a song's vocal (for you, the seller; not shipped)
+juce_add_console_app(Watermark PRODUCT_NAME "Watermark")
+target_sources(Watermark PRIVATE tools/WatermarkTool.cpp)
+target_compile_definitions(Watermark PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(Watermark PRIVATE juce::juce_audio_formats juce::juce_audio_basics juce::juce_cryptography
+    PUBLIC juce::juce_recommended_config_flags)
 
 juce_add_console_app(RenderDemo PRODUCT_NAME "RenderDemo")
 target_sources(RenderDemo PRIVATE tools/RenderDemo.cpp ${LP_ENGINE_SOURCES})

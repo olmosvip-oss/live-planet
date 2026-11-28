@@ -53,6 +53,9 @@ jobs:
             EXTRA+=("-DLOOPWRIGHT_BUY_URL=${BUY:-https://loop-wright.com/api/checkout}")
             echo "licensed build"
           fi
+          if [[ "${{ github.ref }}" == refs/tags/v* || "${{ github.ref }}" == refs/heads/release ]]; then
+            EXTRA+=("-DLOOPWRIGHT_BUILD=${{ github.run_number }}") # (the release is 0.9.<this>: the app knows which it is)
+          fi
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "${EXTRA[@]}"
 
       - name: Build
@@ -123,7 +126,21 @@ jobs:
         shell: pwsh
         run: |
           $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
-          if (-not (Test-Path $nsis)) { choco install nsis --no-progress -y; }
+          if (-not (Test-Path $nsis)) {
+            # (allowed to fail: when the package site is down, NSIS's own download below is used instead)
+            $ErrorActionPreference = 'Continue'
+            $PSNativeCommandUseErrorActionPreference = $false
+            try { choco install nsis --no-progress -y } catch { Write-Host "choco failed: $_" }
+            $ErrorActionPreference = 'Stop'
+          }
+          if (-not (Test-Path $nsis)) {
+            # (the package site can be down: NSIS's own download instead)
+            # (curl, as a download tool: SourceForge hands browsers and PowerShell a web page instead of the file)
+            curl.exe -fL --retry 5 --retry-delay 5 -A "Wget/1.21" -o nsis.zip "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10.zip"
+            if ($LASTEXITCODE -ne 0) { curl.exe -fL --retry 5 --retry-delay 5 -A "Wget/1.21" -o nsis.zip "https://sourceforge.net/projects/nsis/files/NSIS%203/3.10/nsis-3.10.zip/download" }
+            Expand-Archive nsis.zip -DestinationPath nsis-tool -Force
+            $nsis = (Get-ChildItem nsis-tool -Recurse -Filter makensis.exe | Select-Object -First 1).FullName
+          }
           New-Item -ItemType Directory -Force package | Out-Null
           & $nsis "/DAPPVERSION=0.9.${{ github.run_number }}" "/DSRC=$PWD\dist" "/DOUTDIR=$PWD\package" packaging\windows\loopwright.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

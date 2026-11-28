@@ -1,5 +1,7 @@
+#include <typeinfo>
 #include "PluginEditor.h"
 #include "License.h"
+#include "DemoDirector.h"
 #include "BinaryData.h"
 #include "../song/Prompt.h"
 
@@ -93,6 +95,17 @@ LivePlanetLookAndFeel::LivePlanetLookAndFeel()
     applyThemeColours();
 }
 
+// labels and drop-downs (the settings window's): the plugin's own font
+// (only inside the standalone's Audio/MIDI settings: everything else keeps the fonts it sets itself)
+static bool inAudioSettings (Component& c)
+{
+    for (auto* p = c.getParentComponent(); p != nullptr; p = p->getParentComponent())
+        if (String (typeid (*p).name()).contains ("AudioDeviceSelector")) return true;
+    return false;
+}
+Font LivePlanetLookAndFeel::getLabelFont (Label& l) { return inAudioSettings (l) ? lp::ui::font (14.0f) : LookAndFeel_V4::getLabelFont (l); }
+Font LivePlanetLookAndFeel::getComboBoxFont (ComboBox& c) { return inAudioSettings (c) ? lp::ui::font (14.0f) : LookAndFeel_V4::getComboBoxFont (c); }
+
 void LivePlanetLookAndFeel::applyThemeColours()
 {
     // (a touch see-through: the menu windows then get their rounded corners)
@@ -116,6 +129,23 @@ void LivePlanetLookAndFeel::applyThemeColours()
     setColour (TooltipWindow::outlineColourId, th->line);
     setColour (BubbleComponent::backgroundColourId, panel);
     setColour (ComboBox::backgroundColourId, Colours::transparentBlack);
+    // the standalone app's Audio/MIDI settings window (JUCE's own) in the plugin's look too
+    setColour (ResizableWindow::backgroundColourId, th->bodyDark.interpolatedWith (Colour (0xff0d0d11), 0.6f));
+    setColour (DocumentWindow::textColourId, th->ink);
+    setColour (ComboBox::outlineColourId, th->line.brighter (0.3f));
+    setColour (ComboBox::textColourId, th->ink);
+    setColour (ComboBox::arrowColourId, th->grassLight);
+    setColour (ComboBox::focusedOutlineColourId, th->grass);
+    setColour (Label::textColourId, th->ink.withAlpha (0.75f));
+    setColour (ListBox::backgroundColourId, Colours::black.withAlpha (0.28f));
+    setColour (ListBox::outlineColourId, th->line);
+    setColour (ListBox::textColourId, th->ink);
+    setColour (ToggleButton::textColourId, th->ink);
+    setColour (ToggleButton::tickColourId, Colours::white);
+    setColour (ToggleButton::tickDisabledColourId, th->line.brighter (0.6f));
+    setColour (ScrollBar::thumbColourId, th->grass.withAlpha (0.5f));
+    setColour (TextButton::buttonColourId, th->bodyDark.brighter (0.15f));
+    setColour (TextButton::textColourOffId, th->ink);
 }
 
 void LivePlanetLookAndFeel::drawCallOutBoxBackground (CallOutBox&, Graphics& g, const Path& path, Image&)
@@ -323,8 +353,45 @@ void LivePlanetLookAndFeel::drawButtonBackground (Graphics& g, Button& b, const 
     auto r = b.getLocalBounds().toFloat().reduced (1.0f);
     const bool primary = (bool) b.getProperties().getWithDefault ("primary", false);
     const float rad = r.getHeight() * 0.5f;
+    if ((bool) b.getProperties().getWithDefault ("ai", false))
+    {
+        // sleek: dark glass with a fine edge that fades from the theme colour into a soft rose; a touch lighter on hover
+        const float a = b.isEnabled() ? 1.0f : 0.45f;
+        auto body = r.reduced (1.5f);
+        const float rr = body.getHeight() * 0.5f;
+        g.setColour (Colours::white.withAlpha (a * (down ? 0.05f : over ? 0.10f : 0.06f)));
+        g.fillRoundedRectangle (body, rr);
+        ColourGradient sheen (Colours::white.withAlpha (0.07f * a), 0.0f, body.getY(), Colours::white.withAlpha (0.0f), 0.0f, body.getCentreY(), false);
+        g.setGradientFill (sheen);
+        g.fillRoundedRectangle (body.reduced (1.0f), rr - 1.0f);
+        ColourGradient edge (th->grassLight.withAlpha ((over ? 0.95f : 0.7f) * a), body.getX(), body.getCentreY(),
+                             Colour (0xfff08aa8).withAlpha ((over ? 0.85f : 0.55f) * a), body.getRight(), body.getCentreY(), false);
+        g.setGradientFill (edge);
+        g.drawRoundedRectangle (body.reduced (0.5f), rr, 1.2f);
+        return;
+    }
+    if ((bool) b.getProperties().getWithDefault ("glass", false))
+    {
+        // on glass: a clear pill with a fine light rim (faint when it can't be used)
+        const float en = b.isEnabled() ? 1.0f : 0.35f;
+        if (primary)
+        {
+            // picked: the theme colour, softly, under the glass
+            g.setColour (th->grass.withAlpha (en * (over ? 0.85f : 0.7f)));
+            g.fillRoundedRectangle (r, rad);
+            g.setColour (Colours::white.withAlpha (0.25f * en));
+            g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
+            return;
+        }
+        g.setColour (Colours::white.withAlpha (en * (down ? 0.04f : over ? 0.11f : 0.06f)));
+        g.fillRoundedRectangle (r, rad);
+        g.setColour (Colours::white.withAlpha (en * (over ? 0.22f : 0.13f)));
+        g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
+        return;
+    }
     if (primary)
     {
+        // the main action: a solid pill in the theme colour (paler when it can't be used yet)
         g.setColour ((b.isEnabled() ? th->grass : th->grass.withSaturation (0.2f)).brighter (over ? 0.12f : 0.0f).darker (down ? 0.15f : 0.0f));
         g.fillRoundedRectangle (r, rad);
         return;
@@ -344,8 +411,31 @@ void LivePlanetLookAndFeel::drawButtonBackground (Graphics& g, Button& b, const 
 void LivePlanetLookAndFeel::drawButtonText (Graphics& g, TextButton& b, bool, bool)
 {
     const bool primary = (bool) b.getProperties().getWithDefault ("primary", false);
+    if ((bool) b.getProperties().getWithDefault ("ai", false))
+    {
+        // a sparkle, then the words
+        const auto f = font (b.getHeight() >= 34 ? 15.0f : 13.5f, lp::ui::Medium);
+        const float tw = GlyphArrangement::getStringWidth (f, b.getButtonText());
+        const float s = f.getHeight() * 0.36f, gap = 7.0f;
+        const float x0 = ((float) b.getWidth() - (tw + 2.0f * s + gap)) * 0.5f, cy = (float) b.getHeight() * 0.5f;
+        Path star;
+        const float cx = x0 + s;
+        star.startNewSubPath (cx, cy - s);
+        star.quadraticTo (cx, cy, cx + s, cy);
+        star.quadraticTo (cx, cy, cx, cy + s);
+        star.quadraticTo (cx, cy, cx - s, cy);
+        star.quadraticTo (cx, cy, cx, cy - s);
+        star.closeSubPath();
+        g.setGradientFill (ColourGradient (th->grassLight, cx - s, cy - s, Colour (0xfff08aa8), cx + s, cy + s, false));
+        g.fillPath (star);
+        g.fillEllipse (cx + s * 0.9f, cy - s * 1.15f, s * 0.45f, s * 0.45f);
+        g.setColour (Colours::white.withAlpha (b.isEnabled() ? 0.95f : 0.5f));
+        g.setFont (f);
+        g.drawText (b.getButtonText(), Rectangle<float> (x0 + 2.0f * s + gap, 0.0f, tw + 4.0f, (float) b.getHeight()), Justification::centredLeft, false);
+        return;
+    }
     g.setFont (font (primary ? 15.0f : 13.0f, lp::ui::Medium));
-    g.setColour (primary ? Colours::white : th->ink);
+    g.setColour ((primary ? Colours::white : th->ink).withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.35f));
     g.drawText (b.getButtonText(), b.getLocalBounds(), Justification::centred, false);
 }
 
@@ -556,11 +646,23 @@ void PlayButton::paint (Graphics& g)
     }
 }
 
-void PlayButton::mouseUp (const MouseEvent&)
+void PlayButton::toggle()
 {
     if (songMode && songMode())
     {
-        if (proc.studio.length() > 0) proc.previewPlaying = ! proc.previewPlaying.load();
+        if (proc.studio.length() > 0)
+        {
+            // play starts at the marker (where you last clicked the bars), or the loop's start when the marker is outside it;
+            // stop goes back to the marker
+            double at = proc.cuePos.load();
+            const double la = proc.songLoopA.load(), lb = proc.songLoopB.load();
+            const bool start = ! proc.previewPlaying.load();
+            if (start && proc.songLoopOn.load() && lb > la && (at < la || at >= lb)) at = la;
+            if (! start) proc.previewPlaying = false;
+            proc.previewPos = at;
+            proc.playheadPos = at;
+            if (start) proc.previewPlaying = true;
+        }
         repaint();
         return;
     }
@@ -573,6 +675,46 @@ void PlayButton::mouseUp (const MouseEvent&)
         p->endChangeGesture();
     }
     repaint();
+}
+
+void RecordButton::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (2.0f);
+    const bool on = proc.recordOn.load();
+    const bool over = isMouseOver();
+    const Colour red (0xffff4d5e);
+    if (on)
+    {
+        // recording: a red disc that breathes
+        const float pulse = 0.5f + 0.5f * std::sin ((float) Time::getMillisecondCounter() * 0.006f);
+        g.setColour (red.withAlpha (0.25f + 0.2f * pulse));
+        g.fillEllipse (r.expanded (1.0f));
+        g.setColour (red);
+        g.fillEllipse (r.reduced (3.0f));
+    }
+    else
+    {
+        g.setColour (Colours::white.withAlpha (over ? 0.16f : 0.08f));
+        g.fillEllipse (r);
+        g.setColour (Colours::white.withAlpha (0.18f));
+        g.drawEllipse (r, 1.0f);
+        g.setColour (red.withAlpha (over ? 1.0f : 0.85f));
+        g.fillEllipse (r.withSizeKeepingCentre (r.getWidth() * 0.38f, r.getHeight() * 0.38f));
+    }
+}
+
+void RecordButton::toggle()
+{
+    if (proc.recordOn.load()) proc.stopRecording();
+    else
+    {
+        bool startedPlay = false;
+        String why;
+        proc.startRecording (startedPlay, why);
+        if (why.isNotEmpty() && onProblem) onProblem (why);
+    }
+    repaint();
+    if (auto* p = getParentComponent()) p->repaint();
 }
 
 //==============================================================================
@@ -1120,7 +1262,7 @@ void SongPanel::paint (Graphics& g)
 void SongPanel::showActivate (const String& message)
 {
     // over the whole plugin window
-    auto* top = getTopLevelComponent();
+    auto* top = lp::ui::overlayHost (this);
     if (top == nullptr) return;
     SafePointer<SongPanel> self (this);
     licensePanel = std::make_unique<LicensePanel> ([self]
@@ -1192,6 +1334,9 @@ void SongPanel::mouseUp (const MouseEvent& e)
         m.addItem (PopupMenu::Item (open.haveSong ? "Rename \"" + open.song.title + "\"..." : String ("Rename Song...")).setID (3).setEnabled (open.haveSong && ! busy));
         m.addSeparator();
         m.addItem (1, "Storage & cleanup...");
+        m.addSeparator();
+        m.addItem (PopupMenu::Item (lp::voice::helperCanRunHere() ? "Voice page (experimental)"
+                                                                   : "Voice page (experimental, Apple Silicon Macs only)").setID (4).setTicked ((bool) lp::setting ("voiceLab", false)));
         SafePointer<SongPanel> self (this);
         m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (songsLink.toNearestInt())), [self, recent] (int id)
         {
@@ -1208,6 +1353,13 @@ void SongPanel::mouseUp (const MouseEvent& e)
                     if (f.existsAsFile()) f = f.getParentDirectory(); // (song.json or any file inside it)
                     if (f.getChildFile ("song.json").existsAsFile()) self->proc.songJob.openSong (f);
                 });
+                return;
+            }
+            if (id == 4)
+            {
+                // the experimental Voice page: a fifth tab (it needs the voice helper running on this computer)
+                lp::setSetting ("voiceLab", ! (bool) lp::setting ("voiceLab", false));
+                if (auto* ed = self->findParentComponentOfClass<LivePlanetEditor>()) { ed->setPage (LivePlanetEditor::Write); ed->repaint(); }
                 return;
             }
             if (id == 3)
@@ -1228,7 +1380,7 @@ void SongPanel::mouseUp (const MouseEvent& e)
             }
             if (id == 1)
             {
-                auto* top = self->getTopLevelComponent();
+                auto* top = lp::ui::overlayHost (self.getComponent());
                 if (top == nullptr) return;
                 self->storagePanel = std::make_unique<StoragePanel> (self->proc.songJob.getStatus().files.folder, [self]
                 {
@@ -1272,12 +1424,23 @@ void SongPanel::mouseUp (const MouseEvent& e)
 
 SongView::SongView (LivePlanetProcessor& p) : proc (p)
 {
-    for (auto* b : { &addBtn, &dupBtn, &removeBtn, &undoBtn, &rebuildBtn })
+    for (auto* b : { &addBtn, &dupBtn, &removeBtn, &undoBtn, &rebuildBtn, &layerBtn })
     {
         b->setWantsKeyboardFocus (false);
         b->setMouseClickGrabsKeyboardFocus (false);
         addChildComponent (b);
     }
+    layerBtn.getProperties().set ("primary", true);
+    layerBtn.setTooltip ("An instrument played by the AI over the sections you picked (shift-click for more): drums, bass, guitar, keys, strings...");
+    layerBtn.onClick = [this]
+    {
+        std::vector<int> pk (picked.begin(), picked.end());
+        if (pk.empty() && selected >= 0) pk.push_back (selected);
+        if (pk.empty()) for (int i = 0; i < (int) draft.size(); ++i) pk.push_back (i); // (none picked: the whole song)
+        if (pk.empty() || dirty || waiting || ! onLayer) return;
+        const int a = *std::min_element (pk.begin(), pk.end()), b = *std::max_element (pk.begin(), pk.end());
+        onLayer (a, b - a + 1); // (from the first picked to the last, in one stretch)
+    };
     rebuildBtn.getProperties().set ("primary", true);
     addBtn.setTooltip ("add a section (a verse, a chorus, a drop...) after the one you picked");
     dupBtn.setTooltip ("play the section you picked twice");
@@ -1288,14 +1451,23 @@ SongView::SongView (LivePlanetProcessor& p) : proc (p)
     {
         if (selected < 0 || selected >= (int) draft.size()) return;
         draft.insert (draft.begin() + selected + 1, draft[(size_t) selected]);
-        ++selected; dirty = true; lastShapeEdit = Time::getMillisecondCounter(); repaint();
+        ++selected; pickOnly (selected); dirty = true; lastShapeEdit = Time::getMillisecondCounter(); repaint();
     };
     removeBtn.onClick = [this]
     {
-        if (selected < 0 || selected >= (int) draft.size() || draft.size() <= 1) return;
-        draft.erase (draft.begin() + selected);
-        selected = std::min (selected, (int) draft.size() - 1); dirty = true; lastShapeEdit = Time::getMillisecondCounter(); repaint();
+        // every section picked comes out (one always stays)
+        std::vector<int> out (picked.begin(), picked.end());
+        if (out.empty() && selected >= 0) out.push_back (selected);
+        std::sort (out.rbegin(), out.rend());
+        bool any = false;
+        for (int i : out)
+            if (i >= 0 && i < (int) draft.size() && draft.size() > 1) { draft.erase (draft.begin() + i); any = true; }
+        if (! any) return;
+        selected = draft.empty() ? -1 : std::min (out.back(), (int) draft.size() - 1);
+        pickOnly (selected);
+        dirty = true; lastShapeEdit = Time::getMillisecondCounter(); repaint();
     };
+    setWantsKeyboardFocus (true);
     undoBtn.onClick = [this] { dirty = false; version = -1; refresh(); };
     rebuildBtn.onClick = [this]
     {
@@ -1315,14 +1487,18 @@ void SongView::refresh()
         draft = lp::song::arrange::planOf (st.song);
         waiting = false;
         if (selected >= (int) draft.size()) selected = -1;
+        for (auto it = picked.begin(); it != picked.end();) it = *it >= (int) draft.size() ? picked.erase (it) : std::next (it);
     }
     // your new shape is made by itself a moment after you stop changing it (not while you're still dragging)
     if (dirty && ! waiting && drag == Drag::None && Time::getMillisecondCounter() - lastShapeEdit > 1100)
         rebuildBtn.onClick();
     const bool edit = st.haveSong;
     for (auto* b : { &addBtn, &dupBtn, &removeBtn }) if (b->isVisible() != edit) b->setVisible (edit);
+    if (layerBtn.isVisible()) layerBtn.setVisible (false); // (the Studio shows its own "AI layer" button, by the title)
+    layerBtn.setEnabled ((selected >= 0 || ! picked.empty()) && ! dirty && ! waiting);
     dupBtn.setEnabled (selected >= 0);
-    removeBtn.setEnabled (selected >= 0 && draft.size() > 1);
+    removeBtn.setEnabled ((selected >= 0 || ! picked.empty()) && draft.size() > 1);
+    removeBtn.setButtonText (picked.size() > 1 ? "remove " + String ((int) picked.size()) : String ("remove"));
     if (rebuildBtn.isVisible()) rebuildBtn.setVisible (false); // (it rebuilds by itself now)
     if (undoBtn.isVisible() != (edit && dirty)) undoBtn.setVisible (edit && dirty);
     repaint();
@@ -1331,9 +1507,21 @@ void SongView::refresh()
 void SongView::resized()
 {
     auto head = getLocalBounds().reduced (8, 4).removeFromTop (24);
-    for (auto* b : { &rebuildBtn, &undoBtn, &removeBtn, &dupBtn, &addBtn })
+    if (ruler)
     {
-        const int w = b == &rebuildBtn ? 120 : b == &addBtn ? 92 : 80;
+        // the Studio: the section tools in a row from the left, over the sections they work on
+        for (auto* b : { &addBtn, &dupBtn, &removeBtn, &undoBtn, &rebuildBtn })
+        {
+            const int w = b == &rebuildBtn ? 120 : b == &addBtn ? 92 : b == &layerBtn ? 104 : 84;
+            b->setBounds (head.removeFromLeft (w).withSizeKeepingCentre (w, 24));
+            head.removeFromLeft (6);
+        }
+        return;
+    }
+    for (auto* b : { &rebuildBtn, &undoBtn, &removeBtn, &dupBtn, &addBtn, &layerBtn })
+    {
+        if (b == &layerBtn && ! ruler) continue;
+        const int w = b == &rebuildBtn ? 120 : b == &addBtn ? 92 : b == &layerBtn ? 104 : 80;
         b->setBounds (head.removeFromRight (w).withSizeKeepingCentre (w, 24));
         head.removeFromRight (6);
     }
@@ -1343,6 +1531,7 @@ Rectangle<float> SongView::lane() const
 {
     auto r = getLocalBounds().toFloat().reduced (8.0f, 4.0f);
     r.removeFromTop (22.0f);
+    if (ruler) return r.withTrimmedTop (4.0f); // (every section full height)
     auto l = r.withTrimmedTop (8.0f);
     return l.withTrimmedTop (std::max (0.0f, l.getHeight() - 96.0f));
 }
@@ -1360,6 +1549,13 @@ Rectangle<float> SongView::blockRect (int i) const
     int start = 0;
     for (int k = 0; k < i; ++k) start += draft[(size_t) k].bars;
     const float total = (float) totalDraftBars();
+    if (ruler && view != nullptr)
+    {
+        // (zoomed: the bars in view, lined up with the lanes)
+        const int tb = totalDraftBars();
+        const float x0 = view->xOf (start, l.getX(), l.getWidth(), tb), x1 = view->xOf (start + draft[(size_t) i].bars, l.getX(), l.getWidth(), tb);
+        return { x0 + 1.0f, l.getY(), x1 - x0 - 2.0f, l.getHeight() };
+    }
     const float x0 = l.getX() + l.getWidth() * (float) start / total, x1 = l.getX() + l.getWidth() * (float) (start + draft[(size_t) i].bars) / total;
     return { x0 + 2.0f, l.getY(), x1 - x0 - 4.0f, l.getHeight() };
 }
@@ -1447,21 +1643,34 @@ void SongView::mouseDown (const MouseEvent& e)
                 proc.songJob.varySection (i, r - 1);
             });
             selected = i;
+            pickOnly (i);
             repaint();
             return;
         }
         return;
     }
+    setWantsKeyboardFocus (true); // (the window turns it off for everything but text boxes; Delete needs it here)
+    grabKeyboardFocus();
+    const bool more = e.mods.isShiftDown() || e.mods.isCommandDown();
     for (int i = 0; i < (int) draft.size(); ++i)
     {
         const auto r = blockRect (i);
         if (e.position.y < r.getY()) continue;
+        if (more && e.position.x >= r.getX() && e.position.x <= r.getRight())
+        {
+            // shift-click: add it to the sections picked (or take it out again)
+            if (picked.count (i) > 0) picked.erase (i); else picked.insert (i);
+            selected = picked.empty() ? -1 : i;
+            refresh();
+            return;
+        }
         if (std::abs (e.position.x - r.getRight()) < 7.0f) { drag = Drag::Resize; dragIndex = i; selected = i; break; }
         if (e.position.x >= r.getX() && e.position.x <= r.getRight()) { drag = Drag::Move; dragIndex = i; selected = i; break; }
     }
     if (drag == Drag::None) selected = -1;
+    pickOnly (selected);
     dragStartX = e.position.x;
-    pxPerBarAtStart = lane().getWidth() / (float) totalDraftBars();
+    pxPerBarAtStart = lane().getWidth() / (float) (ruler && view != nullptr ? view->shown (totalDraftBars()) : totalDraftBars());
     if (dragIndex >= 0 && dragIndex < (int) draft.size()) dragOrigBars = draft[(size_t) dragIndex].bars;
     refresh();
 }
@@ -1481,18 +1690,44 @@ void SongView::mouseDrag (const MouseEvent& e)
         if (dragIndex + 1 < (int) draft.size() && e.position.x > blockRect (dragIndex + 1).getCentreX())
         {
             std::swap (draft[(size_t) dragIndex], draft[(size_t) dragIndex + 1]);
-            ++dragIndex; selected = dragIndex; dirty = true; lastShapeEdit = Time::getMillisecondCounter();
+            ++dragIndex; selected = dragIndex; pickOnly (selected); dirty = true; lastShapeEdit = Time::getMillisecondCounter();
         }
         else if (dragIndex > 0 && e.position.x < blockRect (dragIndex - 1).getCentreX())
         {
             std::swap (draft[(size_t) dragIndex], draft[(size_t) dragIndex - 1]);
-            --dragIndex; selected = dragIndex; dirty = true; lastShapeEdit = Time::getMillisecondCounter();
+            --dragIndex; selected = dragIndex; pickOnly (selected); dirty = true; lastShapeEdit = Time::getMillisecondCounter();
         }
         repaint();
     }
 }
 
 void SongView::mouseUp (const MouseEvent&) { drag = Drag::None; refresh(); }
+
+void SongView::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
+{
+    const auto l = lane();
+    if (ruler && view != nullptr && view->wheel (e, w, l.getX(), l.getWidth(), totalDraftBars())) return;
+    Component::mouseWheelMove (e, w);
+}
+
+void SongView::mouseMagnify (const MouseEvent& e, float scale)
+{
+    const auto l = lane();
+    if (ruler && view != nullptr && scale > 0.0f)
+        view->zoom (1.0 / scale, view->barAt (e.position.x, l.getX(), l.getWidth(), totalDraftBars()), totalDraftBars());
+}
+
+// delete or backspace: the sections picked come out
+bool SongView::keyPressed (const KeyPress& k)
+{
+    if ((k == KeyPress::deleteKey || k == KeyPress::backspaceKey) && proc.songJob.getStatus().haveSong && ! waiting)
+    {
+        removeBtn.onClick();
+        refresh();
+        return true;
+    }
+    return false;
+}
 
 void SongView::paint (Graphics& g)
 {
@@ -1534,8 +1769,9 @@ void SongView::paint (Graphics& g)
     const bool busy = st.stage == SongJob::Stage::Writing || st.stage == SongJob::Stage::Rendering || st.stage == SongJob::Stage::Listening;
     g.setFont (lp::ui::mono (10.5f, false, 0.12f));
     g.setColour (dirty ? th.grassLight : th.inkDim);
-    g.drawText (String (CharPointer_UTF8 ((busy ? st.message : title).toUpperCase().toRawUTF8())), head.withTrimmedRight (st.haveSong ? 500.0f : 0.0f),
-                Justification::centredLeft, true);
+    if (! ruler || busy || dirty || waiting) // (the Studio's ruler: just the sections and their buttons)
+        g.drawText (String (CharPointer_UTF8 ((busy ? st.message : title).toUpperCase().toRawUTF8())),
+                    ruler ? head.withTrimmedLeft (500.0f) : head.withTrimmedRight (st.haveSong ? 330.0f : 0.0f), ruler ? Justification::centredRight : Justification::centredLeft, true);
 
     if (blocks.empty() || totalBars == 0)
     {
@@ -1546,12 +1782,16 @@ void SongView::paint (Graphics& g)
     else
     {
         const auto ln = lane();
+        Graphics::ScopedSaveState clipToLane (g);
+        if (ruler) g.reduceClipRegion (ln.expanded (0.0f, 8.0f).toNearestInt());
+        const bool zoomView = ruler && view != nullptr && st.haveSong;
         for (size_t i = 0; i < blocks.size(); ++i)
         {
             const auto& bl = blocks[i];
-            const float x0 = ln.getX() + ln.getWidth() * (float) bl.start / (float) totalBars;
-            const float x1 = ln.getX() + ln.getWidth() * (float) (bl.start + bl.bars) / (float) totalBars;
-            const float h = ln.getHeight() * (0.4f + 0.6f * jlimit (0.0f, 1.0f, bl.energy));
+            const float x0 = zoomView ? view->xOf (bl.start, ln.getX(), ln.getWidth(), totalBars) - 1.0f : ln.getX() + ln.getWidth() * (float) bl.start / (float) totalBars;
+            const float x1 = zoomView ? view->xOf (bl.start + bl.bars, ln.getX(), ln.getWidth(), totalBars) + 1.0f : ln.getX() + ln.getWidth() * (float) (bl.start + bl.bars) / (float) totalBars;
+            if (x1 < ln.getX() - 4.0f || x0 > ln.getRight() + 4.0f) continue;
+            const float h = ruler ? ln.getHeight() : ln.getHeight() * (0.4f + 0.6f * jlimit (0.0f, 1.0f, bl.energy));
             auto rect = Rectangle<float> (x0 + 2.0f, ln.getBottom() - h, x1 - x0 - 4.0f, h);
             const String n (bl.name);
             const bool big = n.startsWith ("chorus") || n.startsWith ("drop");
@@ -1559,7 +1799,7 @@ void SongView::paint (Graphics& g)
                                            : (n.startsWith ("bridge") ? th.grassLight.withAlpha (0.55f) : Colour (0xff3a3a40)));
             g.setColour (c.withMultipliedAlpha (0.9f));
             g.fillRoundedRectangle (rect, 6.0f);
-            if ((int) i == selected && st.haveSong)
+            if ((picked.count ((int) i) > 0 || (int) i == selected) && st.haveSong)
             {
                 g.setColour (Colours::white);
                 g.drawRoundedRectangle (rect.reduced (0.5f), 6.0f, 2.0f);
@@ -1569,14 +1809,17 @@ void SongView::paint (Graphics& g)
             {
                 g.setFont (lp::ui::mono (9.5f, false, 0.1f));
                 g.setColour (Colours::white.withAlpha (0.9f));
-                g.drawFittedText (n.toUpperCase() + (st.haveSong ? "\n" + String (bl.bars) + " BARS" : String()), rect.reduced (8.0f, 7.0f).toNearestInt(),
-                                  Justification::topLeft, 2, 0.8f);
+                // (zoomed in: the name stays in view while its section is)
+                auto tr = ruler ? rect.withLeft (jmax (rect.getX(), ln.getX())).withRight (jmin (rect.getRight(), ln.getRight())) : rect;
+                g.drawFittedText (n.toUpperCase() + (st.haveSong ? (ruler ? "  " : "\n") + String (bl.bars) + (ruler ? "" : " BARS") : String()),
+                                  tr.reduced (ruler ? 6.0f : 8.0f, ruler ? 3.0f : 7.0f).toNearestInt(), ruler ? Justification::centredLeft : Justification::topLeft, ruler ? 1 : 2, 0.8f);
             }
         }
         if (st.haveSong && ! dirty && proc.studio.length() > 0 && proc.songIsPlaying())
         {
             const float frac = (float) jlimit (0.0, 1.0, proc.playheadPos.load() / (double) proc.studio.length());
-            const float x = ln.getX() + ln.getWidth() * frac;
+            const double atBar = proc.playheadPos.load() / StudioPlayer::fileRate / (240.0 / std::max (40.0, st.song.bpm));
+            const float x = zoomView ? view->xOf (atBar, ln.getX(), ln.getWidth(), totalBars) : ln.getX() + ln.getWidth() * frac;
             g.setColour (Colours::white);
             g.drawLine (x, ln.getY() - 4.0f, x, ln.getBottom(), 1.5f);
         }
@@ -1658,7 +1901,7 @@ void ThemeDots::mouseUp (const MouseEvent& e)
 // Editor
 
 LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
-    : AudioProcessorEditor (p), proc (p),
+    : proc (p),
       liveSwitch ({ "Live", "Manual" },
                   [&p] { return p.params.getRawParameterValue ("live")->load() > 0.5f ? 0 : 1; },
                   [&p] (int i) { if (auto* q = p.params.getParameter ("live")) { q->beginChangeGesture(); q->setValueNotifyingHost (i == 0 ? 1.0f : 0.0f); q->endChangeGesture(); } },
@@ -1669,6 +1912,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
                  lnf.th),
       keys (p, lnf.th),
       playButton (p),
+      recordButton (p),
       presetBrowser (p, lnf.th),
       sampleView (p),
       dragNotes (p),
@@ -1676,6 +1920,10 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
       songView (p),
       studioView (p),
       trackEditor (p, lnf.th),
+      voicePage (p, lnf.th),
+      grainsPage (p, lnf.th),
+      vocalsHub (p, lnf.th),
+      drawSing (p, lnf.th),
       grainView (p),
       sourcesPanel (p, lnf.th),
       pillMidi ("drag midi", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.midiFile.getFullPathName()) : StringArray(); }),
@@ -1708,6 +1956,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
           return st.abletonSet.existsAsFile() ? StringArray (st.abletonSet.getFullPathName()) : StringArray();
       }),
       pillFolder ("folder", [&p] { auto st = p.songJob.getStatus(); return st.haveSong ? StringArray (st.files.folder.getFullPathName()) : StringArray(); }),
+      pillExport ("export", [] { return StringArray(); }),
       themeDots (p, [this] { applyTheme(); })
 {
     setLookAndFeel (&lnf);
@@ -1729,6 +1978,8 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (keySwitch);
     addChildComponent (keys);
     addAndMakeVisible (playButton);
+    addChildComponent (recordButton);
+    recordButton.onProblem = [this] (const String& m) { AlertWindow::showMessageBoxAsync (MessageBoxIconType::NoIcon, "Record", m); };
     addChildComponent (presetBrowser);
     addChildComponent (sampleView);
     addChildComponent (dragNotes);
@@ -1736,9 +1987,62 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (songView);
     addChildComponent (studioView);
     addChildComponent (trackEditor);
+    addChildComponent (voicePage);
+    addChildComponent (vocalsHub);
+    addChildComponent (grainsPage);
+    addChildComponent (drawSing);
+    drawSing.statusText = [this] { return autoAdd.status; };
+    drawSing.autoAdd = &autoAdd;
+    addChildComponent (vocalTabs);
+    vocalsHub.onOpenInStudio = [this] (int t) { trackEditor.select (t); setPage (Studio); };
+    vocalsHub.onGoTab = [this] (int t) { vocalTab = t; setPage (Voice); };
+    voicePage.onEditTake = [this] (const File& take, int sec, const String& words, double at) { vocalTab = 1; setPage (Voice); drawSing.useRecording (take, sec, words, at); };
+    vocalsHub.voiceAvailable = [this] { return voiceOn(); };
+    songView.onLayer = [this] (int first, int count)
+    {
+        Component::SafePointer<LivePlanetEditor> sp (this);
+        layerPopup = std::make_unique<lp::ai::LayerPopup> (proc, lnf.th, first, count, [sp]
+        {
+            MessageManager::callAsync ([sp] { if (sp != nullptr) sp->layerPopup.reset(); });
+        });
+        layerPopup->setBackdrop (createComponentSnapshot (getLocalBounds(), true, 0.25f));
+        addAndMakeVisible (*layerPopup);
+        layerPopup->setBounds (getLocalBounds());
+        layerPopup->toFront (true);
+    };
+    // right-click a track, "change its sound": the layer window on "generate sound", playing that track's notes
+    studioView.onResound = [this] (int track)
+    {
+        const int n = (int) proc.songJob.getStatus().song.sections.size();
+        if (n <= 0 || ! songView.onLayer) return;
+        songView.onLayer (0, n);
+        if (layerPopup != nullptr) layerPopup->useNotesOf (track);
+    };
+    proc.onRecordMessage = [this] (const String& m) { recNote = m; recNoteAt = Time::getMillisecondCounter(); studioView.repaint(); };
+    studioView.statusText = [this]
+    {
+        if (autoAdd.status.isNotEmpty()) return autoAdd.status;
+        if (proc.trackRecording.load()) return String ("RECORDING");
+        if (recNote.isNotEmpty() && Time::getMillisecondCounter() - recNoteAt < 8000) return recNote;
+        // (a word after an edit, for a few seconds)
+        const auto st = proc.songJob.getStatus();
+        return st.notice.isNotEmpty() && Time::getMillisecondCounter() - st.noticeAt < 7000 ? st.notice : String();
+    };
+    studioView.ghosts = [this]
+    {
+        std::vector<StudioView::Ghost> g;
+        for (auto& p : autoAdd.pending) g.push_back ({ p.start, p.len, p.label });
+        return g;
+    };
     setUpKeyBoxes (p, studioKey, studioMode, studioKeyAtt, studioModeAtt);
     addChildComponent (studioKey);
     addChildComponent (studioMode);
+    addChildComponent (aiLayer);
+    aiLayer.getProperties().set ("ai", true);
+    aiLayer.setWantsKeyboardFocus (false);
+    aiLayer.setMouseClickGrabsKeyboardFocus (false);
+    aiLayer.setTooltip ("The AI plays a new instrument over the sections you picked (shift-click for more; none picked: the whole song): drums, bass, guitar, keys, strings...");
+    aiLayer.onClick = [this] { songView.requestLayer(); };
     // takes
     for (int i = 0; i < 3; ++i)
     {
@@ -1778,8 +2082,71 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     addChildComponent (grainView);
     addChildComponent (sourcesPanel);
     songPanel.onShowSources = [this] { sourcesPanel.open(); };
-    studioView.onOpenTrack = [this] (int t) { trackEditor.select (t); setPage (Edit); };
-    playButton.songMode = [this] { return page == Write || page == Studio || page == Edit; };
+    // a track clicked in the arrangement opens below it (the Studio's own editor)
+    studioView.onOpenTrack = [this] (int t)
+    {
+        masterOpen = false; // (a track: its own effects, not the master's)
+        if (t != trackEditor.selected()) trackEditor.select (t);
+        if (dockCollapsed) { dockCollapsed = false; setPage (Studio); resized(); } // (a track clicked: the panel opens again)
+        repaint();
+    };
+    studioSplit = jlimit (200, 4000, (int) lp::setting ("studioSplit", 358));
+    // the arrangement's zoom, shared by the sections ruler and the lanes; and how tall the lanes are
+    songView.view = &arrView;
+    studioView.view = &arrView;
+    arrView.changed = [this] { songView.repaint(); studioView.repaint(); };
+    studioView.rowStep = jlimit (22, 72, (int) lp::setting ("laneHeight", 42));
+    studioView.onRowStep = [] (int h) { lp::setSetting ("laneHeight", h); };
+    studioView.selectedTrack = [this] { return trackEditor.selected(); };
+    dockTabs.setTooltip ("Sample: the track's sample, its drum grid or its notes. Sound: its volume and effects. Effects: its devices (drag more in from the browser). Grains: re-plays it in tiny slices, in time.");
+    // effects: a browser to drag from, the devices of the open track
+    addChildComponent (fxBrowser);
+    addChildComponent (fxRack);
+    addChildComponent (fxBtn);
+    fxBtn.getProperties().set ("glass", true);
+    fxBtn.setWantsKeyboardFocus (false);
+    fxBtn.setTooltip ("Audio effects: drag one onto a track (or double-click it for the open track)");
+    // export, on the Studio page too (and Cmd + E anywhere)
+    addChildComponent (exportBtn);
+    exportBtn.getProperties().set ("glass", true);
+    exportBtn.setWantsKeyboardFocus (false);
+    exportBtn.setTooltip ("Save the mix, the stems or the MIDI as WAV, AIFF, FLAC or M4A (Cmd + E)");
+    exportBtn.onClick = [this] { openExport(); };
+    fxBtn.onClick = [this] { browserOpen = ! browserOpen; fxBtn.getProperties().set ("primary", browserOpen); resized(); repaint(); };
+    fxBrowser.onAdd = [this] (const String& id)
+    {
+        if (masterOpen && dockPageShown == 1) { lp::fx::add (proc, lp::fx::masterTrack, id); fxRack.repaint(); return; }
+        addFx (trackEditor.selected(), id);
+    };
+    // the master channel: everything goes through it (its effects, volume and pan), in the dock like a track
+    // the master channel: its own row at the bottom of the tracks (its effects open below); the loop: the strip along the top
+    studioView.onOpenMaster = [this] { openMaster(); };
+    studioView.masterShown = [this] { return masterOpen && dockPageShown == 1 && ! dockCollapsed; };
+    studioView.onDropFx = [this] (int t, String id) { addFx (t, id); };
+    studioView.onOpenDrawn = [this] (const String& sec) { vocalTab = 1; setPage (Voice); drawSing.openSection (sec); };
+    studioView.onEditNotes = [this] (int t)
+    {
+        trackEditor.select (t);
+        dockCollapsed = false;
+        dockPageShown = 0;
+        trackEditor.setDockPage (0);
+        // (room for the note editor: the arrangement gives up some height if it has to)
+        if (getHeight() - 32 - 84 - studioSplit - 10 < 430) { studioSplit = jmax (200, getHeight() - 32 - 84 - 10 - 430); splitByHand = true; }
+        showDock();
+        resized();
+        repaint();
+    };
+    fxRack.onOpenChain = [this] (int t)
+    {
+        Component::SafePointer<LivePlanetEditor> sp (this);
+        chainWindow = std::make_unique<VocalPanel> (proc, t, [sp] { MessageManager::callAsync ([sp] { if (sp != nullptr) sp->chainWindow.reset(); }); });
+        addAndMakeVisible (*chainWindow);
+        chainWindow->setBounds (getLocalBounds());
+        chainWindow->toFront (true);
+    };
+    addChildComponent (dockTabs);
+    trackEditor.setDockPage (0);
+    playButton.songMode = [this] { return page != Sound; }; // (the Sound page's own instrument plays only there)
     // each track's own Print FX choice decides whether its stem comes with its effects recorded in
     pillStems.filesToDrag = [&p] { auto st = p.songJob.getStatus(); StringArray a;
                                    for (int t = 0; t < (int) st.tracks.size(); ++t) if (auto f = p.fileToDrag (t); f.existsAsFile()) a.add (f.getFullPathName());
@@ -1790,12 +2157,15 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     {
         if (p.masterPreset.load() >= 0 && p.masterAfter.load())
             if (const auto f = p.masteredFile(); f.existsAsFile()) return StringArray (f.getFullPathName());
-        auto st = p.songJob.getStatus();
-        return st.haveSong ? StringArray (st.files.mixFile.getFullPathName()) : StringArray();
+        if (const auto f = p.mixNowFile(); f.existsAsFile()) return StringArray (f.getFullPathName()); // (as it is now)
+        return StringArray();
     };
     pillChords.filesToDrag = [&p] { const auto f = p.songJob.chordsMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
     // one drag: every MIDI part (drums, 808, hook, bass lines, and the chords + bass your loops play)
     pillMidi.filesToDrag = [&p] { const auto f = p.songJob.allMidi(); return f.existsAsFile() ? StringArray (f.getFullPathName()) : StringArray(); };
+    // export: the song's files in the type you choose (WAV, AIFF, FLAC, M4A), wherever you want them
+    pillExport.setTooltip ("Save the mix, the stems or the MIDI as WAV, AIFF, FLAC or M4A, in a folder you choose");
+    pillExport.onClick = [this] { openExport(); };
     pillMidi.setTooltip ("Every MIDI part in one drag: drums, 808, hook, bass lines, and the chords + bass your loops play. Each lands on its own MIDI track, sections as markers.");
     if (PluginHostType::getPluginLoadedAs() == AudioProcessor::wrapperType_Standalone)
         pillHelper.setTooltip ("Your song's tempo and sections as markers, in a MIDI file. Pro Tools: File > Import > MIDI and keep its markers and tempo. "
@@ -1832,7 +2202,7 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
     else
         pillHelper.setTooltip ("Your song's tempo and sections as markers, in a MIDI file. Drag it into your DAW at bar 1 (say yes if it asks to import the tempo). "
                                "Logic: if the markers don't show, use File > Import > MIDI File with this file (it's in the song's folder).");
-    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder, &pillExport })
         addChildComponent (pill);
     addAndMakeVisible (themeDots);
 
@@ -1913,6 +2283,26 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
         Desktop::getInstance().setGlobalScaleFactor ((float) std::atof (scale));
     applyTheme();
     setPage (Write);
+    if (std::getenv ("LP_VOICE_DEMO") != nullptr) // (for screenshots: the Voice page in the middle of singing)
+        MessageManager::callAsync ([sp = Component::SafePointer<LivePlanetEditor> (this)]
+    {
+        if (sp == nullptr) return;
+        auto& voicePage = sp->voicePage;
+        lp::voice::Snapshot d;
+        d.connected = true;
+        d.voices = { "my voice (clean)", "demo voice" };
+        d.stages = { { "sing", "Writing melodies" }, { "score", "Checking words and key" }, { "clean", "Removing background noise" },
+                     { "voice", "Singing in your voice" }, { "mix", "Finishing and mixing" } };
+        lp::voice::Job j;
+        j.id = "a1b2c3d4e5f6"; j.state = "running"; j.stage = "voice"; j.note = "version 2 of 2"; j.title = "Hold me close";
+        j.created = Time::getCurrentTime().toMilliseconds() / 1000.0 - 263.0;
+        j.results.push_back ({ 1, "/audio/a1b2c3d4e5f6/vocal_1.wav", "/audio/a1b2c3d4e5f6/mix_1.wav", "hold me close", 92, 96 });
+        d.jobs.push_back (j);
+        voicePage.setSnapshot (d);
+        voicePage.setSong ({ "Chorus 1   (bars 33 to 40, 16 s)", "Verse 1   (bars 9 to 24, 32 s)", "Chorus 2   (bars 57 to 64, 16 s)" }, 0, "A MINOR", "120 BPM");
+        sp->vocalTab = 2;
+        sp->setPage (Voice);
+    });
 
     // only the text boxes ever take the keyboard, so your DAW's keys keep playing notes
     setWantsKeyboardFocus (false);
@@ -1934,6 +2324,90 @@ LivePlanetEditor::LivePlanetEditor (LivePlanetProcessor& p)
 
     timerCallback();
     startTimerHz (30);
+    checkForUpdate();
+}
+
+// ---- updates: is a newer release out than this build? (asked once a session; nothing about you is sent)
+#ifndef LOOPWRIGHT_BUILD
+ #define LOOPWRIGHT_BUILD 0
+#endif
+void LivePlanetEditor::checkForUpdate()
+{
+    static std::atomic<bool> asked { false };
+    if (LOOPWRIGHT_BUILD <= 0 || asked.exchange (true)) return; // (a test build, or already asked this session)
+    Component::SafePointer<LivePlanetEditor> safe (this);
+    Thread::launch ([safe]
+    {
+        const URL url ("https://api.github.com/repos/olmosvip-oss/live-planet/releases/latest");
+        auto in = url.createInputStream (URL::InputStreamOptions (URL::ParameterHandling::inAddress)
+                                             .withConnectionTimeoutMs (8000)
+                                             .withExtraHeaders ("User-Agent: Loopwright\r\nAccept: application/vnd.github+json"));
+        if (in == nullptr) return;
+        const auto tag = JSON::parse (in->readEntireStreamAsString())["tag_name"].toString(); // e.g. "v0.9.131"
+        const int build = tag.fromLastOccurrenceOf (".", false, false).getIntValue();
+        if (! tag.startsWith ("v") || build <= LOOPWRIGHT_BUILD) return;
+        if ((int) lp::setting ("skipUpdate", 0) == build) return; // ("skip this version")
+        MessageManager::callAsync ([safe, tag]
+        {
+            if (safe == nullptr || safe->updateNotice != nullptr) return;
+            auto* ed = safe.getComponent();
+            ed->updateNotice = std::make_unique<UpdateNotice> (ed->lnf.th, tag.substring (1), [safe]
+            {
+                MessageManager::callAsync ([safe] { if (safe != nullptr) safe->updateNotice.reset(); });
+            });
+            ed->addAndMakeVisible (*ed->updateNotice);
+            ed->updateNotice->setBounds (ed->getLocalBounds());
+            ed->updateNotice->toFront (true);
+        });
+    });
+}
+
+UpdateNotice::UpdateNotice (const lp::ui::Theme*& theme, String v, std::function<void()> closed) : th (theme), version (std::move (v))
+{
+    download.getProperties().set ("primary", true);
+    download.onClick = [closed] { URL ("https://loop-wright.com/download").launchInDefaultBrowser(); closed(); };
+    later.onClick = [closed] { closed(); };
+    skip.onClick = [this, closed] { lp::setSetting ("skipUpdate", version.fromLastOccurrenceOf (".", false, false).getIntValue()); closed(); };
+    for (auto* b : { &download, &later, &skip }) { b->setWantsKeyboardFocus (false); addAndMakeVisible (*b); }
+}
+
+Rectangle<float> UpdateNotice::card() const
+{
+    return getLocalBounds().toFloat().withSizeKeepingCentre (520.0f, 250.0f);
+}
+
+void UpdateNotice::resized()
+{
+    const auto c = card().toNearestInt();
+    download.setBounds (c.getX() + 28, c.getBottom() - 66, 210, 40);
+    later.setBounds (download.getRight() + 10, c.getBottom() - 66, 90, 40);
+    skip.setBounds (later.getRight() + 10, c.getBottom() - 66, c.getRight() - 28 - later.getRight() - 10, 40);
+}
+
+void UpdateNotice::paint (Graphics& g)
+{
+    const auto& t = *th;
+    g.fillAll (Colours::black.withAlpha (0.45f));
+    const auto c = card();
+    g.setColour (t.body.withAlpha (0.97f));
+    g.fillRoundedRectangle (c, 18.0f);
+    g.setGradientFill (ColourGradient (t.grass.withAlpha (0.25f), c.getX(), c.getY(), t.grass.withAlpha (0.0f), c.getX(), c.getY() + 120.0f, false));
+    g.fillRoundedRectangle (c, 18.0f);
+    g.setColour (t.grass.withAlpha (0.6f));
+    g.drawRoundedRectangle (c.reduced (0.5f), 18.0f, 1.2f);
+    auto r = c.reduced (28.0f, 24.0f);
+    g.setFont (lp::ui::mono (10.0f, true, 0.14f));
+    g.setColour (t.grassLight);
+    g.drawText ("UPDATE  " + version, r.removeFromTop (16.0f), Justification::centredLeft, false);
+    r.removeFromTop (8.0f);
+    g.setFont (lp::ui::font (24.0f, lp::ui::Medium, -0.01f));
+    g.setColour (t.ink);
+    g.drawText ("There's a new version of Loopwright", r.removeFromTop (32.0f), Justification::centredLeft, false);
+    r.removeFromTop (6.0f);
+    g.setFont (lp::ui::font (14.0f));
+    g.setColour (t.inkDim);
+    g.drawFittedText ("Download it and run the installer, then restart Loopwright (and your DAW, if you use it there) to get the new features. "
+                      "Your songs and settings stay as they are.", r.removeFromTop (60.0f).toNearestInt(), Justification::topLeft, 3);
 }
 
 void LivePlanetEditor::startTour()
@@ -1956,11 +2430,12 @@ void LivePlanetEditor::startTour()
           "Its sections, intro to outro. Drag one to move it, drag its edge to make it longer, right-click it to make it hit harder, "
           "a breakdown, or a build. The buttons along the bottom drag the MIDI, the stems, the mix or the locators into your DAW." },
         { Studio, [=] { return studioView.getBounds(); }, "5. Studio",
-          "Every track with its mixer. Swap a sound for another, lock the ones you love and write the rest again, x deletes a track, "
-          "and + add instrument brings in a hook, an 808, your own vocal and more. The FEEL row shapes the whole song at once." },
-        { Edit, [=] { return trackEditor.getBounds(); }, "6. Edit",
-          "One track at a time: its sample, its own effects and its grains. Drums, 808s and hooks show their notes on a grid: "
-          "click to add, drag to move, and hear it as you go." },
+          "Your arrangement: the sections along the top (shift-click to pick several, Delete takes them out) and every track's sound "
+          "in each one. Lock the tracks you love and write the rest again; right-click a track to swap, reverse or remove it; "
+          "+ add instrument brings in a hook, an 808 and more. The FEEL row shapes the whole song at once." },
+        { Studio, [=] { return trackEditor.getBounds(); }, "6. The open track",
+          "Click any track and it opens under the arrangement: its sample (drums, 808s and hooks show their notes on a grid: "
+          "click to add, drag to move), its sound and effects, and its grains." },
         { Sound, [=] { return cardInstrument; }, "7. Sound",
           "Play any sound on your keyboard: pick one of your one-shots or drop a sample, or drop your own vocal and it's chopped onto the keys." },
         { Write, [=] { return cardTimeline; }, "8. Your DAW",
@@ -2033,18 +2508,50 @@ void LivePlanetEditor::applyTheme()
 
 Rectangle<int> LivePlanetEditor::tabBounds (int i) const
 {
-    static const int widths[] = { 64, 72, 52, 64 };
+    static const int widths[] = { 64, 72, 72, 72, 64 };
     int x = 300;
     for (int k = 0; k < i; ++k) x += widths[k] + 22;
     return { x, 20, widths[i], 30 };
 }
 
+// the experimental Voice page: off unless switched on (Settings), or LP_VOICE=1 for testing
+bool LivePlanetEditor::voiceOn() const
+{
+    return (bool) lp::setting ("voiceLab", false) || std::getenv ("LP_VOICE") != nullptr;
+}
+
 void LivePlanetEditor::setPage (int p)
 {
+    if (p == Edit) p = Studio; // (the track editor lives in the Studio now, under the arrangement)
     page = p;
-    if (p != Edit) trackEditor.stopLive(); // the drum editor's loop stops when you leave it
-    const bool write = p == Write, studio = p == Studio, edit = p == Edit, sound = p == Sound, sky = false; // (the weather page is gone)
-    trackEditor.setVisible (edit);
+    if (p != Studio) trackEditor.stopLive(); // the drum editor's loop stops when you leave it
+    // the Sound page's instrument: only while its page is open (leaving it stops it)
+    proc.soundPageOpen = p == Sound;
+    if (p != Sound)
+        if (auto* pl = proc.params.getParameter ("play"); pl != nullptr && pl->getValue() > 0.5f)
+        {
+            pl->beginChangeGesture();
+            pl->setValueNotifyingHost (0.0f);
+            pl->endChangeGesture();
+        }
+    const bool write = p == Write, studio = p == Studio, edit = false, sound = p == Sound, sky = false; // (the weather page is gone)
+    const bool haveSong0 = proc.songJob.getStatus().haveSong;
+    trackEditor.setVisible (studio && haveSong0 && dockPageShown != 1);
+    dockTabs.setVisible (studio && haveSong0);
+    fxBtn.setVisible (studio && haveSong0);
+    exportBtn.setVisible (studio && haveSong0);
+    fxBrowser.setVisible (studio && haveSong0 && browserOpen);
+    if (! studio) fxRack.setVisible (false);
+    // vocals: your vocals, or (with the voice helper switched on) a new one made with AI
+    if (! voiceOn()) vocalTab = 0;
+    vocalTabs.setVisible (p == Voice && voiceOn());
+    vocalsHub.setVisible (p == Voice && vocalTab == 0);
+    drawSing.setVisible (p == Voice && vocalTab == 1);
+    if (! (p == Voice && vocalTab == 1)) drawSing.leave(); // (the guide tone and your live voice: only while you're drawing)
+    voicePage.setVisible (p == Voice && vocalTab == 2);
+    voicePage.shown (p == Voice && vocalTab == 2);
+    grainsPage.setVisible (p == GrainsTab);
+    grainsPage.shown (p == GrainsTab);
     studioKey.setVisible (studio);
     studioMode.setVisible (studio);
     masterBox.setVisible (studio);
@@ -2056,9 +2563,10 @@ void LivePlanetEditor::setPage (int p)
     songPanel.setVisible (write);
     songView.setVisible (write || studio);
     studioView.setVisible (studio && haveSong);
-    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
-        pill->setVisible (write || studio);
-    for (auto* h : { &hMidi, &hStems, &hLocators }) h->setVisible (write || studio);
+    for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder, &pillExport })
+        pill->setVisible (write);
+    for (auto* h : { &hMidi, &hStems, &hLocators }) h->setVisible (write);
+    songView.setRuler (studio);
     // sound: the instrument and the knobs
     keys.setVisible (sound);
     presetBrowser.setVisible (sound);
@@ -2080,6 +2588,7 @@ void LivePlanetEditor::setPage (int p)
     dayToggle.setVisible (sky);
     thunderToggle.setVisible (sky);
     playButton.setVisible (write || studio || sound || edit);
+    recordButton.setVisible (studio && proc.songJob.getStatus().haveSong);
     resized();
     repaint();
 }
@@ -2173,6 +2682,10 @@ void LivePlanetEditor::showOneShotMenu()
 
 void LivePlanetEditor::timerCallback()
 {
+    if (proc.trackTakeReady.load()) proc.finishTrackTake(); // (a take just ended: into its track)
+    if (proc.recordOn.load()) proc.drainMidiTake();
+    if (proc.midiTakeEnded.exchange (false)) { proc.stopRecording(); recordButton.repaint(); } // (stopped while recording)
+    if (proc.recordOn.load()) recordButton.repaint(); // (its pulse)
     if (proc.songJob.getStatus().undoWhat != undoShown) repaint (0, 0, getWidth(), 76); // the undo button in the top bar
     if (page == Sound)
     {
@@ -2214,8 +2727,10 @@ void LivePlanetEditor::timerCallback()
         }
         if (masterInfo.getText() != info) masterInfo.setText (info, dontSendNotification);
         pillMix.setLabel (proc.masterPreset.load() >= 0 && proc.masterAfter.load() ? "drag master" : "drag mix");
-        masterMeter.l.update (proc.outPeakL.exchange (0.0f));
-        masterMeter.r.update (proc.outPeakR.exchange (0.0f));
+        const float pkL = proc.outPeakL.exchange (0.0f), pkR = proc.outPeakR.exchange (0.0f);
+        masterMeter.l.update (pkL);
+        masterMeter.r.update (pkR);
+        studioView.masterLevel = jmax (studioView.masterLevel * 0.82f, jmax (pkL, pkR)); // (the master row's meter)
         masterMeter.repaint();
         if (proc.masterResets.load() != seenMasterResets) { seenMasterResets = proc.masterResets.load(); masterBox.setSelectedId (1, dontSendNotification); }
         masterInfo.setColour (Label::textColourId, lnf.th->inkDim);
@@ -2270,7 +2785,7 @@ void LivePlanetEditor::timerCallback()
         if (haveSong && page == Studio) studioView.repaint();
         songPanel.refresh();
         songView.refresh();
-        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder, &pillExport })
             pill->repaint();
     }
     if (page == Sound)
@@ -2286,7 +2801,29 @@ void LivePlanetEditor::timerCallback()
     }
     else if (sampleView.isVisible())
         sampleView.setVisible (false);
-    if (page == Edit) trackEditor.refresh();
+    if (page == Studio && proc.songJob.getStatus().haveSong)
+    {
+        if (! trackEditor.isVisible() && ! fxRack.isVisible() && ! dockCollapsed) { showDock(); dockTabs.setVisible (true); }
+        if (trackEditor.selected() != lastDockTrack) { lastDockTrack = trackEditor.selected(); if (masterOpen) { masterOpen = false; studioView.repaint(); } }
+        if (fxRack.isVisible()) { fxRack.setTrack (masterOpen ? lp::fx::masterTrack : trackEditor.selected()); fxRack.repaint(); }
+        trackEditor.refresh();
+        if (trackEditor.wantsTall() != dockTall) { dockTall = trackEditor.wantsTall(); resized(); repaint(); }
+    }
+    if (page == Voice && vocalTab == 2) voicePage.refresh();
+    if (page == Voice && vocalTab == 1) { proc.voiceClient.setWanted (true); drawSing.refresh(); }
+    if (page == Voice && vocalTab == 0) vocalsHub.refresh();
+    if (voiceOn()) autoAdd.tick (proc);
+    // the Studio talks to the voice helper too (its AI layers), in the background
+    if (voiceOn() && page == Studio) proc.voiceClient.setWanted (true);
+    songView.layerAvailable = voiceOn();
+    {
+        const bool show = page == Studio && proc.songJob.getStatus().haveSong; // (flipping a sample needs no helper)
+        if (aiLayer.isVisible() != show) aiLayer.setVisible (show);
+        aiLayer.setEnabled (songView.layerReady());
+        const int n = songView.pickedCount();
+        const String t = n > 1 ? "AI layer on " + String (n) + " sections" : n == 1 ? String ("AI layer on this section") : String ("AI layer");
+        if (aiLayer.getButtonText() != t) aiLayer.setButtonText (t);
+    }
     repaint (0, 0, getWidth(), 70); // the top bar (library and tempo)
 }
 
@@ -2352,14 +2889,15 @@ void LivePlanetEditor::paint (Graphics& g)
         g.setColour (th.grassLight);
         g.drawText ("BETA", badge, Justification::centred, false);
 
-        static const char* tabs[] = { "WRITE", "STUDIO", "EDIT", "SOUND" };
-        for (int i = 0; i < 4; ++i)
+        static const char* tabs[] = { "WRITE", "STUDIO", "VOCALS", "GRAINS", "SOUND" };
+        for (int i = 0; i < 5; ++i)
         {
             auto t = tabBounds (i).toFloat();
-            g.setFont (lp::ui::mono (12.0f, i == page, 0.14f));
-            g.setColour (i == page ? th.ink : th.inkDim);
+            const bool on = tabPage (i) == page;
+            g.setFont (lp::ui::mono (12.0f, on, 0.14f));
+            g.setColour (on ? th.ink : th.inkDim);
             g.drawText (tabs[i], t, Justification::centred, false);
-            if (i == page)
+            if (on)
             {
                 g.setColour (th.ink);
                 g.fillRect (t.getX(), 66.0f, t.getWidth(), 2.0f);
@@ -2411,11 +2949,43 @@ void LivePlanetEditor::paint (Graphics& g)
     if (page == Write || page == Studio)
     {
         card (g, cardTimeline, th);
-        heading (g, page == Write ? "Your song" : "Arrangement", cardTimeline.toFloat().reduced (20.0f, 0.0f).withHeight (46.0f), th);
+        heading (g, page == Write ? "Your song" : "Arrangement", cardTimeline.toFloat().reduced (20.0f, 0.0f).withHeight (page == Studio ? 40.0f : 46.0f), th);
+    }
+    if (page == Studio && proc.songJob.getStatus().haveSong)
+    {
+        // the divider's grip (drag it; double-click it to hide or show the open track)
+        {
+            const auto sb = splitBounds();
+            g.setColour (th.inkDim.withAlpha (draggingSplit ? 0.9f : 0.45f));
+            g.fillRoundedRectangle (Rectangle<float> ((float) sb.getCentreX() - 22.0f, (float) sb.getCentreY() - 1.5f, 44.0f, 3.0f), 1.5f);
+        }
+        // the section tools' row label, over the track names
+        g.setFont (lp::ui::mono (10.0f, true, 0.16f));
+        g.setColour (th.grassLight);
+        if (! aiLayer.isVisible())
+            g.drawText ("SECTIONS", Rectangle<int> (cardTimeline.getX() + 20, songView.getY() + 4, 120, 24), Justification::centredLeft, false);
+        card (g, cardDock, th);
+        if (dockCollapsed)
+        {
+            g.setFont (lp::ui::mono (10.0f, false, 0.14f));
+            g.setColour (th.inkDim);
+            g.drawText (String::fromUTF8 ("THE OPEN TRACK IS HIDDEN  \xc2\xb7  CLICK A TRACK, OR DOUBLE-CLICK THE LINE ABOVE, TO SHOW IT"),
+                        cardDock.reduced (20, 0), Justification::centredLeft, true);
+        }
+        else
+        {
+        // which track is open, over its editor
+        const auto st = proc.songJob.getStatus();
+        const int t = trackEditor.selected();
+        g.setFont (lp::ui::mono (10.0f, false, 0.14f));
+        g.setColour (th.inkDim);
+        g.drawText ((masterOpen && dockPageShown == 1 ? String ("MASTER CHANNEL: THE WHOLE SONG GOES THROUGH IT") : "TRACK " + String (t + 1) + " OF " + String ((int) st.tracks.size())) + "  \xc2\xb7  DRAG THE LINE ABOVE FOR MORE ROOM, DOUBLE-CLICK IT TO HIDE THIS",
+                    Rectangle<int> (cardDock.getX() + 20, cardDock.getY() + 10, cardDock.getWidth() - 320, 20), Justification::centredLeft, true);
+        }
     }
     if (page == Studio && ! studioView.isVisible())
     {
-        auto r = Rectangle<int> (28, 84, getWidth() - 56, 432);
+        auto r = Rectangle<int> (28, 84, getWidth() - 56, getHeight() - 32 - 84);
         card (g, r, th);
         g.setFont (font (16.0f, lp::ui::Medium));
         g.setColour (th.inkDim);
@@ -2492,8 +3062,106 @@ void LivePlanetEditor::paint (Graphics& g)
     label (g, "colour", themeDots.getBounds().translated (-58, 0).withWidth (52).toFloat(), th, Justification::centredRight);
 }
 
+// the Studio's divider: the gap between the arrangement and the open track
+// an effect onto a track: switched on there, and the dock shows that track's effects
+void LivePlanetEditor::addFx (int track, const String& id)
+{
+    const auto st = proc.songJob.getStatus();
+    if (track < 0 || track >= (int) st.tracks.size()) return;
+    lp::fx::add (proc, track, id);
+    if (trackEditor.selected() != track) trackEditor.select (track);
+    dockCollapsed = false;
+    dockPageShown = 1;
+    showDock();
+    resized();
+    repaint();
+}
+
+void LivePlanetEditor::openMaster()
+{
+    if (! proc.songJob.getStatus().haveSong) return;
+    masterOpen = true;
+    lastDockTrack = trackEditor.selected();
+    studioView.repaint();
+    dockCollapsed = false;
+    dockPageShown = 1;
+    showDock();
+    resized();
+    repaint();
+}
+
+// the loop on or off; switched on with none chosen yet: the section the marker is in
+void LivePlanetEditor::setLoop (bool on)
+{
+    const auto st = proc.songJob.getStatus();
+    if (on && proc.songLoopB.load() <= proc.songLoopA.load() && st.haveSong && st.song.bpm > 0.0)
+    {
+        const double bar = 240.0 / st.song.bpm * StudioPlayer::fileRate, at = proc.cuePos.load() / bar;
+        double a = std::floor (at), b = a + 4.0;
+        for (auto& sc : st.song.sections)
+            if (at >= sc.startBar && at < sc.startBar + sc.bars) { a = sc.startBar; b = sc.startBar + sc.bars; }
+        proc.songLoopA = a * bar;
+        proc.songLoopB = b * bar;
+    }
+    proc.songLoopOn = on;
+    studioView.repaint();
+}
+
+void LivePlanetEditor::showDock()
+{
+    const bool studio = page == Studio && proc.songJob.getStatus().haveSong && ! dockCollapsed;
+    const bool fx = studio && dockPageShown == 1;
+    trackEditor.setVisible (studio && ! fx);
+    fxRack.setVisible (fx);
+    if (fx) { fxRack.setTrack (masterOpen ? lp::fx::masterTrack : trackEditor.selected()); fxRack.setBounds (trackEditor.getBounds()); }
+}
+
+Rectangle<int> LivePlanetEditor::splitBounds() const
+{
+    return page == Studio ? Rectangle<int> (cardTimeline.getX(), cardTimeline.getBottom(), cardTimeline.getWidth(), 10) : Rectangle<int>();
+}
+
+void LivePlanetEditor::mouseMove (const MouseEvent& e)
+{
+    if (e.eventComponent != this) return;
+    const bool over = splitBounds().expanded (0, 3).contains (e.getPosition());
+    setMouseCursor (over ? MouseCursor::UpDownResizeCursor : MouseCursor::NormalCursor);
+}
+
+void LivePlanetEditor::mouseDrag (const MouseEvent& e)
+{
+    if (! draggingSplit) return;
+    // as far down as you like: past the bottom, the open track folds away and the arrangement has the whole page
+    const int want = splitDragFrom + e.getDistanceFromDragStartY(), most = getHeight() - 32 - 84 - 120;
+    dockCollapsed = want > most + 50;
+    splitByHand = true;
+    studioSplit = jlimit (200, most, want);
+    resized();
+    repaint();
+}
+
+void LivePlanetEditor::mouseUp (const MouseEvent&)
+{
+    if (draggingSplit) lp::setSetting ("studioSplit", studioSplit);
+    draggingSplit = false;
+}
+
+void LivePlanetEditor::mouseDoubleClick (const MouseEvent& e)
+{
+    if (e.eventComponent != this || ! splitBounds().expanded (0, 3).contains (e.getPosition())) return;
+    dockCollapsed = ! dockCollapsed; // (the open track hidden: the tracks get the whole page)
+    resized();
+    repaint();
+}
+
 void LivePlanetEditor::mouseDown (const MouseEvent& e)
 {
+    if (e.eventComponent == this && splitBounds().expanded (0, 3).contains (e.getPosition()))
+    {
+        draggingSplit = true;
+        splitDragFrom = cardTimeline.getHeight();
+        return;
+    }
     if (e.eventComponent != &cityBox && ! cityBox.isParentOf (e.eventComponent) && cityBox.hasKeyboardFocus (true))
         cityBox.giveAwayKeyboardFocus();
     auto& pb = songPanel.promptBox;
@@ -2501,12 +3169,25 @@ void LivePlanetEditor::mouseDown (const MouseEvent& e)
         pb.giveAwayKeyboardFocus();
     if (e.eventComponent == this && ! undoChip.isEmpty() && undoChip.contains (e.position)) { proc.songJob.undo(); repaint(); return; }
     if (e.eventComponent == this)
-        for (int i = 0; i < 4; ++i)
-            if (tabBounds (i).expanded (8, 10).contains (e.getPosition())) { setPage (i); return; }
+        for (int i = 0; i < 5; ++i)
+            if (tabBounds (i).expanded (8, 10).contains (e.getPosition())) { setPage (tabPage (i)); return; }
+}
+
+// the Export window (from the EXPORT pill, the Studio's Export button, or Cmd + E)
+void LivePlanetEditor::openExport()
+{
+    auto* top = lp::ui::overlayHost (this);
+    if (top == nullptr || exportPanel != nullptr || ! proc.songJob.getStatus().haveSong) return;
+    SafePointer<LivePlanetEditor> self (this);
+    exportPanel = std::make_unique<ExportPanel> (proc, [self] { MessageManager::callAsync ([self] { if (self != nullptr) self->exportPanel.reset(); }); });
+    top->addAndMakeVisible (*exportPanel);
+    exportPanel->setBounds (top->getLocalBounds());
+    exportPanel->toFront (true);
 }
 
 bool LivePlanetEditor::keyPressed (const KeyPress& k)
 {
+    if (k.getModifiers().isCommandDown() && k.getKeyCode() == 'E') { openExport(); return true; }
     // Cmd + Z: undo the last change to the song (the note and drum editors keep their own undo while you edit there)
     if (k.getModifiers().isCommandDown() && k.getKeyCode() == 'Z' && proc.songJob.getStatus().undoWhat.isNotEmpty())
     {
@@ -2514,6 +3195,8 @@ bool LivePlanetEditor::keyPressed (const KeyPress& k)
         repaint();
         return true;
     }
+    // the Grains page: your letters play it, wherever the keyboard focus landed on the page
+    if (page == GrainsTab && grainsPage.isVisible() && grainsPage.keyPressed (k)) return true;
     return false;
 }
 
@@ -2540,21 +3223,44 @@ void LivePlanetEditor::resized()
 {
     auto k = [this] (const char* id) { return &knobById[id]->slider; };
     const int W = getWidth(), M = 28;
-    themeDots.setBounds (W - M - (lp::ui::numThemes * 22 + 4), kH - 34, lp::ui::numThemes * 22 + 4, 24);
+    // (the window can be any size: the pages grow to fill it; B is where they end)
+    const int B = getHeight() - 32;
+    themeDots.setBounds (W - M - (lp::ui::numThemes * 22 + 4), getHeight() - 34, lp::ui::numThemes * 22 + 4, 24);
     tourBtn.setBounds (210, 26, 18, 18);  // right after the logo's beta badge
     if (tour != nullptr) tour->setBounds (getLocalBounds());
     sourcesPanel.setBounds (getLocalBounds());
 
     // ---- write: the hero + settings (song panel), the song, the drag buttons
     songPanel.setBounds (M, 84, W - 2 * M, 342);
-    cardTimeline = page == Studio ? Rectangle<int> (M, 528, W - 2 * M, 200) : Rectangle<int> (M, 442, W - 2 * M, 286);
-    songView.setBounds (cardTimeline.getX() + 12, cardTimeline.getY() + 46, cardTimeline.getWidth() - 24, cardTimeline.getHeight() - 104);
+    // the studio: the arrangement (sections over every track's lane), and the open track docked under it
+    // (the effects browser, when open, takes a column on the left)
+    const int L = page == Studio && browserOpen ? M + 206 + 12 : M;
+    fxBrowser.setBounds (M, 84, 206, B - 84);
+    fxBrowser.setVisible (page == Studio && browserOpen && proc.songJob.getStatus().haveSong);
+    cardTimeline = page == Studio ? Rectangle<int> (L, 84, W - M - L, dockCollapsed ? B - 84 - 10 - 40 : dockTall && ! splitByHand ? jmin (232, studioSplit) : studioSplit)
+                                  : Rectangle<int> (M, 442, W - 2 * M, B - 442);
+    cardDock = { cardTimeline.getX(), cardTimeline.getBottom() + 10, cardTimeline.getWidth(), B - cardTimeline.getBottom() - 10 };
+    if (page == Studio)
+    {
+        studioView.setBounds (cardTimeline.getX() + 2, cardTimeline.getY() + 82, cardTimeline.getWidth() - 4, cardTimeline.getHeight() - 86);
+        // (the ruler's sections line up with the lanes below)
+        const int lx = studioView.getX() + (int) studioView.laneLeft(), rx = studioView.getX() + (int) studioView.laneRight();
+        songView.setBounds (lx - 8, cardTimeline.getY() + 34, rx - lx + 16, 50);
+        trackEditor.setBounds (cardDock.getX() + 18, cardDock.getY() + 34, cardDock.getWidth() - 36, jmax (10, cardDock.getHeight() - 42));
+        showDock();
+        dockTabs.setVisible (! dockCollapsed && proc.songJob.getStatus().haveSong);
+        dockTabs.setBounds (cardDock.getRight() - 18 - 340, cardDock.getY() + 8, 340, 24);
+        fxBtn.setBounds (cardTimeline.getX() + 234, cardTimeline.getY() + 9, 96, 30);
+        exportBtn.setBounds (fxBtn.getRight() + 8, fxBtn.getY(), 90, 30);
+    }
+    else
+        songView.setBounds (cardTimeline.getX() + 12, cardTimeline.getY() + 46, cardTimeline.getWidth() - 24, cardTimeline.getHeight() - 104);
     {
         const int y = cardTimeline.getBottom() - 54;
         playButton.setBounds (cardTimeline.getX() + 18, y + 2, 40, 40);
         int px = cardTimeline.getX() + 74;
-        const int pw = (cardTimeline.getRight() - 18 - px) / 5;
-        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder })
+        const int pw = (cardTimeline.getRight() - 18 - px) / 6;
+        for (auto* pill : { &pillMidi, &pillStems, &pillMix, &pillHelper, &pillFolder, &pillExport })
         {
             pill->setBounds (px, y + 4, pw - 8, 36);
             px += pw;
@@ -2563,8 +3269,9 @@ void LivePlanetEditor::resized()
         hStems.setTopLeftPosition (pillStems.getRight() - 24, pillStems.getY() + 10);
         hLocators.setTopLeftPosition (pillHelper.getRight() - 24, pillHelper.getY() + 10);
     }
-    studioView.setBounds (M, 84, W - 2 * M, 432);
     studioMode.setBounds (cardTimeline.getRight() - 18 - 92, cardTimeline.getY() + 12, 92, 26);
+    // (over the track names, left of the sections it plays over)
+    aiLayer.setBounds (cardTimeline.getX() + 16, songView.getY() + 8, (int) studioView.laneLeft() - 28, 34);
     studioKey.setBounds (cardTimeline.getRight() - 18 - 92 - 8 - 128, cardTimeline.getY() + 12, 128, 26);
     masterAB.setBounds (studioKey.getX() - 24 - 72, cardTimeline.getY() + 12, 72, 26);
     {
@@ -2573,11 +3280,29 @@ void LivePlanetEditor::resized()
         mixTakes.setBounds (x, cardTimeline.getY() + 12, 104, 26);
         for (int i = 2; i >= 0; --i) { x -= 8 + 78; takeBtn[i].setBounds (x, cardTimeline.getY() + 12, 78, 26); }
     }
-    masterBox.setBounds (masterAB.getX() - 8 - 236, cardTimeline.getY() + 12, 236, 26);
-    masterInfo.setBounds (masterBox.getX() - 8 - 240, cardTimeline.getY() + 12, 240, 26);
-    masterMeter.setBounds (masterBox.getX() - 26, cardTimeline.getY() + 8, 13, 34);
-    trackEditor.setBounds (M + 24, 84 + 18, W - 2 * M - 48, 644 - 36);
-    if (page == Edit) playButton.setBounds (W - M - 24 - 44, 84 + 644 - 18 - 44, 44, 44);
+    {
+        // the master, together on the right: its channel (Master), its meter, its loudness, before / after.
+        // The loudness menu gives up width when the arrangement is narrow (the effects browser open)
+        const int leftLimit = exportBtn.getRight() + 8 + 26;
+        const int boxW = jlimit (140, 236, masterAB.getX() - 8 - leftLimit);
+        masterBox.setBounds (masterAB.getX() - 8 - boxW, cardTimeline.getY() + 12, boxW, 26);
+        masterMeter.setBounds (masterBox.getX() - 26, cardTimeline.getY() + 8, 13, 34);
+        const int infoX = exportBtn.getRight() + 10;
+        masterInfo.setBounds (infoX, cardTimeline.getY() + 12, jmax (0, masterMeter.getX() - 8 - infoX), 26);
+    }
+    vocalTabs.setBounds (M, 84, 420, 28);
+    {
+        const int top = voiceOn() ? 124 : 84;
+        voicePage.setBounds (M, top, W - 2 * M, B - top);
+        vocalsHub.setBounds (M, top, W - 2 * M, B - top);
+        grainsPage.setBounds (M, 84, W - 2 * M, B - 84);
+        drawSing.setBounds (M, top, W - 2 * M, B - top);
+    }
+    if (page == Studio)
+    {
+        playButton.setBounds (cardTimeline.getX() + 150, cardTimeline.getY() + 6, 30, 30);
+        recordButton.setBounds (playButton.getRight() + 8, playButton.getY(), 30, 30);
+    }
 
     // ---- sound: the instrument on the left, three knob cards on the right
     cardInstrument = { M, 84, 500, 644 };
@@ -2656,9 +3381,20 @@ bool LivePlanetEditor::isInterestedInFileDrag (const StringArray& files)
     return false;
 }
 
-void LivePlanetEditor::filesDropped (const StringArray& files, int, int)
+void LivePlanetEditor::filesDropped (const StringArray& files, int x, int y)
 {
     dragging = false;
+    // the Studio: an audio file dropped on the tracks goes into the song (an audio track there, or a new one)
+    if (page == Studio && studioView.isVisible())
+    {
+        const auto p = studioView.getLocalPoint (this, Point<int> (x, y)).toFloat();
+        for (auto& f : files)
+            if (File (f).existsAsFile() && studioView.getLocalBounds().toFloat().contains (p) && studioView.dropAudio (File (f), p))
+            {
+                repaint();
+                return;
+            }
+    }
     if (page == Write || page == Studio) // song mode: the dropped song becomes the reference
     {
         if (! files.isEmpty()) proc.songJob.setReference (File (files[0]));
@@ -2708,7 +3444,84 @@ void LivePlanetEditor::filesDropped (const StringArray& files, int, int)
     repaint();
 }
 
+Component* lp::ui::overlayHost (Component* from)
+{
+    if (from == nullptr) return nullptr;
+    if (auto* e = dynamic_cast<LivePlanetEditor*> (from)) return e;
+    if (auto* e = from->findParentComponentOfClass<LivePlanetEditor>()) return e;
+    return from->getTopLevelComponent();
+}
+
+// the window: Loopwright is laid out at its own size and scaled to whatever size the window is dragged to
+LivePlanetWindow::LivePlanetWindow (LivePlanetProcessor& p) : AudioProcessorEditor (p), view (p)
+{
+    // the size you left it at, last time (read before anything can resize the window)
+    const double scale = jlimit (0.6, 2.0, (double) lp::setting ("uiScale", 1.0));
+    const int w0 = (int) lp::setting ("uiWidth", roundToInt (kW * scale)), h0 = (int) lp::setting ("uiHeight", roundToInt (kH * scale));
+    addAndMakeVisible (view);
+    view.setBounds (0, 0, kW, kH);
+    setResizable (true, true);
+    // any shape: as big as your screen (the pages grow into the room), or smaller (everything scales down)
+    setResizeLimits ((int) (kW * 0.6), (int) (kH * 0.6), 8000, 5000);
+    setSize (jmax ((int) (kW * 0.6), w0), jmax ((int) (kH * 0.6), h0));
+    ready = true;
+    if (p.wrapperType == AudioProcessor::wrapperType_Standalone)
+    {
+        // (so the space bar reaches it: the window takes the keys unless a text box or the arrangement has them)
+        setWantsKeyboardFocus (true);
+        addMouseListener (this, true);
+        SafePointer<LivePlanetWindow> sp (this);
+        MessageManager::callAsync ([sp] { if (sp != nullptr && sp->isShowing()) sp->grabKeyboardFocus(); });
+    }
+    // recording a tutorial video: the script plays once the window is up
+    if (std::getenv ("LP_DEMO_SCRIPT") != nullptr)
+    {
+        std::fprintf (stderr, "demo: script set, starting in 2.5 s\n");
+        SafePointer<LivePlanetWindow> sp (this);
+        Timer::callAfterDelay (2500, [sp]
+        {
+            std::fprintf (stderr, "demo: start (%s)\n", sp != nullptr ? "window" : "no window");
+            if (sp != nullptr) sp->demo = std::make_unique<lp::demo::Director> (sp->view);
+        });
+    }
+}
+
+bool LivePlanetWindow::keyPressed (const KeyPress& k)
+{
+    if (k == KeyPress::spaceKey && processor.wrapperType == AudioProcessor::wrapperType_Standalone)
+    {
+        if (dynamic_cast<TextEditor*> (Component::getCurrentlyFocusedComponent()) != nullptr) return false; // (typing)
+        view.togglePlay();
+        return true;
+    }
+    if (static_cast<juce::Component&> (view).keyPressed (k)) return true; // (the keys reached the window itself: the page still gets them)
+    return false;
+}
+
+void LivePlanetWindow::mouseDown (const MouseEvent&)
+{
+    // a click on something that doesn't take the keys: the window keeps them (for the space bar)
+    if (processor.wrapperType != AudioProcessor::wrapperType_Standalone) return;
+    auto* f = Component::getCurrentlyFocusedComponent();
+    if (f == nullptr || (f != this && ! isParentOf (f))) grabKeyboardFocus();
+}
+
+void LivePlanetWindow::resized()
+{
+    // drawn at the scale that fits the window's narrower side; the other side gets more room (not stretched)
+    const float scale = jlimit (0.6f, 2.0f, jmin ((float) getWidth() / (float) kW, (float) getHeight() / (float) kH));
+    view.setBounds (0, 0, roundToInt (getWidth() / scale), roundToInt (getHeight() / scale));
+    view.setTransform (AffineTransform::scale (scale));
+    if (ready && (std::abs ((double) scale - lastSaved) > 0.01 || getWidth() != lastW || getHeight() != lastH)) // (remembered)
+    {
+        lastSaved = scale; lastW = getWidth(); lastH = getHeight();
+        lp::setSetting ("uiScale", (double) scale);
+        lp::setSetting ("uiWidth", getWidth());
+        lp::setSetting ("uiHeight", getHeight());
+    }
+}
+
 AudioProcessorEditor* LivePlanetProcessor::createEditor()
 {
-    return new LivePlanetEditor (*this);
+    return new LivePlanetWindow (*this);
 }
