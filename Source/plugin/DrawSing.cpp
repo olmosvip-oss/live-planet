@@ -213,7 +213,7 @@ struct DrawSing::Voiced
 
 DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc (p), th (theme)
 {
-    section.onChange = [this] { notes.clear(); viewStart = 0.0; markerBeat = 0.0; lastToken.clear(); loadedToken.clear(); restoreSection(); selectedNote = -1; voiced = nullptr; leave(); repaint(); };
+    section.onChange = [this] { notes.clear(); viewStart = 0.0; markerBeat = 0.0; lastToken.clear(); loadedToken.clear(); lockedRef = -1; restoreSection(); selectedNote = -1; selIds.clear(); voiced = nullptr; leave(); repaint(); };
     voice.onChange = [this] { if (voice.getText().isNotEmpty()) lp::setSetting ("voice", voice.getText()); }; // (remembered for every page)
     addVoiceBtn.setTooltip ("Add your voice: 10 to 30 seconds of you singing or rapping, clean, with no music (a WAV). It stays on this computer "
                             "and is picked for you from then on.");
@@ -302,7 +302,7 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
                       "Off: just the song (and your sung track).");
     guide.setWantsKeyboardFocus (false);
     addAndMakeVisible (guide);
-    clearAll.onClick = [this] { notes.clear(); selectedNote = -1; repaint(); };
+    clearAll.onClick = [this] { notes.clear(); selectedNote = -1; selIds.clear(); lockedRef = -1; repaint(); };
     fillWords.onClick = [this] { fillFromLyrics(); };
     fromLyrics.onClick = [this] { writeFromLyrics(); };
     hear.onClick = [this] { hearIt(); };
@@ -713,25 +713,69 @@ void DrawSing::mouseDown (const MouseEvent& e)
     if (! roll().withTrimmedLeft (44.0f).contains (e.position)) return;
     autoPaused = false; // (you're changing the notes: "sing as I draw" works again)
     const int i = noteAt (e.position);
-    if (i >= 0 && (e.mods.isPopupMenu() || e.mods.isAltDown()))
+    if (i >= 0 && e.mods.isPopupMenu()) { noteMenu (i); return; }
+    if (i >= 0 && e.getNumberOfClicks() > 1 && ! e.mods.isAltDown()) { showWordEditor (i); return; }
+    if (i >= 0 && e.mods.isShiftDown() && ! e.mods.isAltDown())
     {
-        notes.erase (notes.begin() + i);
-        selectedNote = -1;
+        // shift-click: in or out of the group
+        auto sel = selection();
+        if (sel.count (notes[(size_t) i].id) != 0) sel.erase (notes[(size_t) i].id); else sel.insert (notes[(size_t) i].id);
+        selIds = sel;
+        selectedNote = sel.empty() ? -1 : i;
+        if (sel.count (notes[(size_t) i].id) == 0)
+            for (int k = 0; k < (int) notes.size(); ++k) if (sel.count (notes[(size_t) k].id) != 0) selectedNote = k;
+        showTools();
         repaint();
         return;
     }
-    if (i >= 0 && e.getNumberOfClicks() > 1) { showWordEditor (i); return; }
     if (i >= 0)
     {
-        selectedNote = i;
-        previewNote (i);
+        // a note in the group drags the group; any other note is picked on its own
+        if (! isPicked (notes[(size_t) i])) pickOnly (i);
+        else selectedNote = i;
         const auto r = noteRect (notes[(size_t) i]);
-        drag = std::abs (e.position.x - r.getRight()) < 7.0f ? Drag::Resize : Drag::Move;
-        dragBeatOffset = beatAt (e.position.x) - notes[(size_t) i].beat;
+        drag = std::abs (e.position.x - r.getRight()) < 7.0f && ! e.mods.isAltDown() ? Drag::Resize : Drag::Move;
+        copies.clear();
+        if (e.mods.isAltDown())
+        {
+            // option-drag: copies of the picked notes, and the copies are what moves
+            const int clickedId = notes[(size_t) i].id;
+            const auto sel = selection();
+            std::set<int> made;
+            const size_t count = notes.size();
+            for (size_t k = 0; k < count; ++k)
+                if (sel.count (notes[k].id) != 0)
+                {
+                    Note c = notes[k];
+                    c.id = nextId++;
+                    notes.push_back (c);
+                    made.insert (c.id);
+                    copies.push_back (c.id);
+                    if (notes[k].id == clickedId) selectedNote = (int) notes.size() - 1;
+                }
+            selIds = made;
+        }
+        dragFrom.clear();
+        for (auto& n : notes) if (isPicked (n)) dragFrom[n.id] = { n.beat, n.pitch };
+        dragBeat0 = beatAt (e.position.x);
+        dragPitch0 = pitchAt (e.position.y);
+        dragBeatOffset = beatAt (e.position.x) - notes[(size_t) selectedNote].beat;
+        previewNote (selectedNote);
+        showTools();
         repaint();
         return;
     }
-    if (e.mods.isPopupMenu()) return;
+    if (e.mods.isPopupMenu()) { noteMenu (-1); return; }
+    if (e.mods.isShiftDown() || e.mods.isCommandDown())
+    {
+        // shift-drag (or cmd-drag) on the empty grid: a box picks every note it touches
+        boxing = true;
+        boxFrom = boxTo = e.position;
+        if (! e.mods.isShiftDown()) { selIds.clear(); selectedNote = -1; }
+        repaint();
+        return;
+    }
+    selIds.clear();
     // a new note where you clicked, a beat long (drag to make it longer)
     Note n;
     n.beat = std::floor (beatAt (e.position.x) / (snap() * 2.0)) * snap() * 2.0;
@@ -745,6 +789,96 @@ void DrawSing::mouseDown (const MouseEvent& e)
     drag = Drag::Resize;
     preview (n.pitch);
     repaint();
+}
+
+// the picked notes: the group, or the one note picked
+std::set<int> DrawSing::selection() const
+{
+    const bool one = selectedNote >= 0 && selectedNote < (int) notes.size();
+    if (one && selIds.count (notes[(size_t) selectedNote].id) == 0) return { notes[(size_t) selectedNote].id };
+    std::set<int> out;
+    for (auto& n : notes) if (selIds.count (n.id) != 0) out.insert (n.id);
+    return out;
+}
+
+bool DrawSing::isPicked (const Note& n) const
+{
+    const bool one = selectedNote >= 0 && selectedNote < (int) notes.size();
+    if (one && selIds.count (notes[(size_t) selectedNote].id) == 0) return notes[(size_t) selectedNote].id == n.id;
+    return selIds.count (n.id) != 0;
+}
+
+void DrawSing::pickOnly (int index)
+{
+    selIds.clear();
+    selectedNote = index;
+    if (index >= 0 && index < (int) notes.size()) selIds.insert (notes[(size_t) index].id);
+}
+
+// copies of the picked notes, right after them (the copies are picked, ready to drag)
+void DrawSing::duplicateSelection()
+{
+    const auto sel = selection();
+    if (sel.empty()) return;
+    double from = 1e9, to = -1e9;
+    for (auto& n : notes) if (sel.count (n.id) != 0) { from = std::min (from, n.beat); to = std::max (to, n.beat + n.len); }
+    const double step = jmax (snap(), std::ceil ((to - from) / snap() - 1e-6) * snap());
+    std::vector<Note> made;
+    for (auto& n : notes)
+        if (sel.count (n.id) != 0 && n.beat + step < sectionBeats())
+        {
+            Note c = n;
+            c.beat += step;
+            c.len = jmin (c.len, sectionBeats() - c.beat);
+            c.id = nextId++;
+            made.push_back (c);
+        }
+    if (made.empty()) { message = "No room after these notes in this section"; repaint(); return; }
+    selIds.clear();
+    for (auto& c : made) { notes.push_back (c); selIds.insert (c.id); }
+    std::sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b) { return a.beat < b.beat; });
+    selectedNote = -1;
+    for (int k = 0; k < (int) notes.size(); ++k) if (notes[(size_t) k].id == made.front().id) selectedNote = k;
+    autoPaused = false;
+    message = String ((int) made.size()) + " notes copied: drag them anywhere";
+    showTools();
+    repaint();
+}
+
+void DrawSing::deleteSelection()
+{
+    const auto sel = selection();
+    if (sel.empty()) return;
+    notes.erase (std::remove_if (notes.begin(), notes.end(), [&] (const Note& n) { return sel.count (n.id) != 0; }), notes.end());
+    selIds.clear();
+    selectedNote = -1;
+    autoPaused = false;
+    showTools();
+    repaint();
+}
+
+// right-click: duplicate, delete, pick them all
+void DrawSing::noteMenu (int index)
+{
+    if (index >= 0 && ! isPicked (notes[(size_t) index])) pickOnly (index);
+    repaint();
+    const int picked = (int) selection().size();
+    PopupMenu m;
+    if (index >= 0)
+    {
+        m.addItem (1, picked > 1 ? "Duplicate " + String (picked) + " notes" : String ("Duplicate note"), true, false);
+        m.addItem (2, picked > 1 ? "Delete " + String (picked) + " notes" : String ("Delete note"), true, false);
+        m.addSeparator();
+    }
+    m.addItem (3, "Select all notes", ! notes.empty(), false);
+    SafePointer<DrawSing> self (this);
+    m.showMenuAsync (PopupMenu::Options().withMousePosition(), [self] (int r)
+    {
+        if (self == nullptr) return;
+        if (r == 1) self->duplicateSelection();
+        if (r == 2) self->deleteSelection();
+        if (r == 3) { self->selIds.clear(); for (auto& n : self->notes) self->selIds.insert (n.id); self->selectedNote = self->notes.empty() ? -1 : 0; self->showTools(); self->repaint(); }
+    });
 }
 
 void DrawSing::setMarker (const MouseEvent& e)
@@ -762,17 +896,46 @@ void DrawSing::setMarker (const MouseEvent& e)
 void DrawSing::mouseDrag (const MouseEvent& e)
 {
     if (draggingMarker) { setMarker (e); return; }
+    if (boxing)
+    {
+        boxTo = e.position;
+        const auto box = Rectangle<float> (boxFrom, boxTo);
+        if (! e.mods.isShiftDown()) selIds.clear();
+        for (int k = 0; k < (int) notes.size(); ++k)
+            if (noteRect (notes[(size_t) k]).intersects (box)) { selIds.insert (notes[(size_t) k].id); selectedNote = k; }
+        if (selectedNote >= 0 && selectedNote < (int) notes.size() && selIds.count (notes[(size_t) selectedNote].id) == 0) selectedNote = -1;
+        repaint();
+        return;
+    }
     if (selectedNote < 0 || selectedNote >= (int) notes.size() || drag == Drag::None) return;
     auto& n = notes[(size_t) selectedNote];
     if (drag == Drag::Resize)
         n.len = jlimit (snap(), 16.0, std::round ((beatAt (e.position.x) - n.beat) / snap()) * snap());
     else
     {
-        const int p = pitchAt (e.position.y);
-        const bool moved = p != n.pitch;
-        n.pitch = p;
-        if (moved) previewNote (selectedNote); // (heard at its new note, in your voice once it's sung)
-        n.beat = jlimit (0.0, std::max (0.0, sectionBeats() - n.len), std::round ((beatAt (e.position.x) - dragBeatOffset) / snap()) * snap());
+        // the picked notes, together: by whole grid steps, and every one stays inside the section and the roll
+        double db = std::round ((beatAt (e.position.x) - dragBeat0) / snap()) * snap();
+        int dp = pitchAt (e.position.y) - dragPitch0;
+        double lo = 1e9, hi = -1e9; int plo = 1000, phi = -1000;
+        for (auto& m : notes)
+            if (auto f = dragFrom.find (m.id); f != dragFrom.end())
+            {
+                lo = std::min (lo, f->second.first); hi = std::max (hi, f->second.first + m.len);
+                plo = std::min (plo, f->second.second); phi = std::max (phi, f->second.second);
+            }
+        if (lo < 1e8)
+        {
+            db = jlimit (-lo, jmax (-lo, sectionBeats() - hi), db);
+            dp = jlimit (kMin - plo, jmax (kMin - plo, kMax - phi), dp);
+        }
+        const int was = n.pitch;
+        for (auto& m : notes)
+            if (auto f = dragFrom.find (m.id); f != dragFrom.end())
+            {
+                m.beat = f->second.first + db;
+                m.pitch = f->second.second + dp;
+            }
+        if (n.pitch != was) previewNote (selectedNote); // (heard at its new note, in your voice once it's sung)
     }
     repaint();
 }
@@ -780,29 +943,58 @@ void DrawSing::mouseDrag (const MouseEvent& e)
 void DrawSing::mouseUp (const MouseEvent&)
 {
     if (draggingMarker) { draggingMarker = false; return; }
+    if (boxing)
+    {
+        boxing = false;
+        if (! selIds.empty() && (selectedNote < 0 || selectedNote >= (int) notes.size()))
+            for (int k = 0; k < (int) notes.size(); ++k) if (selIds.count (notes[(size_t) k].id) != 0) { selectedNote = k; break; }
+        showTools();
+        repaint();
+        return;
+    }
     drag = Drag::None;
+    if (! copies.empty())
+    {
+        // option-clicked without moving: no copies after all (the originals stay picked)
+        bool moved = false;
+        for (auto& m : notes)
+            if (auto f = dragFrom.find (m.id); f != dragFrom.end())
+                moved = moved || std::abs (m.beat - f->second.first) > 1e-6 || m.pitch != f->second.second;
+        if (! moved)
+        {
+            const std::set<int> made (copies.begin(), copies.end());
+            notes.erase (std::remove_if (notes.begin(), notes.end(), [&] (const Note& m) { return made.count (m.id) != 0; }), notes.end());
+            selIds.clear();
+            selectedNote = -1;
+        }
+        else message = String ((int) copies.size()) + (copies.size() == 1 ? " note copied" : " notes copied");
+        copies.clear();
+    }
+    dragFrom.clear();
     // (sorted left to right; the note you had stays picked, for hold, vibrato and slide)
-    const bool had = selectedNote >= 0 && selectedNote < (int) notes.size();
-    const Note was = had ? notes[(size_t) selectedNote] : Note();
+    const int wasId = selectedNote >= 0 && selectedNote < (int) notes.size() ? notes[(size_t) selectedNote].id : -1;
     std::sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b) { return a.beat < b.beat; });
     selectedNote = -1;
-    if (had)
-        for (int i = 0; i < (int) notes.size(); ++i)
-            if (notes[(size_t) i].beat == was.beat && notes[(size_t) i].pitch == was.pitch) { selectedNote = i; break; }
+    for (int i = 0; i < (int) notes.size(); ++i)
+        if (notes[(size_t) i].id == wasId) { selectedNote = i; break; }
     showTools();
     repaint();
 }
 
 bool DrawSing::keyPressed (const KeyPress& k)
 {
-    if ((k == KeyPress::deleteKey || k == KeyPress::backspaceKey) && selectedNote >= 0 && selectedNote < (int) notes.size())
+    if ((k == KeyPress::deleteKey || k == KeyPress::backspaceKey) && ! selection().empty()) { deleteSelection(); return true; }
+    if (k.isKeyCode ('A') && k.getModifiers().isCommandDown())
     {
-        notes.erase (notes.begin() + selectedNote);
-        selectedNote = -1;
+        selIds.clear();
+        for (auto& n : notes) selIds.insert (n.id);
+        selectedNote = notes.empty() ? -1 : 0;
         showTools();
         repaint();
         return true;
     }
+    if (k.isKeyCode ('D') && k.getModifiers().isCommandDown()) { duplicateSelection(); return true; }
+    if (k == KeyPress::escapeKey && ! selection().empty()) { selIds.clear(); selectedNote = -1; showTools(); repaint(); return true; }
     if (k.isKeyCode ('Z') && k.getModifiers().isCommandDown()) { undo (! k.getModifiers().isShiftDown()); return true; }
     if (k.getTextCharacter() == 'h' || k.getTextCharacter() == 'H') { toggle (0); return true; }
     if (k.getTextCharacter() == 'v' || k.getTextCharacter() == 'V') { toggle (1); return true; }
@@ -969,6 +1161,8 @@ void DrawSing::writeFromLyrics()
         {
             if (self == nullptr) return;
             self->notes.clear();
+            self->lockedRef = -1;
+            self->selIds.clear();
             for (auto& l : lines)
                 for (auto& n : l.notes)
                 {
@@ -1033,24 +1227,37 @@ void DrawSing::singIt()
         bends.push_back ({ n.beat * spb, (n.beat + n.len) * spb, n.vibrato, n.slide && i > 0 ? (float) (notes[i - 1].pitch - n.pitch) : 0.0f });
     }
     const String token = String::toHexString (Random::getSystemRandom().nextInt64()).substring (0, 10);
-    // a take already there: only the phrases with new notes or new words are sung, and put into it
+    // a take already there: only the new or changed notes are sung (each run of them on its own), and put into it;
+    // the notes you didn't touch keep the take they have
     auto sendLines = lines;
     if (voiced != nullptr && voiced->lastRender != nullptr && voiced->renderedKey == noteKey())
     {
         std::vector<lp::song::lyricmelody::Line> changed;
         std::vector<std::pair<double, double>> ranges;
-        for (auto& l : lines)
+        size_t changedNotes = 0;
+        for (size_t i = 0; i < notes.size();)
         {
-            bool any = false;
-            for (auto& n : l.notes) any = any || ! isVoiced (n);
-            if (! any || l.notes.empty()) continue;
+            if (isVoiced (notes[i])) { ++i; continue; }
+            // a run of new notes (in one phrase): from the end of the voiced note before it, to the start of the one after
+            const double prevEnd = i > 0 ? notes[i - 1].beat + notes[i - 1].len : -100.0;
+            lp::song::lyricmelody::Line l;
+            double runEnd = 0.0;
+            size_t j = i;
+            for (; j < notes.size() && ! isVoiced (notes[j]); ++j)
+            {
+                if (j > i && notes[j].beat - runEnd >= 1.0) break; // (a new phrase)
+                l.notes.push_back (notes[j]);
+                runEnd = std::max (runEnd, notes[j].beat + notes[j].len);
+            }
+            const double nextStart = j < notes.size() ? notes[j].beat : 1e9;
+            const double t0 = jmax (prevEnd * spb, l.notes.front().beat * spb - 0.15);
+            const double t1 = jmin (nextStart * spb, runEnd * spb + 0.3);
+            changedNotes += l.notes.size();
             changed.push_back (l);
-            const double t0 = l.notes.front().beat * spb - 0.15;
-            double t1 = 0;
-            for (auto& n : l.notes) t1 = jmax (t1, (n.beat + n.len) * spb);
-            ranges.push_back ({ jmax (0.0, t0), t1 + 0.3 });
+            ranges.push_back ({ jmax (0.0, t0), jmax (t0 + 0.05, t1) });
+            i = j;
         }
-        if (! changed.empty() && changed.size() < lines.size())
+        if (! changed.empty() && changedNotes < notes.size())
         {
             sendLines = changed;
             proc.drawnMerge[token] = { voiced->lastRender, sectionStartSeconds(), ranges };
@@ -1062,11 +1269,17 @@ void DrawSing::singIt()
     if (autoAdd != nullptr) autoAdd->bends[token] = bends;
     auto score = lp::song::lyricmelody::toScore (sendLines, st.song.bpm);
     {
-        // the whole melody's middle note: a phrase sung on its own lands in the same octave as the rest
-        std::vector<int> ps;
-        for (auto& n : notes) ps.push_back (n.pitch);
-        std::nth_element (ps.begin(), ps.begin() + (long) ps.size() / 2, ps.end());
-        if (auto* o = score.getDynamicObject()) o->setProperty ("reference_pitch", ps[ps.size() / 2]);
+        // the octave the voice sings in: picked from the melody's middle note the first time it's sung, then kept, so
+        // adding notes later never moves the ones you already like up or down an octave
+        if (lockedRef < 0 || lockedVoice != voice.getText())
+        {
+            std::vector<int> ps;
+            for (auto& n : notes) ps.push_back (n.pitch);
+            std::nth_element (ps.begin(), ps.begin() + (long) ps.size() / 2, ps.end());
+            lockedRef = ps[ps.size() / 2];
+            lockedVoice = voice.getText();
+        }
+        if (auto* o = score.getDynamicObject()) o->setProperty ("reference_pitch", lockedRef);
     }
     lp::voice::Client::Request r;
     r.lyrics = words.joinIntoString (" ");
@@ -1082,7 +1295,7 @@ void DrawSing::singIt()
     r.melodies = [score] { return var (Array<var> { score }); };
     r.renderTrack = [&pr = proc, c] { return pr.renderSectionForVoice (c, 1); };
     proc.voiceClient.create (std::move (r));
-    message = sendLines.size() < lines.size() ? "Singing just the changed phrase" + String (sendLines.size() > 1 ? "s" : "") + "..."
+    message = proc.drawnMerge.count (token) != 0 ? String ("Singing just the new notes (the rest stay as they are)...")
                                               : String ("Singing it: the section's drawn track gets the new take when it's done.");
     repaint();
 }
@@ -1185,7 +1398,7 @@ void DrawSing::paint (Graphics& g)
     label (bar1 > bar0 ? "BARS " + String (bar0) + " TO " + String (bar1) : "BAR " + String (bar0), rollCard().reduced (18, 16).removeFromTop (28).withRight (holdBtn.getX() - 8));
     g.setFont (font (11.0f));
     g.setColour (t.inkDim);
-    g.drawText ("Click to draw a note, drag to move it, drag its end to make it longer. Double-click: its word. Alt-click or Delete: gone.",
+    g.drawText ("Click: a note. Drag: move it, its end: longer. Shift-drag: pick several (cmd+A: all). Option-drag: copy. Right-click: duplicate. Delete: gone.",
                 rollCard().reduced (18, 16).removeFromBottom (32).withLeft (redoBtn.getRight() + 12).withRight (hear.getX() - 10), Justification::centredLeft, true);
     label ("YOUR VOICE AND THE SECTION", sideCard().reduced (20, 18).removeFromTop (24));
 
@@ -1236,7 +1449,7 @@ void DrawSing::paint (Graphics& g)
     {
         const auto& n = notes[(size_t) i];
         const auto nr = noteRect (n);
-        g.setColour (i == selectedNote ? t.grassLight : t.grass);
+        g.setColour (isPicked (n) ? t.grassLight : t.grass);
         g.fillRoundedRectangle (nr, 3.0f);
         if (isVoiced (n))
         {
@@ -1337,6 +1550,14 @@ void DrawSing::paint (Graphics& g)
     g.setFont (font (12.0f));
     g.setColour (s.contains ("didn't work") || s.contains ("isn't running") || s.contains ("Apple Silicon") ? Colour (0xffff8f8f) : t.inkDim);
     g.drawFittedText (s, statusArea, Justification::topLeft, 4);
+    if (boxing)
+    {
+        const auto box = Rectangle<float> (boxFrom, boxTo);
+        g.setColour (Colours::white.withAlpha (0.08f));
+        g.fillRect (box);
+        g.setColour (Colours::white.withAlpha (0.6f));
+        g.drawRect (box, 1.0f);
+    }
 }
 
 bool DrawSing::isVoiced (const Note& n) const
@@ -1620,6 +1841,7 @@ void DrawSing::saveSection()
     o->setProperty ("notes", notesToVar (notes));
     o->setProperty ("lyrics", lyrics.getText());
     o->setProperty ("nextId", nextId);
+    if (lockedRef >= 0) { o->setProperty ("ref", lockedRef); o->setProperty ("refVoice", lockedVoice); }
     if (lastToken.isNotEmpty())
         if (auto t = proc.drawnFiles.find (lastToken); t != proc.drawnFiles.end())
             if (auto sn = sentNotes.find (lastToken); sn != sentNotes.end())
@@ -1643,6 +1865,8 @@ void DrawSing::restoreSection()
     if (! e.isObject()) return;
     notes = notesFromVar (e["notes"]);
     nextId = jmax (nextId, (int) e.getProperty ("nextId", 0));
+    lockedRef = e.getProperty ("ref", -1);
+    lockedVoice = e["refVoice"].toString();
     for (auto& n : notes) nextId = jmax (nextId, n.id + 1);
     if (const auto words = e["lyrics"].toString(); words.isNotEmpty() && lyrics.getText().trim().isEmpty()) lyrics.setText (words, false);
     // its sung take: your voice comes back with it (no singing again)
@@ -1670,6 +1894,8 @@ void DrawSing::useMelody (std::vector<Note> list, const String& how)
 {
     const double secBeats = sectionBeats();
     notes.clear();
+    lockedRef = -1;
+    selIds.clear();
     for (auto n : list)
     {
         if (n.beat < 0.0 || n.beat >= secBeats) continue;

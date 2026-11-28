@@ -1229,6 +1229,23 @@ private:
     std::map<juce::String, std::vector<Note>> sentNotes; // by token: the notes each take was sung from
     juce::String loadedToken, voicedKey;
     int nextId = 1;
+    // several notes picked at once (by id): shift-click, a box (shift-drag), cmd+A; dragged, copied (option-drag) and
+    // deleted together
+    std::set<int> selIds;
+    std::set<int> selection() const;      // the picked notes' ids (the one note picked, when there's no group)
+    bool isPicked (const Note& n) const;
+    void pickOnly (int index);
+    void duplicateSelection();
+    void deleteSelection();
+    void noteMenu (int index);
+    std::map<int, std::pair<double, int>> dragFrom; // (id -> beat, pitch, when the drag began)
+    double dragBeat0 = 0.0; int dragPitch0 = 0;
+    std::vector<int> copies; // (option-drag: the copies made; dropped where they began, they're taken back)
+    bool boxing = false;
+    juce::Point<float> boxFrom, boxTo;
+    // the octave the voice sings the melody in, fixed once it's first sung: notes you add later don't move it
+    int lockedRef = -1;
+    juce::String lockedVoice;
     juce::uint32 voicedChangedAt = 0;
     void loadTake (const juce::String& token, const juce::File& file);
     void renderVoice();          // (in the background) the section in your voice, from the notes as they are now
