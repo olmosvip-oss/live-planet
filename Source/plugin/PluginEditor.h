@@ -1189,7 +1189,7 @@ public:
 private:
     using Note = lp::song::lyricmelody::Note;
     int top = 79;                              // the highest note shown (32 notes at a time; scroll for more)
-    juce::TextButton octUp { "oct +" }, octDown { "oct -" }, holdBtn { "hold word" }, vibBtn { "vibrato" }, slideBtn { "slide in" }, splitBtn { "split" };
+    juce::TextButton octUp { "oct +" }, octDown { "oct -" }, holdBtn { "hold word" }, vibBtn { "vibrato" }, slideBtn { "slide in" }, splitBtn { "split" }, straightBtn { "straighten" };
     void splitNote();                          // the selected note in two (the second keeps singing its word)
     void showWordEditor (int note);            // double-click a word: its text, its volume, how long it rings on
     void saveSection();                        // (each section's notes, words and sung take, kept with the song)

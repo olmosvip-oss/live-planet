@@ -139,7 +139,7 @@ struct DrawSing::Voiced
         const double sr = StudioPlayer::fileRate, spb = 60.0 / bpm;
         const float semis = (float) (n.pitch - s->pitch);
         const double ratio = jlimit (0.25, 4.0, n.len / jmax (0.05, s->len));
-        const String key = String (semis) + ":" + String (ratio, 4) + ":" + String (n.ringMs, 0);
+        const String key = String (semis) + ":" + String (ratio, 4) + ":" + String (n.ringMs, 0) + ":" + String (n.straighten, 2);
         {
             const std::lock_guard<std::mutex> l (lock);
             if (auto it = cache.find (n.id); it != cache.end() && it->second.key == key) return it->second.audio;
@@ -148,7 +148,7 @@ struct DrawSing::Voiced
         const double ctx = 0.2;
         const int a0 = (int) (s->beat * spb * sr), a1 = (int) ((s->beat + s->len) * spb * sr);
         // a note you haven't changed: its word exactly as it was sung, where it was sung (nothing re-done to it)
-        if (asSung (n))
+        if (asSung (n) && n.straighten <= 0.0f)
         {
             const int fi = (int) (0.006 * sr), from = jmax (0, a0 - fi), to = jmin (N, a1 + (int) (0.006 * sr));
             if (to - from < 64) return nullptr;
@@ -183,6 +183,46 @@ struct DrawSing::Voiced
         const int inLen = ce - cs, outLen = jmax (1, (int) std::round (inLen * ratio));
         AudioBuffer<float> in (2, inLen), out (2, outLen);
         for (int ch = 0; ch < 2; ++ch) in.copyFrom (ch, 0, *take, jmin (ch, take->getNumChannels() - 1), cs, inLen);
+        if (n.straighten > 0.0f && ! pitchTrack.empty())
+        {
+            // straightened: each moment of the note pulled from the pitch it was sung at onto the note's own pitch
+            // (its drift and wobble taken out, as far as asked), formants kept; it eases in and out at its edges
+            const int hop = jmax (64, (int) (sr / 200.0));
+            std::vector<float> corr;
+            float cv = 0.0f;
+            bool first = true;
+            for (int pos = 0; pos < inLen; pos += hop)
+            {
+                const int at = cs + pos, f = at / hop;
+                const double m = f >= 0 && f < (int) pitchTrack.size() ? pitchTrack[(size_t) f] : 0.0;
+                const bool inside = at >= a0 - hop && at <= a1 + hop && m > 0.0 && std::abs (m - s->pitch) < 3.0;
+                if (inside)
+                {
+                    const float want = (float) ((s->pitch - m) * n.straighten);
+                    cv = first ? want : cv + (want - cv) * 0.5f;
+                    first = false;
+                }
+                else cv *= 0.8f;
+                corr.push_back (cv);
+            }
+            signalsmith::stretch::SignalsmithStretch<float> ps;
+            ps.presetDefault (2, (float) sr);
+            ps.setFormantFactor (1.0f, true);
+            const int lat = ps.inputLatency() + ps.outputLatency(), total = inLen + lat;
+            AudioBuffer<float> src (2, total), dst (2, total);
+            src.clear();
+            for (int ch = 0; ch < 2; ++ch) src.copyFrom (ch, 0, in, ch, 0, inLen);
+            for (int pos = 0; pos < total; pos += hop)
+            {
+                const int len = jmin (hop, total - pos);
+                const int fr = jlimit (0, (int) corr.size() - 1, (pos - ps.inputLatency()) / hop);
+                ps.setTransposeSemitones (corr[(size_t) fr], (float) (8000.0 / sr));
+                const float* ins[2] = { src.getReadPointer (0, pos), src.getReadPointer (1, pos) };
+                float* outs[2] = { dst.getWritePointer (0, pos), dst.getWritePointer (1, pos) };
+                ps.process (ins, len, outs, len);
+            }
+            for (int ch = 0; ch < 2; ++ch) in.copyFrom (ch, 0, dst, ch, lat, inLen);
+        }
         bool done = false;
         if (std::abs (semis) > 0.001f || std::abs (ratio - 1.0) > 0.001)
         {
@@ -263,6 +303,8 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
                            T { &holdBtn, "Hold word (H): this note keeps singing the word before it, on its own pitch (\"you\": \"yu\" on one note, \"oo\" on the next)" },
                            T { &vibBtn, "Vibrato (V): the selected note wavers once it's held, like a singer's" },
                            T { &slideBtn, "Slide in (S): the selected note slides up or down into its pitch from the note before" },
+                           T { &straightBtn, "Straighten (T): pulls the picked notes onto their pitch, like Flex Pitch: an off-key or wobbly note "
+                                             "sung in tune. Right-click a note for half-way" },
                            T { &splitBtn, "Split (E): cuts a note exactly at the mouse (press E with the mouse over it) or at the marker; the second part keeps singing the word (drag it to another pitch)" },
                            T { &recBtn, "Sing or hum your melody while the section plays (a bar to count in): it becomes the notes, "
                                         "and your words go on them. Click again to stop early." } })
@@ -274,6 +316,7 @@ DrawSing::DrawSing (LivePlanetProcessor& p, const lp::ui::Theme*& theme) : proc 
     octUp.onClick = [this] { top = jmin (kMax, top + 12); repaint(); };
     octDown.onClick = [this] { top = jmax (kMin + kRows - 1, top - 12); repaint(); };
     holdBtn.onClick = [this] { toggle (0); };
+    straightBtn.onClick = [this] { toggle (3); };
     vibBtn.onClick = [this] { toggle (1); };
     slideBtn.onClick = [this] { toggle (2); };
     splitBtn.onClick = [this] { splitNote(); };
@@ -320,7 +363,7 @@ String DrawSing::noteKey() const
     String k;
     k << section.getSelectedItemIndex() << ":" << voice.getText() << ":";
     for (auto& n : notes) k << n.beat << "," << n.len << "," << n.pitch << "," << n.word << "," << (int) n.slur << "," << n.vibrato << "," << (int) n.slide
-                             << "," << n.gainDb << "," << n.ringMs << ";";
+                             << "," << n.gainDb << "," << n.ringMs << "," << n.straighten << ";";
     return k;
 }
 
@@ -509,6 +552,18 @@ void DrawSing::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
 void DrawSing::toggle (int what)
 {
     if (selectedNote < 0 || selectedNote >= (int) notes.size()) return;
+    if (what == 3 || what == 4)
+    {
+        // straighten every picked note (on: all the way, or half-way; again: as sung)
+        const auto sel = selection();
+        bool anyOff = false;
+        for (auto& n : notes) if (sel.count (n.id) != 0 && n.straighten <= 0.0f) anyOff = true;
+        for (auto& n : notes) if (sel.count (n.id) != 0) n.straighten = what == 4 ? 0.5f : anyOff ? 1.0f : 0.0f;
+        autoPaused = false;
+        showTools();
+        repaint();
+        return;
+    }
     auto& n = notes[(size_t) selectedNote];
     if (what == 0)
     {
@@ -683,12 +738,13 @@ void DrawSing::toggleRecord()
 void DrawSing::showTools()
 {
     const bool has = selectedNote >= 0 && selectedNote < (int) notes.size();
-    for (auto* b : { &holdBtn, &vibBtn, &slideBtn }) b->setEnabled (has);
+    for (auto* b : { &holdBtn, &vibBtn, &slideBtn, &straightBtn }) b->setEnabled (has);
     splitBtn.setEnabled (! notes.empty());
     auto lit = [] (TextButton& b, bool on) { if ((bool) b.getProperties()["primary"] != on) { b.getProperties().set ("primary", on); b.repaint(); } };
     lit (holdBtn, has && notes[(size_t) selectedNote].slur);
     lit (vibBtn, has && notes[(size_t) selectedNote].vibrato > 0.0f);
     lit (slideBtn, has && notes[(size_t) selectedNote].slide);
+    lit (straightBtn, has && notes[(size_t) selectedNote].straighten > 0.0f);
 }
 Rectangle<float> DrawSing::noteRect (const Note& n) const { return { xOf (n.beat), yOf (n.pitch) + 1.0f, std::max (4.0f, xOf (n.beat + n.len) - xOf (n.beat)), rowH() - 2.0f }; }
 
@@ -872,6 +928,13 @@ void DrawSing::noteMenu (int index)
         m.addItem (2, picked > 1 ? "Delete " + String (picked) + " notes" : String ("Delete note"), true, false);
         m.addSeparator();
     }
+    if (index >= 0)
+    {
+        m.addItem (4, "Straighten (in tune)", true, false);
+        m.addItem (5, "Straighten half-way", true, false);
+        m.addItem (6, "As sung (not straightened)", true, false);
+        m.addSeparator();
+    }
     m.addItem (3, "Select all notes", ! notes.empty(), false);
     SafePointer<DrawSing> self (this);
     m.showMenuAsync (PopupMenu::Options().withMousePosition(), [self] (int r)
@@ -879,6 +942,8 @@ void DrawSing::noteMenu (int index)
         if (self == nullptr) return;
         if (r == 1) self->duplicateSelection();
         if (r == 2) self->deleteSelection();
+        if (r == 4 || r == 6) { for (auto& n : self->notes) if (self->isPicked (n)) n.straighten = r == 4 ? 0.0f : 1.0f; self->toggle (3); }
+        if (r == 5) self->toggle (4);
         if (r == 3) { self->selIds.clear(); for (auto& n : self->notes) self->selIds.insert (n.id); self->selectedNote = self->notes.empty() ? -1 : 0; self->showTools(); self->repaint(); }
     });
 }
@@ -1002,6 +1067,7 @@ bool DrawSing::keyPressed (const KeyPress& k)
     if (k.getTextCharacter() == 'v' || k.getTextCharacter() == 'V') { toggle (1); return true; }
     if (k.getTextCharacter() == 's' || k.getTextCharacter() == 'S') { toggle (2); return true; }
     if (k.getTextCharacter() == 'e' || k.getTextCharacter() == 'E') { splitNote(); return true; }
+    if (k.getTextCharacter() == 't' || k.getTextCharacter() == 'T') { toggle (3); return true; }
     return false;
 }
 
@@ -1317,9 +1383,9 @@ void DrawSing::resized()
     row.removeFromRight (6);
     octDown.setBounds (row.removeFromRight (56));
     row.removeFromRight (14);
-    for (auto* b : { &splitBtn, &slideBtn, &vibBtn, &holdBtn })
+    for (auto* b : { &splitBtn, &slideBtn, &vibBtn, &holdBtn, &straightBtn })
     {
-        b->setBounds (row.removeFromRight (b == &holdBtn ? 92 : b == &splitBtn ? 60 : 80));
+        b->setBounds (row.removeFromRight (b == &holdBtn ? 92 : b == &splitBtn ? 60 : b == &straightBtn ? 96 : 80));
         row.removeFromRight (6);
     }
     showTools();
@@ -1397,7 +1463,7 @@ void DrawSing::paint (Graphics& g)
     };
     const int bar0 = (int) (viewStart / 4.0) + 1, bar1 = (int) std::ceil ((viewStart + beatsShown) / 4.0);
     const String dot = String::fromUTF8 ("  \xc2\xb7  ");
-    label (bar1 > bar0 ? "BARS " + String (bar0) + " TO " + String (bar1) : "BAR " + String (bar0), rollCard().reduced (18, 16).removeFromTop (28).withRight (holdBtn.getX() - 8));
+    label (bar1 > bar0 ? "BARS " + String (bar0) + " TO " + String (bar1) : "BAR " + String (bar0), rollCard().reduced (18, 16).removeFromTop (28).withRight (straightBtn.getX() - 8));
     g.setFont (font (11.0f));
     g.setColour (t.inkDim);
     g.drawText ("Click: a note. Drag: move it, its end: longer. Shift-drag: pick several (cmd+A: all). Option-drag: copy. Right-click: duplicate. Delete: gone.",
@@ -1488,8 +1554,9 @@ void DrawSing::paint (Graphics& g)
                 const float rh = rowH();
                 for (int f = f0; f <= f1; ++f)
                 {
-                    const double m = f >= 0 && f < (int) voiced->pitchTrack.size() ? voiced->pitchTrack[(size_t) f] : 0.0;
+                    double m = f >= 0 && f < (int) voiced->pitchTrack.size() ? voiced->pitchTrack[(size_t) f] : 0.0;
                     if (m <= 0.0 || std::abs (m - s->pitch) > 7.0) { down = false; continue; }
+                    if (n.straighten > 0.0f && std::abs (m - s->pitch) < 3.0) m += (s->pitch - m) * n.straighten; // (as it'll sound)
                     const float x = nr.getX() + nr.getWidth() * (float) (f - f0) / (float) jmax (1, f1 - f0);
                     const float y = yOf (n.pitch) + rh * 0.5f - (float) (m + shift - n.pitch) * rh;
                     if (down) curve.lineTo (x, y); else curve.startNewSubPath (x, y);
@@ -1946,6 +2013,7 @@ var noteToVar (const lp::song::lyricmelody::Note& n)
     o->setProperty ("b", n.beat); o->setProperty ("l", n.len); o->setProperty ("p", n.pitch); o->setProperty ("w", n.word);
     o->setProperty ("s", n.slur); o->setProperty ("v", n.vibrato); o->setProperty ("sl", n.slide); o->setProperty ("id", n.id);
     o->setProperty ("g", n.gainDb); o->setProperty ("r", n.ringMs);
+    if (n.straighten > 0.0f) o->setProperty ("st", n.straighten);
     return var (o);
 }
 lp::song::lyricmelody::Note noteFromVar (const var& v)
@@ -1953,6 +2021,7 @@ lp::song::lyricmelody::Note noteFromVar (const var& v)
     lp::song::lyricmelody::Note n;
     n.beat = v["b"]; n.len = v["l"]; n.pitch = v["p"]; n.word = v["w"].toString(); n.slur = v["s"]; n.vibrato = v["v"]; n.slide = v["sl"];
     n.id = v["id"]; n.gainDb = v.getProperty ("g", 0.0f); n.ringMs = v.getProperty ("r", -1.0f);
+    n.straighten = v.getProperty ("st", 0.0f);
     return n;
 }
 Array<var> notesToVar (const std::vector<lp::song::lyricmelody::Note>& list) { Array<var> a; for (auto& n : list) a.add (noteToVar (n)); return a; }
